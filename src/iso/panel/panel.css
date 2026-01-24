@@ -230,7 +230,7 @@
   justify-content: space-between;
   padding: 18px 20px;
   border-bottom: 1px solid var(--ageaf-panel-border);
-  background: radial-gradient(circle at top right, rgba(57, 185, 138, 0.16), transparent 55%);
+  background: transparent;
 }
 
 .ageaf-panel__title {
@@ -240,15 +240,11 @@
 }
 
 .ageaf-panel__logo {
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #39b98a, #2e6f54);
-  display: grid;
-  place-items: center;
-  color: #08110d;
-  font-weight: 700;
-  box-shadow: 0 6px 18px rgba(57, 185, 138, 0.35);
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  object-position: center;
+  background: transparent;
 }
 
 .ageaf-panel__name {
