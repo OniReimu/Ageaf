@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "rootDir": "src",
+    "target": "es6",
+    "module": "commonjs",
+    "esModuleInterop": true,
+    "strict": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["host", "test", "node_modules"]
+}

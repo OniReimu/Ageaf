@@ -1,0 +1,150 @@
+'use strict';
+
+import { mountPanel, unmountPanel } from './panel/Panel';
+const LAYOUT_ID = 'ageaf-layout';
+const LAYOUT_MAIN_CLASS = 'ageaf-layout__main';
+const EDITOR_REQUEST_EVENT = 'ageaf:editor:request';
+const EDITOR_RESPONSE_EVENT = 'ageaf:editor:response';
+const EDITOR_REPLACE_EVENT = 'ageaf:editor:replace';
+const EDITOR_INSERT_EVENT = 'ageaf:editor:insert';
+const selectionRequests = new Map<string, (payload: any) => void>();
+
+declare global {
+  interface Window {
+    ageafBridge?: {
+      requestSelection: () => Promise<any>;
+      replaceSelection: (text: string) => void;
+      insertAtCursor: (text: string) => void;
+    };
+  }
+}
+
+function onSelectionResponse(event: Event) {
+  const detail = (event as CustomEvent<any>).detail;
+  if (!detail?.requestId) return;
+  const handler = selectionRequests.get(detail.requestId);
+  if (!handler) return;
+  selectionRequests.delete(detail.requestId);
+  handler(detail);
+}
+
+function requestSelection() {
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise((resolve) => {
+    selectionRequests.set(requestId, resolve);
+    window.dispatchEvent(new CustomEvent(EDITOR_REQUEST_EVENT, { detail: { requestId } }));
+  });
+}
+
+function replaceSelection(text: string) {
+  window.dispatchEvent(new CustomEvent(EDITOR_REPLACE_EVENT, { detail: { text } }));
+}
+
+function insertAtCursor(text: string) {
+  window.dispatchEvent(new CustomEvent(EDITOR_INSERT_EVENT, { detail: { text } }));
+}
+
+function findLayoutHost(): HTMLElement | null {
+  const selectors = [
+    '#ide-root',
+    '#main-content',
+    '#react-app',
+    '#root',
+    'body > .ide',
+    'body > .content',
+    'body > div'
+  ];
+
+  for (const selector of selectors) {
+    const candidate = document.querySelector(selector);
+    if (!(candidate instanceof HTMLElement)) continue;
+    if (candidate.id === LAYOUT_ID || candidate.id === 'ageaf-panel-root') continue;
+    return candidate;
+  }
+
+  return null;
+}
+
+function mountLayout(): HTMLElement {
+  const existing = document.getElementById(LAYOUT_ID);
+  if (existing) {
+    return existing;
+  }
+
+  const layout = document.createElement('div');
+  layout.id = LAYOUT_ID;
+  layout.className = LAYOUT_ID;
+
+  const main = document.createElement('div');
+  main.className = LAYOUT_MAIN_CLASS;
+  layout.appendChild(main);
+
+  const host = findLayoutHost();
+  if (host && host.parentElement) {
+    host.parentElement.insertBefore(layout, host);
+    main.appendChild(host);
+  } else {
+    document.body.appendChild(layout);
+  }
+
+  return layout;
+}
+
+function unmountLayout() {
+  const layout = document.getElementById(LAYOUT_ID);
+  if (!layout || !layout.parentElement) return;
+  const main = layout.querySelector(`.${LAYOUT_MAIN_CLASS}`);
+  if (main && layout.parentElement) {
+    while (main.firstChild) {
+      layout.parentElement.insertBefore(main.firstChild, layout);
+    }
+  }
+  layout.remove();
+}
+
+function isProjectPage() {
+  const segments = window.location.pathname.split('/').filter(Boolean);
+  if (segments[0] !== 'project') return false;
+  return segments.length >= 2 && segments[1].length > 0;
+}
+
+function updatePanelMount() {
+  if (isProjectPage()) {
+    mountPanel(mountLayout());
+    return;
+  }
+  unmountPanel();
+  unmountLayout();
+}
+
+window.addEventListener(EDITOR_RESPONSE_EVENT, onSelectionResponse as EventListener);
+window.ageafBridge = {
+  requestSelection,
+  replaceSelection,
+  insertAtCursor,
+};
+
+chrome.runtime.onMessage.addListener((request) => {
+  if (request?.type === 'ageaf:open-settings') {
+    window.dispatchEvent(new CustomEvent('ageaf:settings:open'));
+  }
+});
+
+updatePanelMount();
+
+const originalPushState = history.pushState;
+history.pushState = function (...args) {
+  const result = originalPushState.apply(this, args as any);
+  updatePanelMount();
+  return result;
+};
+
+const originalReplaceState = history.replaceState;
+history.replaceState = function (...args) {
+  const result = originalReplaceState.apply(this, args as any);
+  updatePanelMount();
+  return result;
+};
+
+window.addEventListener('popstate', updatePanelMount);
+window.setInterval(updatePanelMount, 1000);

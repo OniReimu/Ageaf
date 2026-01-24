@@ -1,0 +1,206 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import type { FastifyInstance } from 'fastify';
+
+import { runClaudeJob } from '../runtimes/claude/run.js';
+import { getCodexAppServer } from '../runtimes/codex/appServer.js';
+import { runCodexJob, type CodexRuntimeConfig } from '../runtimes/codex/run.js';
+import { startEventStream } from '../sse.js';
+import type { JobEvent } from '../types.js';
+import { validatePatch } from '../validate.js';
+import { runRewriteSelection } from '../workflows/rewriteSelection.js';
+import { runFixCompileError } from '../workflows/fixCompileError.js';
+import { setLastClaudeRuntimeConfig } from '../runtimes/claude/state.js';
+import type { ClaudeRuntimeConfig } from '../runtimes/claude/agent.js';
+
+type JobSubscriber = {
+  send: (event: JobEvent) => void;
+  end: () => void;
+};
+
+type JobRecord = {
+  id: string;
+  events: JobEvent[];
+  subscribers: Set<JobSubscriber>;
+  done: boolean;
+  provider: 'claude' | 'codex';
+  codex?: { cliPath?: string; envVars?: string; cwd: string };
+};
+
+const jobs = new Map<string, JobRecord>();
+
+type JobRequestPayload = {
+  provider?: 'claude' | 'codex';
+  action?: string;
+  context?: {
+    selection?: string;
+    surroundingBefore?: string;
+    surroundingAfter?: string;
+    compileLog?: string;
+    message?: string;
+  };
+  runtime?: { claude?: ClaudeRuntimeConfig; codex?: CodexRuntimeConfig };
+  userSettings?: {
+    displayName?: string;
+    customSystemPrompt?: string;
+    enableTools?: boolean;
+    enableCommandBlocklist?: boolean;
+    blockedCommandsUnix?: string;
+  };
+};
+
+function ensureAgeafWorkspaceCwd(): string {
+  const workspace = path.join(os.homedir(), '.ageaf');
+  try {
+    fs.mkdirSync(workspace, { recursive: true });
+  } catch {
+    // ignore workspace creation failures
+  }
+  return workspace;
+}
+
+export function registerJobs(server: FastifyInstance) {
+  server.post('/v1/jobs', async (request, reply) => {
+    const id = crypto.randomUUID();
+    const job: JobRecord = {
+      id,
+      events: [],
+      subscribers: new Set(),
+      done: false,
+      provider: 'claude',
+    };
+    jobs.set(id, job);
+
+    const emitEvent = (event: JobEvent) => {
+      if (event.event === 'patch') {
+        event.data = validatePatch(event.data);
+      }
+
+      job.events.push(event);
+
+      for (const subscriber of job.subscribers) {
+        subscriber.send(event);
+      }
+
+      if (event.event === 'done') {
+        job.done = true;
+        for (const subscriber of job.subscribers) {
+          subscriber.end();
+        }
+        job.subscribers.clear();
+      }
+    };
+
+    const payload = request.body as JobRequestPayload;
+    const provider = payload.provider === 'codex' ? 'codex' : 'claude';
+    job.provider = provider;
+    if (provider === 'claude' && payload.runtime?.claude) {
+      setLastClaudeRuntimeConfig(payload.runtime.claude);
+    }
+    if (provider === 'codex') {
+      job.codex = {
+        cliPath: payload.runtime?.codex?.cliPath,
+        envVars: payload.runtime?.codex?.envVars,
+        cwd: ensureAgeafWorkspaceCwd(),
+      };
+    }
+    reply.send({ jobId: id });
+
+    void (async () => {
+      try {
+        emitEvent({ event: 'plan', data: { message: 'Job queued' } });
+        if (provider === 'codex') {
+          if (payload.action && payload.action !== 'chat') {
+            emitEvent({
+              event: 'done',
+              data: {
+                status: 'error',
+                message: `Unsupported action for OpenAI provider: ${payload.action}`,
+              },
+            });
+            return;
+          }
+          await runCodexJob(payload, emitEvent);
+          return;
+        }
+
+        if (payload.action === 'rewrite') {
+          await runRewriteSelection(payload, emitEvent);
+          return;
+        }
+        if (payload.action === 'fix_error') {
+          await runFixCompileError(payload, emitEvent);
+          return;
+        }
+
+        await runClaudeJob(payload, emitEvent);
+      } catch (error) {
+        emitEvent({
+          event: 'done',
+          data: {
+            status: 'error',
+            message: error instanceof Error ? error.message : 'Job failed',
+          },
+        });
+      }
+    })();
+  });
+
+  server.post('/v1/jobs/:id/respond', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const job = jobs.get(id);
+    if (!job) {
+      reply.status(404).send({ error: 'not_found' });
+      return;
+    }
+
+    if (job.provider !== 'codex' || !job.codex) {
+      reply.status(400).send({ error: 'unsupported' });
+      return;
+    }
+
+    const body = request.body as { requestId?: unknown; result?: unknown };
+    const requestId = body?.requestId;
+    if (typeof requestId !== 'number' && typeof requestId !== 'string') {
+      reply.status(400).send({ error: 'invalid_requestId' });
+      return;
+    }
+
+    try {
+      const appServer = await getCodexAppServer(job.codex);
+      await appServer.respond(requestId, body.result);
+      reply.send({ ok: true });
+    } catch (error) {
+      reply.status(500).send({
+        error: 'failed',
+        message: error instanceof Error ? error.message : 'Failed to respond',
+      });
+    }
+  });
+
+  server.get('/v1/jobs/:id/events', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const job = jobs.get(id);
+    if (!job) {
+      reply.status(404).send({ error: 'not_found' });
+      return;
+    }
+
+    const stream = startEventStream(reply);
+    for (const event of job.events) {
+      stream.send(event);
+    }
+
+    if (job.done) {
+      stream.end();
+      return;
+    }
+
+    job.subscribers.add(stream);
+    reply.raw.on('close', () => {
+      job.subscribers.delete(stream);
+    });
+  });
+}
