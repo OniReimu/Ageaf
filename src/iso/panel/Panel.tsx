@@ -1987,7 +1987,25 @@ const Panel = () => {
       <div class="ageaf-panel__inner" id="ageaf-panel-inner">
       <header class="ageaf-panel__header">
         <div class="ageaf-panel__title">
-          <span class="ageaf-panel__logo">A</span>
+          <img
+            src={
+              typeof chrome !== 'undefined' && chrome.runtime?.getURL
+                ? `${chrome.runtime.getURL('icons/icon_128.png')}?v=${chrome.runtime.getManifest?.().version ?? 'dev'}`
+                : 'icons/icon_128.png'
+            }
+            class="ageaf-panel__logo"
+            style={{
+              width: '56px',
+              height: '56px',
+              background: 'transparent',
+              borderRadius: '0',
+              boxShadow: 'none',
+              objectFit: 'cover',
+              objectPosition: 'center',
+              display: 'block',
+            }}
+            alt="Ageaf Logo"
+          />
           <div>
             <div class="ageaf-panel__name">Ageaf</div>
             <div class="ageaf-panel__tagline">
