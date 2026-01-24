@@ -51,8 +51,26 @@ const CopyIcon = () => (
     aria-hidden="true"
     focusable="false"
   >
-    <rect x="6.5" y="3.5" width="10" height="12" rx="2" fill="currentColor" />
-    <rect x="3.5" y="6.5" width="10" height="12" rx="2" fill="currentColor" />
+    <rect
+      x="6.5"
+      y="3.5"
+      width="10"
+      height="12"
+      rx="2"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.6"
+    />
+    <rect
+      x="3.5"
+      y="6.5"
+      width="10"
+      height="12"
+      rx="2"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.6"
+    />
   </svg>
 );
 
@@ -736,6 +754,30 @@ const Panel = () => {
   }, []);
 
   useEffect(() => {
+    const handler = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      if (reason instanceof Error && reason.message.includes('Extension context invalidated')) {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener('unhandledrejection', handler);
+    return () => {
+      window.removeEventListener('unhandledrejection', handler);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const timers = copyResetTimersRef.current;
+      for (const key of Object.keys(timers)) {
+        window.clearTimeout(timers[key]);
+      }
+      copyResetTimersRef.current = {};
+    };
+  }, []);
+
+  useEffect(() => {
     const projectId = chatProjectIdRef.current;
     const conversationId = chatConversationIdRef.current;
     const state = chatStateRef.current;
@@ -763,28 +805,45 @@ const Panel = () => {
   };
 
   const copyToClipboard = async (text: string) => {
-    if (!text) return;
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(text);
-        return true;
-      } catch {
-        // fall through to legacy copy
+    if (!text) return false;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (error) {
+          // Extension context invalidated - treat as a no-op.
+          if (
+            error instanceof Error &&
+            error.message.includes('Extension context invalidated')
+          ) {
+            return false;
+          }
+          // fall through to legacy copy
+        }
       }
-    }
 
-    if (typeof document === 'undefined') return;
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.setAttribute('readonly', 'true');
-    textarea.style.position = 'absolute';
-    textarea.style.left = '-9999px';
-    textarea.style.top = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textarea);
-    return true;
+      if (typeof document === 'undefined') return false;
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'absolute';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes('Extension context invalidated')
+      ) {
+        return false;
+      }
+      return false;
+    }
   };
 
   const extractQuotesFromHtml = (html: string) => {
@@ -1269,7 +1328,15 @@ const Panel = () => {
     const current = settings ?? (await getOptions());
     const updated = { ...current, ...next };
     setSettings(updated);
-    await chrome.storage.local.set({ [LOCAL_STORAGE_KEY_OPTIONS]: updated });
+    try {
+      await chrome.storage.local.set({ [LOCAL_STORAGE_KEY_OPTIONS]: updated });
+    } catch (error) {
+      // Extension context invalidated - ignore silently
+      if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+        return;
+      }
+      throw error;
+    }
   };
 
   const applyRuntimePreferences = async (payload: {
@@ -1978,9 +2045,18 @@ const Panel = () => {
 
   const onSaveSettings = async () => {
     if (!settings) return;
-    await chrome.storage.local.set({ [LOCAL_STORAGE_KEY_OPTIONS]: settings });
-    setSettingsMessage('Saved');
-    void refreshContextUsage({ force: true });
+    try {
+      await chrome.storage.local.set({ [LOCAL_STORAGE_KEY_OPTIONS]: settings });
+      setSettingsMessage('Saved');
+      void refreshContextUsage({ force: true });
+    } catch (error) {
+      // Extension context invalidated - show error message
+      if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+        setSettingsMessage('Extension reloaded. Please refresh the page.');
+        return;
+      }
+      throw error;
+    }
   };
 
   const updateSettings = (next: Partial<Options>) => {
@@ -2230,9 +2306,18 @@ const Panel = () => {
         <div class="ageaf-panel__title">
           <img
             src={
-              typeof chrome !== 'undefined' && chrome.runtime?.getURL
-                ? `${chrome.runtime.getURL('icons/icon_128.png')}?v=${chrome.runtime.getManifest?.().version ?? 'dev'}`
-                : 'icons/icon_128.png'
+              (() => {
+                try {
+                  if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
+                    const url = chrome.runtime.getURL('icons/icon_128.png');
+                    const version = chrome.runtime.getManifest?.()?.version ?? 'dev';
+                    return `${url}?v=${version}`;
+                  }
+                } catch {
+                  // Extension context invalidated - fall back to relative path
+                }
+                return 'icons/icon_128.png';
+              })()
             }
             class="ageaf-panel__logo"
             style={{

@@ -124,11 +124,16 @@ window.ageafBridge = {
   insertAtCursor,
 };
 
-chrome.runtime.onMessage.addListener((request) => {
-  if (request?.type === 'ageaf:open-settings') {
-    window.dispatchEvent(new CustomEvent('ageaf:settings:open'));
-  }
-});
+try {
+  chrome.runtime.onMessage.addListener((request) => {
+    if (request?.type === 'ageaf:open-settings') {
+      window.dispatchEvent(new CustomEvent('ageaf:settings:open'));
+    }
+  });
+} catch (error) {
+  // Extension context invalidated - ignore silently
+  // This can happen if the extension is reloaded while the content script is running
+}
 
 updatePanelMount();
 
