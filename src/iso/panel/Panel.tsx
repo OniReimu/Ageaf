@@ -414,7 +414,9 @@ const Panel = () => {
         if (chatProvider === 'codex') {
           const metadata = await fetchCodexRuntimeMetadata(options);
           if (cancelled) return;
-          const models = metadata.models ?? [];
+          const models = (metadata.models ?? []).filter(
+            (model) => !model.value.includes('gpt-5.1')
+          );
           setRuntimeModels(models);
           const resolvedModel =
             metadata.currentModel ??
@@ -1128,7 +1130,11 @@ const Panel = () => {
     if (token && token in MODEL_DISPLAY) {
       return MODEL_DISPLAY[token].label;
     }
-    return model.displayName ?? DEFAULT_MODEL_LABEL;
+    const displayName = model.displayName ?? DEFAULT_MODEL_LABEL;
+    // Format: gpt -> GPT, codex -> Codex
+    return displayName
+      .replace(/\bgpt\b/gi, 'GPT')
+      .replace(/\bcodex\b/gi, 'Codex');
   };
 
   const getRuntimeModelDescription = (model: RuntimeModel) => {
@@ -1160,7 +1166,13 @@ const Panel = () => {
         (model) =>
           /sonnet/i.test(model.value) || /sonnet/i.test(model.displayName)
       );
-    return match ? getRuntimeModelLabel(match) : DEFAULT_MODEL_LABEL;
+    if (match) {
+      return getRuntimeModelLabel(match);
+    }
+    // Format fallback label: gpt -> GPT, codex -> Codex
+    return DEFAULT_MODEL_LABEL
+      .replace(/\bgpt\b/gi, 'GPT')
+      .replace(/\bcodex\b/gi, 'Codex');
   };
 
   const getSelectedThinkingMode = () => {

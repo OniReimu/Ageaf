@@ -845,6 +845,8 @@
 
 .ageaf-runtime__picker {
   position: relative;
+  flex-shrink: 0;
+  min-width: fit-content;
 }
 
 .ageaf-runtime__button {
@@ -852,6 +854,7 @@
   align-items: center;
   gap: 6px;
   height: 32px;
+  min-width: fit-content;
   border-radius: 999px;
   border: 1px solid rgba(57, 185, 138, 0.25);
   background: rgba(15, 20, 17, 0.8);
@@ -860,6 +863,7 @@
   font-size: 12px;
   cursor: pointer;
   box-sizing: border-box;
+  white-space: nowrap;
 }
 
 .ageaf-runtime__label {
