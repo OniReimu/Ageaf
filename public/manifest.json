@@ -12,6 +12,10 @@
   "web_accessible_resources": [
     {
       "resources": [
+        "icons/ageaf_logo.png",
+        "icons/icon_16.png",
+        "icons/icon_32.png",
+        "icons/icon_48.png",
         "icons/icon_128.png"
       ],
       "matches": [
@@ -23,7 +27,13 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Ageaf"
+    "default_title": "Ageaf",
+    "default_icon": {
+      "16": "icons/icon_16.png",
+      "32": "icons/icon_32.png",
+      "48": "icons/icon_48.png",
+      "128": "icons/icon_128.png"
+    }
   },
   "permissions": [
     "storage"

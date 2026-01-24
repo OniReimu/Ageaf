@@ -18,6 +18,8 @@ const common = {
     path: PATHS.build,
     // the filename template for entry chunks
     filename: '[name].js',
+    // ensure removed files in `public/` don't linger in `build/`
+    clean: true,
   },
   stats: {
     all: false,
