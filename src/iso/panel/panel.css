@@ -439,11 +439,13 @@
 
 .ageaf-message__quote-block {
   padding: 6px 8px;
+  padding-right: 32px;
   border-radius: 8px;
   background: rgba(18, 24, 20, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   color: rgba(233, 242, 236, 0.82);
   font-size: 12px;
+  position: relative;
 }
 
 .ageaf-message__quote-block p:last-child {
@@ -456,6 +458,71 @@
 
 .ageaf-message__quote-block p {
   display: block;
+}
+
+.ageaf-message__copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  background: rgba(9, 14, 11, 0.8);
+  color: rgba(233, 242, 236, 0.9);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: opacity 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.ageaf-message__quote-block:hover .ageaf-message__copy {
+  opacity: 1;
+}
+
+.ageaf-message__copy:hover:not(.is-disabled) {
+  background: rgba(57, 185, 138, 0.15);
+  border-color: rgba(57, 185, 138, 0.45);
+}
+
+.ageaf-message__copy.is-disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.ageaf-message__copy-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.ageaf-message__copy-check {
+  width: 14px;
+  height: 14px;
+}
+
+.ageaf-message__response-actions {
+  margin-top: 6px;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.ageaf-message__copy-response {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(9, 14, 11, 0.6);
+  color: rgba(233, 242, 236, 0.9);
+  font-size: 12px;
+}
+
+.ageaf-message__copy-response:hover {
+  background: rgba(9, 14, 11, 0.8);
 }
 
 

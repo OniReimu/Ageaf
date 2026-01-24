@@ -15,3 +15,6 @@ export function renderMarkdown(content: string) {
   return renderer.render(normalizeTaskLists(content));
 }
 
+export function parseMarkdown(content: string) {
+  return renderer.parse(normalizeTaskLists(content), {});
+}

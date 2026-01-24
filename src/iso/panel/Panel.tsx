@@ -16,7 +16,7 @@ import {
 import { getOptions } from '../../utils/helper';
 import { LOCAL_STORAGE_KEY_OPTIONS } from '../../constants';
 import { Options } from '../../types';
-import { renderMarkdown } from './markdown';
+import { parseMarkdown, renderMarkdown } from './markdown';
 import {
   ProviderId,
   StoredConversation,
@@ -43,6 +43,36 @@ const MAX_WIDTH = 560;
 const DEFAULT_MODEL_VALUE = 'sonnet';
 const DEFAULT_MODEL_LABEL = 'Sonnet';
 const INTERRUPTED_BY_USER_MARKER = 'INTERRUPTED BY USER';
+
+const CopyIcon = () => (
+  <svg
+    class="ageaf-message__copy-icon"
+    viewBox="0 0 20 20"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <rect x="6.5" y="3.5" width="10" height="12" rx="2" fill="currentColor" />
+    <rect x="3.5" y="6.5" width="10" height="12" rx="2" fill="currentColor" />
+  </svg>
+);
+
+const CheckIcon = () => (
+  <svg
+    class="ageaf-message__copy-check"
+    viewBox="0 0 20 20"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <path
+      d="M5 10.5l3.2 3.2L15 7.2"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </svg>
+);
 
 const PROVIDER_DISPLAY = {
   claude: { label: 'Anthropic' },
@@ -216,6 +246,7 @@ const Panel = () => {
   const [currentThinkingTokens, setCurrentThinkingTokens] = useState<number | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [yoloMode, setYoloMode] = useState(true);
+  const [copiedItems, setCopiedItems] = useState<Record<string, boolean>>({});
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(DEFAULT_WIDTH);
   const isDragging = useRef(false);
@@ -245,6 +276,7 @@ const Panel = () => {
   const chatProjectIdRef = useRef<string | null>(null);
   const chatConversationIdRef = useRef<string | null>(null);
   const chatStateRef = useRef<StoredProjectChat | null>(null);
+  const copyResetTimersRef = useRef<Record<string, number>>({});
   const chatSaveTimerRef = useRef<number | null>(null);
   const contextRefreshInFlightRef = useRef(false);
 
@@ -628,6 +660,46 @@ const Panel = () => {
 
   const ATTACHMENT_LABEL_REGEX = /^\[Attachment: .+ · \d+ lines\]$/;
 
+  const markCopied = (id: string) => {
+    setCopiedItems((current) => ({ ...current, [id]: true }));
+    const timers = copyResetTimersRef.current;
+    if (timers[id]) {
+      window.clearTimeout(timers[id]);
+    }
+    timers[id] = window.setTimeout(() => {
+      setCopiedItems((current) => {
+        const { [id]: _removed, ...rest } = current;
+        return rest;
+      });
+      delete timers[id];
+    }, 3000);
+  };
+
+  const copyToClipboard = async (text: string) => {
+    if (!text) return;
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // fall through to legacy copy
+      }
+    }
+
+    if (typeof document === 'undefined') return;
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'absolute';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return true;
+  };
+
   const extractQuotesFromHtml = (html: string) => {
     if (typeof document === 'undefined') {
       return { mainHtml: html, quotes: [] as string[] };
@@ -663,6 +735,11 @@ const Panel = () => {
           continue;
         }
 
+        if (element.tagName === 'PRE') {
+          quotes.push(element.outerHTML);
+          continue;
+        }
+
         if (element.tagName === 'P') {
           const text = element.textContent?.trim() ?? '';
           if (text === INTERRUPTED_BY_USER_MARKER) {
@@ -673,7 +750,6 @@ const Panel = () => {
             if (nextIndex !== -1) {
               const nextNode = nodes[nextIndex] as HTMLElement;
               if (nextNode.tagName === 'PRE') {
-                quotes.push(nextNode.outerHTML);
                 i = nextIndex;
                 continue;
               }
@@ -686,6 +762,45 @@ const Panel = () => {
     }
 
     return { mainHtml: mainContainer.innerHTML, quotes };
+  };
+
+  const extractQuoteCopyFromMarkdown = (markdown: string) => {
+    const tokens = parseMarkdown(markdown);
+    const lines = markdown.split(/\r\n|\n|\r/);
+    const copies: string[] = [];
+
+    const pushLines = (start: number, end: number) => {
+      if (start < 0 || end <= start || start >= lines.length) return;
+      copies.push(lines.slice(start, Math.min(end, lines.length)).join('\n'));
+    };
+
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i];
+      if (token.type === 'blockquote_open' && token.level === 0 && token.map) {
+        pushLines(token.map[0], token.map[1]);
+        continue;
+      }
+
+      if (token.type === 'fence' && token.level === 0) {
+        copies.push(token.content);
+        continue;
+      }
+
+      if (
+        token.type === 'inline' &&
+        token.level === 0 &&
+        ATTACHMENT_LABEL_REGEX.test(token.content.trim())
+      ) {
+        const fenceToken = tokens
+          .slice(i + 1)
+          .find((entry) => entry.type === 'fence' && entry.level === 0);
+        if (fenceToken) {
+          i = tokens.indexOf(fenceToken);
+        }
+      }
+    }
+
+    return copies;
   };
 
   const createChipId = () => {
@@ -934,6 +1049,7 @@ const Panel = () => {
 
   const renderMessageContent = (message: Message) => {
     const { mainHtml, quotes } = extractQuotesFromHtml(renderMarkdown(message.content));
+    const quoteCopies = extractQuoteCopyFromMarkdown(message.content);
     const hasMain = mainHtml.trim().length > 0;
 
     return (
@@ -947,13 +1063,35 @@ const Panel = () => {
         {quotes.length > 0 ? (
           <div class="ageaf-message__quote">
             <div class="ageaf-message__quote-body">
-              {quotes.map((quoteHtml, index) => (
-                <div
-                  class="ageaf-message__quote-block"
-                  key={`${message.id}-quote-${index}`}
-                  dangerouslySetInnerHTML={{ __html: quoteHtml }}
-                />
-              ))}
+              {quotes.map((quoteHtml, index) => {
+                const copyId = `${message.id}-quote-${index}`;
+                const copyText = quoteCopies[index] ?? '';
+                const copyDisabled = !copyText;
+                const isCopied = copiedItems[copyId];
+                return (
+                  <div class="ageaf-message__quote-block" key={`${message.id}-quote-${index}`}>
+                    <button
+                      class={`ageaf-message__copy ${copyDisabled ? 'is-disabled' : ''}`}
+                      type="button"
+                      aria-label="Copy quote"
+                      title="Copy quote"
+                      disabled={copyDisabled}
+                      onClick={() => {
+                        void (async () => {
+                          const success = await copyToClipboard(copyText);
+                          if (success) markCopied(copyId);
+                        })();
+                      }}
+                    >
+                      {isCopied ? <CheckIcon /> : <CopyIcon />}
+                    </button>
+                    <div
+                      class="ageaf-message__quote-content"
+                      dangerouslySetInnerHTML={{ __html: quoteHtml }}
+                    />
+                  </div>
+                );
+              })}
             </div>
           </div>
         ) : null}
@@ -2032,6 +2170,26 @@ const Panel = () => {
                 <div class="ageaf-message__status">{message.statusLine}</div>
               ) : null}
               {renderMessageContent(message)}
+              {message.role === 'assistant' ? (
+                <div class="ageaf-message__response-actions">
+                  <button
+                    class="ageaf-message__copy-response"
+                    type="button"
+                    aria-label="Copy response"
+                    title="Copy response"
+                    onClick={() => {
+                      const copyId = `${message.id}-response`;
+                      void (async () => {
+                        const success = await copyToClipboard(message.content);
+                        if (success) markCopied(copyId);
+                      })();
+                    }}
+                  >
+                    {copiedItems[`${message.id}-response`] ? <CheckIcon /> : <CopyIcon />}
+                    <span>Copy response</span>
+                  </button>
+                </div>
+              ) : null}
             </div>
           ))}
           {streamingStatus ? (
