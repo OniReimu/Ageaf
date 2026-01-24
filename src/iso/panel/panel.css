@@ -529,23 +529,20 @@
   position: absolute;
   top: 6px;
   right: 6px;
+  z-index: 2;
   width: 22px;
   height: 22px;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.20);
-  background: rgba(9, 14, 11, 0.8);
+  background: rgba(9, 14, 11, 0.92);
   color: rgba(233, 242, 236, 0.9);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  opacity: 0;
+  opacity: 1;
   pointer-events: auto;
   cursor: pointer;
-  transition: opacity 0.15s ease, background 0.15s ease, border-color 0.15s ease;
-}
-
-.ageaf-message__quote-block:hover .ageaf-message__copy {
-  opacity: 1;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .ageaf-message__copy:hover:not(.is-disabled) {

@@ -437,14 +437,30 @@ export async function loadProjectChat(projectId: string): Promise<StoredProjectC
   if (typeof chrome === 'undefined' || !chrome.storage?.local) {
     return createEmptyProjectChat();
   }
-  const key = getProjectChatStorageKey(projectId);
-  const data = await chrome.storage.local.get([key]);
-  const normalized = normalizeProjectChat(data[key]);
-  return normalized ?? createEmptyProjectChat();
+  try {
+    const key = getProjectChatStorageKey(projectId);
+    const data = await chrome.storage.local.get([key]);
+    const normalized = normalizeProjectChat(data[key]);
+    return normalized ?? createEmptyProjectChat();
+  } catch (error) {
+    // Extension context invalidated - return empty chat
+    if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+      return createEmptyProjectChat();
+    }
+    throw error;
+  }
 }
 
 export async function saveProjectChat(projectId: string, state: StoredProjectChat): Promise<void> {
   if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
-  const key = getProjectChatStorageKey(projectId);
-  await chrome.storage.local.set({ [key]: state });
+  try {
+    const key = getProjectChatStorageKey(projectId);
+    await chrome.storage.local.set({ [key]: state });
+  } catch (error) {
+    // Extension context invalidated - ignore silently
+    if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+      return;
+    }
+    throw error;
+  }
 }

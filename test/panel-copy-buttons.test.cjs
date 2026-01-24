@@ -29,3 +29,12 @@ test('Copy response action is left-aligned', () => {
   assert.match(contents, /ageaf-message__response-actions/);
   assert.match(contents, /justify-content:\s*flex-start/);
 });
+
+test('Panel suppresses unhandledrejection errors for extension reloads', () => {
+  const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
+  const contents = fs.readFileSync(panelPath, 'utf8');
+
+  assert.match(contents, /unhandledrejection/);
+  assert.match(contents, /event\.preventDefault/);
+  assert.match(contents, /Extension context invalidated/);
+});
