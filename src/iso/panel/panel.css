@@ -275,6 +275,8 @@
   background: rgba(0, 0, 0, 0.18);
   font-size: 12px;
   color: rgba(231, 239, 233, 0.86);
+  position: relative;
+  cursor: help;
 }
 
 .ageaf-provider__dot {
@@ -283,11 +285,74 @@
   border-radius: 50%;
   background: rgba(57, 185, 138, 0.9);
   box-shadow: 0 0 0 2px rgba(57, 185, 138, 0.2);
+  transition: background 0.2s ease, box-shadow 0.2s ease, border 0.2s ease;
 }
 
 .ageaf-provider--openai .ageaf-provider__dot {
   background: rgba(95, 160, 255, 0.9);
   box-shadow: 0 0 0 2px rgba(95, 160, 255, 0.2);
+}
+
+.ageaf-provider--disconnected.ageaf-provider--anthropic .ageaf-provider__dot {
+  border: 1px solid rgba(57, 185, 138, 0.9);
+  box-shadow: 0 0 0 0 rgba(57, 185, 138, 0.2);
+  animation: ageaf-provider-flash-anthropic 1.5s ease-in-out infinite;
+}
+
+.ageaf-provider--disconnected.ageaf-provider--openai .ageaf-provider__dot {
+  border: 1px solid rgba(95, 160, 255, 0.9);
+  box-shadow: 0 0 0 0 rgba(95, 160, 255, 0.2);
+  animation: ageaf-provider-flash-openai 1.5s ease-in-out infinite;
+}
+
+@keyframes ageaf-provider-flash-anthropic {
+  0%, 50% {
+    background: rgba(57, 185, 138, 0.9);
+    border-color: transparent;
+  }
+  25%, 75% {
+    background: transparent;
+    border-color: rgba(57, 185, 138, 0.9);
+  }
+}
+
+@keyframes ageaf-provider-flash-openai {
+  0%, 50% {
+    background: rgba(95, 160, 255, 0.9);
+    border-color: transparent;
+  }
+  25%, 75% {
+    background: transparent;
+    border-color: rgba(95, 160, 255, 0.9);
+  }
+}
+
+.ageaf-provider::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  background: #0f1411;
+  border: 1px solid var(--ageaf-panel-border);
+  color: var(--ageaf-panel-text);
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 1000;
+  max-width: 280px;
+  line-height: 1.4;
+  word-wrap: break-word;
+}
+
+.ageaf-provider:hover::after,
+.ageaf-provider:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .ageaf-panel__body {

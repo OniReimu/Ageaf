@@ -214,6 +214,11 @@ type HostToolsStatus = {
   remoteToggleAllowed: boolean;
 };
 
+type ConnectionHealth = {
+  hostConnected: boolean;
+  runtimeWorking: boolean;
+};
+
 const Panel = () => {
   const [collapsed, setCollapsed] = useState(false);
   const [width, setWidth] = useState(DEFAULT_WIDTH);
@@ -247,6 +252,12 @@ const Panel = () => {
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [yoloMode, setYoloMode] = useState(true);
   const [copiedItems, setCopiedItems] = useState<Record<string, boolean>>({});
+  const [connectionHealth, setConnectionHealth] = useState<ConnectionHealth>({
+    hostConnected: false,
+    runtimeWorking: false,
+  });
+  const lastHostOkAtRef = useRef(0);
+  const lastRuntimeOkAtRef = useRef(0);
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(DEFAULT_WIDTH);
   const isDragging = useRef(false);
@@ -283,6 +294,17 @@ const Panel = () => {
   const providerDisplay = PROVIDER_DISPLAY[chatProvider] ?? PROVIDER_DISPLAY.claude;
   const providerIndicatorClass =
     chatProvider === 'codex' ? 'ageaf-provider--openai' : 'ageaf-provider--anthropic';
+
+  const getConnectionHealthTooltip = () => {
+    if (!connectionHealth.hostConnected) {
+      return 'Host not running. Check if the host server is started.';
+    }
+    if (!connectionHealth.runtimeWorking) {
+      const cliName = chatProvider === 'codex' ? 'Codex CLI' : 'Claude Code CLI';
+      return `${cliName} not working. Check if CLI is installed and you are logged in.`;
+    }
+    return 'Connected';
+  };
 
   const getCachedStoredUsage = (
     conversation: StoredConversation | null,
@@ -373,6 +395,48 @@ const Panel = () => {
     };
   }, []);
 
+  const checkConnectionHealth = async () => {
+    const HEALTH_TTL_MS = 15_000;
+    const options = await getOptions();
+    const now = Date.now();
+    const isFresh = (timestamp: number) => now - timestamp < HEALTH_TTL_MS;
+
+    if (!options.hostUrl) {
+      setConnectionHealth({ hostConnected: false, runtimeWorking: false });
+      return;
+    }
+
+    try {
+      // Check host connection
+      const healthResponse = await fetch(new URL('/v1/health', options.hostUrl).toString());
+      if (healthResponse.ok) {
+        lastHostOkAtRef.current = now;
+      }
+    } catch {
+      // Host not reachable
+    }
+
+    const hostConnected = isFresh(lastHostOkAtRef.current);
+    let runtimeWorking = false;
+
+    if (hostConnected) {
+      // Verify the runtime responds (covers CLI install + auth via account login OR API key).
+      try {
+        if (chatProvider === 'codex') {
+          await fetchCodexRuntimeMetadata(options);
+        } else {
+          await fetchClaudeRuntimeMetadata(options);
+        }
+        lastRuntimeOkAtRef.current = now;
+      } catch {
+        // keep lastRuntimeOkAtRef as-is; TTL avoids false negatives during brief hiccups
+      }
+      runtimeWorking = isFresh(lastRuntimeOkAtRef.current);
+    }
+
+    setConnectionHealth({ hostConnected, runtimeWorking });
+  };
+
   useEffect(() => {
     let cancelled = false;
 
@@ -448,6 +512,10 @@ const Panel = () => {
           setCurrentThinkingMode(getThinkingModeIdForCodexEffort(effort));
           setCurrentThinkingTokens(null);
           setYoloMode((options.openaiApprovalPolicy ?? 'never') === 'never');
+          // Update connection health - runtime is working since we got metadata
+          const now = Date.now();
+          lastRuntimeOkAtRef.current = now;
+          setConnectionHealth({ hostConnected: true, runtimeWorking: true });
           void refreshContextUsage({ provider: 'codex', conversationId });
           return;
         }
@@ -462,6 +530,10 @@ const Panel = () => {
         );
         setCurrentThinkingTokens(metadata.maxThinkingTokens ?? options.claudeMaxThinkingTokens ?? null);
         setYoloMode(options.claudeYoloMode ?? true);
+        // Update connection health - runtime is working since we got metadata
+        const now = Date.now();
+        lastRuntimeOkAtRef.current = now;
+        setConnectionHealth({ hostConnected: true, runtimeWorking: true });
         void refreshContextUsage({ provider: 'claude', conversationId });
       } catch {
         if (cancelled) return;
@@ -484,9 +556,22 @@ const Panel = () => {
     };
 
     void loadRuntime();
+    // Check health immediately on mount/provider change
+    void checkConnectionHealth();
     return () => {
       cancelled = true;
     };
+  }, [chatProvider]);
+
+  // Periodically check connection health
+  useEffect(() => {
+    // Check immediately, then periodically
+    void checkConnectionHealth();
+    const interval = setInterval(() => {
+      void checkConnectionHealth();
+    }, 5000); // Check every 5 seconds
+
+    return () => clearInterval(interval);
   }, [chatProvider]);
 
   useEffect(() => {
@@ -1662,6 +1747,12 @@ const Panel = () => {
             };
 
       const { jobId } = await createJob(options, payload, { signal: abortController.signal });
+      // A successful job creation proves the host is reachable and the runtime is usable.
+      // Keep the indicator stable even if periodic health checks briefly fail.
+      const okNow = Date.now();
+      lastHostOkAtRef.current = okNow;
+      lastRuntimeOkAtRef.current = okNow;
+      setConnectionHealth({ hostConnected: true, runtimeWorking: true });
       activeJobIdRef.current = jobId;
       setToolRequests([]);
       setToolRequestInputs({});
@@ -2164,8 +2255,19 @@ const Panel = () => {
           </div>
         </div>
 	          <div
-	            class={`ageaf-provider ${providerIndicatorClass}`}
+	            class={`ageaf-provider ${providerIndicatorClass} ${
+	              !connectionHealth.hostConnected || !connectionHealth.runtimeWorking
+	                ? 'ageaf-provider--disconnected'
+	                : ''
+	            } ${
+	              !connectionHealth.hostConnected
+	                ? 'ageaf-provider--host-disconnected'
+	                : !connectionHealth.runtimeWorking
+	                  ? 'ageaf-provider--runtime-disconnected'
+	                  : ''
+	            }`}
 	            aria-label={`Provider: ${providerDisplay.label}`}
+	            data-tooltip={getConnectionHealthTooltip()}
 	          >
 	            <span class="ageaf-provider__dot" aria-hidden="true" />
 	            <span class="ageaf-provider__label">{providerDisplay.label}</span>
