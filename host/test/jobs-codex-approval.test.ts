@@ -102,7 +102,7 @@ test('Codex approval requests can be responded to', async () => {
 
           if (parsed.event === 'tool_call' && parsed.data?.requestId != null) {
             approvalRequestId = parsed.data.requestId;
-            const respondResponse = await fetch(
+            const respondResponse: globalThis.Response = await fetch(
               `http://127.0.0.1:${address.port}/v1/jobs/${jobId}/respond`,
               {
                 method: 'POST',

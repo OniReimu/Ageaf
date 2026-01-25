@@ -7,12 +7,14 @@ import {
   fetchClaudeRuntimeMetadata,
   fetchCodexRuntimeContextUsage,
   fetchCodexRuntimeMetadata,
+  fetchHostHealth,
   fetchHostToolsStatus,
   respondToJobRequest,
   setHostToolsEnabled,
   streamJobEvents,
   updateClaudeRuntimePreferences,
 } from '../api/client';
+import type { NativeHostRequest, NativeHostResponse } from '../messaging/nativeProtocol';
 import { getOptions } from '../../utils/helper';
 import { LOCAL_STORAGE_KEY_OPTIONS } from '../../constants';
 import { Options } from '../../types';
@@ -257,6 +259,10 @@ const Panel = () => {
   const [settings, setSettings] = useState<Options | null>(null);
   const [settingsMessage, setSettingsMessage] = useState('');
   const [hostToolsStatus, setHostToolsStatus] = useState<HostToolsStatus | null>(null);
+  const [nativeStatus, setNativeStatus] = useState<'unknown' | 'available' | 'unavailable'>(
+    'unknown'
+  );
+  const [nativeStatusError, setNativeStatusError] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -276,6 +282,7 @@ const Panel = () => {
   });
   const lastHostOkAtRef = useRef(0);
   const lastRuntimeOkAtRef = useRef(0);
+  const lastCodexMetadataCheckAtRef = useRef(0);
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(DEFAULT_WIDTH);
   const isDragging = useRef(false);
@@ -415,21 +422,22 @@ const Panel = () => {
 
   const checkConnectionHealth = async () => {
     const HEALTH_TTL_MS = 15_000;
+    const CODEX_METADATA_CHECK_MS = 30_000;
     const options = await getOptions();
     const now = Date.now();
     const isFresh = (timestamp: number) => now - timestamp < HEALTH_TTL_MS;
 
-    if (!options.hostUrl) {
+    // Native mode doesn't require hostUrl
+    if (options.transport !== 'native' && !options.hostUrl) {
       setConnectionHealth({ hostConnected: false, runtimeWorking: false });
       return;
     }
 
+    let healthData: any = null;
     try {
-      // Check host connection
-      const healthResponse = await fetch(new URL('/v1/health', options.hostUrl).toString());
-      if (healthResponse.ok) {
-        lastHostOkAtRef.current = now;
-      }
+      // Check host connection (transport-aware)
+      healthData = await fetchHostHealth(options);
+      lastHostOkAtRef.current = now;
     } catch {
       // Host not reachable
     }
@@ -438,21 +446,81 @@ const Panel = () => {
     let runtimeWorking = false;
 
     if (hostConnected) {
-      // Verify the runtime responds (covers CLI install + auth via account login OR API key).
-      try {
-        if (chatProvider === 'codex') {
-          await fetchCodexRuntimeMetadata(options);
-        } else {
-          await fetchClaudeRuntimeMetadata(options);
+      if (chatProvider === 'claude') {
+        // IMPORTANT: do NOT call /v1/runtime/claude/metadata here.
+        // That path can trigger "List available models" queries, which may consume tokens.
+        // Instead, use the lightweight /v1/health signal + "last successful job" stickiness.
+        const configured = Boolean(healthData?.claude?.configured);
+        if (configured) {
+          lastRuntimeOkAtRef.current = now;
         }
-        lastRuntimeOkAtRef.current = now;
-      } catch {
-        // keep lastRuntimeOkAtRef as-is; TTL avoids false negatives during brief hiccups
+        runtimeWorking = configured || isFresh(lastRuntimeOkAtRef.current);
+      } else {
+        // Codex metadata is local CLI-backed and does not consume LLM tokens, but starting the
+        // app-server repeatedly is still expensive. Throttle these checks.
+        const shouldCheckCodex =
+          now - lastCodexMetadataCheckAtRef.current > CODEX_METADATA_CHECK_MS ||
+          !isFresh(lastRuntimeOkAtRef.current);
+        if (shouldCheckCodex) {
+          lastCodexMetadataCheckAtRef.current = now;
+          try {
+            await fetchCodexRuntimeMetadata(options);
+            lastRuntimeOkAtRef.current = now;
+          } catch {
+            // keep lastRuntimeOkAtRef as-is; TTL avoids brief flicker
+          }
+        }
+        runtimeWorking = isFresh(lastRuntimeOkAtRef.current);
       }
-      runtimeWorking = isFresh(lastRuntimeOkAtRef.current);
     }
 
     setConnectionHealth({ hostConnected, runtimeWorking });
+  };
+
+  const checkNativeHost = async () => {
+    setNativeStatusError(null);
+
+    const request: NativeHostRequest = {
+      id: crypto.randomUUID(),
+      kind: 'request',
+      request: { method: 'GET', path: '/v1/health' },
+    };
+
+    try {
+      const response = await new Promise<NativeHostResponse>((resolve, reject) => {
+        const timeoutMs = 2_000;
+        const timeoutId = setTimeout(() => {
+          reject(new Error('native check timed out'));
+        }, timeoutMs);
+
+        chrome.runtime.sendMessage({ type: 'ageaf:native-request', request }, (message) => {
+          clearTimeout(timeoutId);
+
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError?.message) {
+            reject(new Error(runtimeError.message));
+            return;
+          }
+
+          resolve(message as NativeHostResponse);
+        });
+      });
+
+      if (response.kind === 'response' && response.status >= 200 && response.status < 300) {
+        setNativeStatus('available');
+        return;
+      }
+
+      setNativeStatus('unavailable');
+      if (response.kind === 'error') {
+        setNativeStatusError(response.message);
+      } else {
+        setNativeStatusError(`Unexpected response kind: ${response.kind}`);
+      }
+    } catch (error) {
+      setNativeStatus('unavailable');
+      setNativeStatusError(error instanceof Error ? error.message : 'native check failed');
+    }
   };
 
   useEffect(() => {
@@ -532,6 +600,7 @@ const Panel = () => {
           setYoloMode((options.openaiApprovalPolicy ?? 'never') === 'never');
           // Update connection health - runtime is working since we got metadata
           const now = Date.now();
+          lastHostOkAtRef.current = now;
           lastRuntimeOkAtRef.current = now;
           setConnectionHealth({ hostConnected: true, runtimeWorking: true });
           void refreshContextUsage({ provider: 'codex', conversationId });
@@ -550,6 +619,7 @@ const Panel = () => {
         setYoloMode(options.claudeYoloMode ?? true);
         // Update connection health - runtime is working since we got metadata
         const now = Date.now();
+        lastHostOkAtRef.current = now;
         lastRuntimeOkAtRef.current = now;
         setConnectionHealth({ hostConnected: true, runtimeWorking: true });
         void refreshContextUsage({ provider: 'claude', conversationId });
@@ -2787,19 +2857,62 @@ const Panel = () => {
                   {settingsTab === 'connection' ? (
                     <div class="ageaf-settings__section">
                       <h3>Connection</h3>
-                      <label class="ageaf-settings__label" for="ageaf-host-url">
-                        Host URL
+                      <label class="ageaf-settings__label" for="ageaf-transport-mode">
+                        Transport
                       </label>
-                      <input
-                        id="ageaf-host-url"
+                      <select
+                        id="ageaf-transport-mode"
                         class="ageaf-settings__input"
-                        type="text"
-                        value={settings.hostUrl ?? ''}
-                        onInput={(event) =>
-                          updateSettings({ hostUrl: (event.target as HTMLInputElement).value })
+                        value={settings.transport ?? 'http'}
+                        onChange={(event) =>
+                          updateSettings({
+                            transport: (event.currentTarget as HTMLSelectElement).value as
+                              | 'http'
+                              | 'native',
+                          })
                         }
-                        placeholder="http://127.0.0.1:3210"
-                      />
+                      >
+                        <option value="http">HTTP</option>
+                        <option value="native" disabled>
+                          Native Messaging (experimental - disabled)
+                        </option>
+                      </select>
+                      {settings.transport !== 'native' ? (
+                        <>
+                          <label class="ageaf-settings__label" for="ageaf-host-url">
+                            Host URL
+                          </label>
+                          <input
+                            id="ageaf-host-url"
+                            class="ageaf-settings__input"
+                            type="text"
+                            value={settings.hostUrl ?? ''}
+                            onInput={(event) =>
+                              updateSettings({ hostUrl: (event.target as HTMLInputElement).value })
+                            }
+                            placeholder="http://127.0.0.1:3210"
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <p class="ageaf-settings__hint">
+                            Native messaging uses the installed companion app.
+                          </p>
+                          <p class="ageaf-settings__hint">
+                            Native host status: {nativeStatus}
+                          </p>
+                          {nativeStatusError ? (
+                            <p class="ageaf-settings__hint">Native host error: {nativeStatusError}</p>
+                          ) : null}
+                          <button
+                            type="button"
+                            class="ageaf-settings__button"
+                            onClick={checkNativeHost}
+                          >
+                            Retry
+                          </button>
+                        </>
+                      )}
                     </div>
                   ) : null}
                   {settingsTab === 'authentication' ? (

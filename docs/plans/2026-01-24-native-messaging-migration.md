@@ -144,20 +144,16 @@ import test from 'node:test';
 
 import { subscribeToJobEventsForTest, createJobForTest } from '../src/routes/jobs.js';
 
-test('subscribeToJobEvents replays history and ends when done', () => {
+test('subscribeToJobEvents replays history and allows unsubscribe', () => {
   const jobId = createJobForTest('claude');
   const events: Array<{ event: string; data: unknown }> = [];
-  let ended = false;
 
   const unsubscribe = subscribeToJobEventsForTest(jobId, {
     send: (event) => events.push(event),
-    end: () => {
-      ended = true;
-    },
+    end: () => {},
   });
 
   assert.ok(unsubscribe);
-  assert.equal(ended, false);
   assert.equal(events.length > 0, true);
 });
 ```
@@ -232,6 +228,7 @@ git commit -m "test: expose job event subscription helpers"
 
 **Files:**
 - Create: `host/src/nativeMessaging.ts`
+- Create: `host/src/native.ts`
 - Modify: `host/src/server.ts`
 - Test: `host/test/native-messaging-host.test.ts`
 
@@ -390,6 +387,19 @@ export function runNativeMessagingHost({
 }
 ```
 
+Create `host/src/native.ts` (the runnable stdio entrypoint used by Chrome’s native host manifest):
+```ts
+#!/usr/bin/env node
+import { buildServer } from './server.js';
+import { runNativeMessagingHost } from './nativeMessaging.js';
+
+// Prevent HTTP server auto-start
+process.env.AGEAF_START_SERVER = 'false';
+
+const server = buildServer();
+runNativeMessagingHost({ server });
+```
+
 Update `host/src/server.ts` to export the server builder for native usage (already exported) and add a note comment near the auto-start block if needed.
 
 **Step 4: Run test to verify it passes**
@@ -400,7 +410,7 @@ Expected: PASS.
 **Step 5: Commit**
 
 ```bash
-git add host/src/nativeMessaging.ts host/src/server.ts host/test/native-messaging-host.test.ts
+git add host/src/nativeMessaging.ts host/src/native.ts host/src/server.ts host/test/native-messaging-host.test.ts
 git commit -m "feat: add native messaging host entrypoint"
 ```
 
@@ -458,6 +468,7 @@ Create `host/scripts/build-native-manifest.mjs`:
 ```js
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const [extensionId, hostPath, outPath] = process.argv.slice(2);
 if (!extensionId || !hostPath || !outPath) {
@@ -465,12 +476,8 @@ if (!extensionId || !hostPath || !outPath) {
   process.exit(1);
 }
 
-const templatePath = path.join(
-  path.dirname(new URL(import.meta.url).pathname),
-  '..',
-  'native-messaging',
-  'manifest.template.json'
-);
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const templatePath = path.join(scriptDir, '..', 'native-messaging', 'manifest.template.json');
 const template = fs.readFileSync(templatePath, 'utf8');
 const output = template
   .replace(/__AGEAF_EXTENSION_ID__/g, extensionId)
@@ -481,7 +488,7 @@ fs.writeFileSync(outPath, output);
 
 Create `host/scripts/README-native.md` with usage instructions (examples only):
 
-```md
+````md
 # Native Messaging Manifest
 
 Example:
@@ -490,14 +497,14 @@ Example:
 node host/scripts/build-native-manifest.mjs <extension-id> <host-binary-path> \
   "$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.ageaf.host.json"
 ```
-```
+````
 
 Update `host/package.json` scripts:
 
 ```json
 {
   "scripts": {
-    "native": "tsx src/nativeMessaging.ts"
+    "native": "tsx src/native.ts"
   }
 }
 ```
@@ -581,34 +588,65 @@ let nativePort: chrome.runtime.Port | null = null;
 const pending = new Map<string, (response: NativeHostResponse) => void>();
 const streamPorts = new Map<string, chrome.runtime.Port>();
 
+function failPendingAndStreams(message: string) {
+  for (const [id, sendResponse] of pending.entries()) {
+    sendResponse({ id, kind: 'error', message });
+  }
+  pending.clear();
+
+  for (const [id, port] of streamPorts.entries()) {
+    try {
+      port.postMessage({ id, kind: 'error', message } satisfies NativeHostResponse);
+    } catch {
+      // ignore
+    }
+  }
+  streamPorts.clear();
+}
+
 function ensureNativePort() {
   if (nativePort) return nativePort;
-  nativePort = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-  nativePort.onMessage.addListener((message: NativeHostResponse) => {
-    const handler = pending.get(message.id);
-    if (handler) {
-      pending.delete(message.id);
-      handler(message);
-      return;
-    }
-    const streamPort = streamPorts.get(message.id);
-    if (streamPort) {
-      streamPort.postMessage(message);
-      if (message.kind === 'end' || message.kind === 'error') {
-        streamPorts.delete(message.id);
+
+  try {
+    const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+    nativePort = port;
+
+    port.onMessage.addListener((message: NativeHostResponse) => {
+      const handler = pending.get(message.id);
+      if (handler) {
+        pending.delete(message.id);
+        handler(message);
+        return;
       }
-    }
-  });
-  nativePort.onDisconnect.addListener(() => {
+      const streamPort = streamPorts.get(message.id);
+      if (streamPort) {
+        streamPort.postMessage(message);
+        if (message.kind === 'end' || message.kind === 'error') {
+          streamPorts.delete(message.id);
+        }
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      const errorMessage = chrome.runtime.lastError?.message ?? 'native_host_disconnected';
+      failPendingAndStreams(errorMessage);
+      nativePort = null;
+    });
+
+    return port;
+  } catch {
     nativePort = null;
-  });
-  return nativePort;
+    return null;
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'ageaf:native-request') {
-    const port = ensureNativePort();
     const request = message.request as NativeHostRequest;
+    const port = ensureNativePort();
+    if (!port) {
+      sendResponse({ id: request.id, kind: 'error', message: 'native_unavailable' });
+      return;
+    }
     pending.set(request.id, sendResponse);
     port.postMessage(request);
     return true;
@@ -619,6 +657,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'ageaf:native-stream') return;
   const native = ensureNativePort();
+  if (!native) {
+    port.onMessage.addListener((message: NativeHostRequest) => {
+      port.postMessage({ id: message.id, kind: 'error', message: 'native_unavailable' });
+      port.disconnect();
+    });
+    return;
+  }
   port.onMessage.addListener((message: NativeHostRequest) => {
     streamPorts.set(message.id, port);
     native.postMessage(message);
@@ -1073,9 +1118,21 @@ Create `src/iso/messaging/nativeTransport.ts`:
 import type { Options } from '../../types';
 import type { NativeHostRequest, NativeHostResponse } from './nativeProtocol';
 
-function sendNativeRequest(request: NativeHostRequest) {
+function sendNativeRequest(request: NativeHostRequest, options?: { timeoutMs?: number }) {
+  const timeoutMs = options?.timeoutMs ?? 20_000;
   return new Promise<NativeHostResponse>((resolve, reject) => {
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('native request timed out'));
+    }, timeoutMs);
+
     chrome.runtime.sendMessage({ type: 'ageaf:native-request', request }, (response) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+
       const error = chrome.runtime.lastError;
       if (error) {
         reject(new Error(error.message));
@@ -1097,24 +1154,82 @@ export function nativeTransport(_options: Options) {
       if (response.kind !== 'response') throw new Error('native createJob failed');
       return response.body as { jobId: string };
     },
-    async streamJobEvents(jobId: string, onEvent: (event: { event: string; data: unknown }) => void, request?: { signal?: AbortSignal }) {
-      const port = chrome.runtime.connect({ name: 'ageaf:native-stream' });
-      const requestId = crypto.randomUUID();
-      port.postMessage({
-        id: requestId,
-        kind: 'request',
-        request: { method: 'GET', path: `/v1/jobs/${jobId}/events`, stream: true },
-      } as NativeHostRequest);
+    async streamJobEvents(
+      jobId: string,
+      onEvent: (event: { event: string; data: unknown }) => void,
+      request?: { signal?: AbortSignal }
+    ) {
+      return new Promise<void>((resolve, reject) => {
+        const port = chrome.runtime.connect({ name: 'ageaf:native-stream' });
+        const requestId = crypto.randomUUID();
+        let finished = false;
 
-      const onMessage = (message: NativeHostResponse) => {
-        if (message.id !== requestId) return;
-        if (message.kind === 'event') onEvent(message.event);
-        if (message.kind === 'end') port.disconnect();
-        if (message.kind === 'error') throw new Error(message.message);
-      };
+        const cleanup = () => {
+          if (finished) return;
+          finished = true;
+          try {
+            port.onMessage.removeListener(onMessage);
+          } catch {
+            // ignore
+          }
+          try {
+            port.onDisconnect.removeListener(onDisconnect);
+          } catch {
+            // ignore
+          }
+          try {
+            port.disconnect();
+          } catch {
+            // ignore
+          }
+        };
 
-      port.onMessage.addListener(onMessage);
-      request?.signal?.addEventListener('abort', () => port.disconnect(), { once: true });
+        const onDisconnect = () => {
+          const error = chrome.runtime.lastError;
+          if (finished) return;
+          cleanup();
+          if (error?.message) {
+            reject(new Error(error.message));
+            return;
+          }
+          // If the port closes without an explicit end, treat it as an error.
+          reject(new Error('native stream disconnected'));
+        };
+
+        const onMessage = (message: NativeHostResponse) => {
+          if (message.id !== requestId) return;
+          if (message.kind === 'event') {
+            onEvent(message.event);
+            return;
+          }
+          if (message.kind === 'end') {
+            cleanup();
+            resolve();
+            return;
+          }
+          if (message.kind === 'error') {
+            cleanup();
+            reject(new Error(message.message));
+          }
+        };
+
+        port.onMessage.addListener(onMessage);
+        port.onDisconnect.addListener(onDisconnect);
+        request?.signal?.addEventListener(
+          'abort',
+          () => {
+            cleanup();
+            reject(new Error('aborted'));
+          },
+          { once: true }
+        );
+
+        port.postMessage({
+          id: requestId,
+          kind: 'request',
+          request: { method: 'GET', path: `/v1/jobs/${jobId}/events`, stream: true },
+        } as NativeHostRequest);
+      });
     },
     async respondToJobRequest(jobId: string, payload: unknown) {
       const response = await sendNativeRequest({
@@ -1246,7 +1361,7 @@ git commit -m "feat: add HTTP/native transport abstraction"
 
 ---
 
-### Task 7: Options + UI for transport + host detection
+### Task 7: Options + UI for transport
 
 **Files:**
 - Modify: `src/types.ts`
@@ -1332,7 +1447,7 @@ Update `src/iso/panel/Panel.tsx` connection settings UI:
 )}
 ```
 
-Add a minimal host detection action (e.g., button) that calls a new helper in `Panel.tsx` to send a native request to `/v1/health` via the transport and surfaces success/failure in `settingsMessage`.
+Keep host availability UI out of this task; add it in Task 9 so Task 7 stays focused on options + toggling between HTTP and Native.
 
 **Step 4: Run tests to verify they pass**
 
@@ -1434,7 +1549,7 @@ Expected: FAIL (strings missing).
 
 **Step 3: Write minimal implementation**
 
-Add a helper in `src/iso/api/httpClient.ts`:
+Add a helper in `src/iso/api/httpClient.ts` (if you didn’t already add it in Task 6 while extracting HTTP code):
 
 ```ts
 export async function fetchHostHealth(options: Options) {
@@ -1471,8 +1586,14 @@ async function checkNativeHost() {
   }
 }
 
-<p class="ageaf-settings__hint">Native host status: {nativeStatus}</p>
-<button type="button" class="ageaf-settings__button" onClick={checkNativeHost}>Retry</button>
+{settings.transport === 'native' ? (
+  <>
+    <p class="ageaf-settings__hint">Native host status: {nativeStatus}</p>
+    <button type="button" class="ageaf-settings__button" onClick={checkNativeHost}>
+      Retry
+    </button>
+  </>
+) : null}
 ```
 
 **Step 4: Run test to verify it passes**

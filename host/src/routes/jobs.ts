@@ -204,3 +204,54 @@ export function registerJobs(server: FastifyInstance) {
     });
   });
 }
+
+export function subscribeToJobEvents(jobId: string, subscriber: JobSubscriber) {
+  const job = jobs.get(jobId);
+  if (!job) return { ok: false as const, error: 'not_found' as const };
+
+  for (const event of job.events) subscriber.send(event);
+  if (job.done) {
+    subscriber.end();
+    return { ok: true as const, done: true as const };
+  }
+
+  job.subscribers.add(subscriber);
+  return {
+    ok: true as const,
+    done: false as const,
+    unsubscribe: () => job.subscribers.delete(subscriber),
+  };
+}
+
+// Test-only helpers
+export function createJobForTest(provider: 'claude' | 'codex') {
+  const id = crypto.randomUUID();
+  jobs.set(id, {
+    id,
+    events: [{ event: 'plan', data: { message: 'Job queued' } }],
+    subscribers: new Set(),
+    done: false,
+    provider,
+  });
+  return id;
+}
+
+export function createDoneJobForTest(provider: 'claude' | 'codex') {
+  const id = crypto.randomUUID();
+  jobs.set(id, {
+    id,
+    events: [
+      { event: 'plan', data: { message: 'Job queued' } },
+      { event: 'done', data: { status: 'complete' } },
+    ],
+    subscribers: new Set(),
+    done: true,
+    provider,
+  });
+  return id;
+}
+
+export function subscribeToJobEventsForTest(jobId: string, subscriber: JobSubscriber) {
+  const result = subscribeToJobEvents(jobId, subscriber);
+  return result.ok && !result.done ? result.unsubscribe : undefined;
+}

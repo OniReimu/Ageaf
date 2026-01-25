@@ -4,15 +4,15 @@ const path = require('node:path');
 const test = require('node:test');
 
 test('ISO API client supports job creation and event streaming', () => {
-  const clientPath = path.join(
+  const httpClientPath = path.join(
     __dirname,
     '..',
     'src',
     'iso',
     'api',
-    'client.ts'
+    'httpClient.ts'
   );
-  const contents = fs.readFileSync(clientPath, 'utf8');
+  const contents = fs.readFileSync(httpClientPath, 'utf8');
 
   assert.match(contents, /createJob/);
   assert.match(contents, /streamJobEvents/);

@@ -31,6 +31,7 @@ export interface EditorContentState {
 };
 
 export interface Options {
+  transport?: 'http' | 'native';
   hostUrl?: string;
   claudeCliPath?: string;
   claudeEnvVars?: string;

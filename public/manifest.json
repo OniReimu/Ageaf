@@ -36,7 +36,8 @@
     }
   },
   "permissions": [
-    "storage"
+    "storage",
+    "nativeMessaging"
   ],
   "content_scripts": [
     {

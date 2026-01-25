@@ -171,11 +171,13 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
 
   const prompt = buildPrompt(payload);
   let done = false;
-  let resolveDone: (() => void) | null = null;
+  // Filled synchronously by the Promise executor below.
+  // (Promise executors run immediately.)
+  let resolveDone!: () => void;
   let unsubscribe = () => {};
 
   const donePromise = new Promise<void>((resolve) => {
-    resolveDone = resolve;
+    resolveDone = () => resolve();
     unsubscribe = appServer.subscribe((message) => {
       const method = typeof message.method === 'string' ? message.method : '';
       const params = message.params as any;
@@ -286,7 +288,7 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
       data: { status: 'error', message: errorMessage, threadId },
     });
     unsubscribe();
-    resolveDone?.();
+    resolveDone();
   }
 
   await donePromise;
