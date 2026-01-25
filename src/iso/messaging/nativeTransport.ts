@@ -1,6 +1,23 @@
 import type { Options } from '../../types';
 import type { NativeHostRequest, NativeHostResponse } from './nativeProtocol';
 
+function unwrapNativeResponse(response: NativeHostResponse): unknown {
+  if (response.kind === 'error') {
+    throw new Error(response.message);
+  }
+  if (response.kind !== 'response') {
+    throw new Error(`Unexpected response kind: ${response.kind}`);
+  }
+  if (response.status < 200 || response.status >= 300) {
+    const message =
+      typeof response.body === 'object' && response.body && 'message' in response.body
+        ? String((response.body as { message: unknown }).message)
+        : `Request failed with status ${response.status}`;
+    throw new Error(message);
+  }
+  return response.body;
+}
+
 function sendNativeRequest(request: NativeHostRequest, options?: { timeoutMs?: number }) {
   const timeoutMs = options?.timeoutMs ?? 20_000;
   return new Promise<NativeHostResponse>((resolve, reject) => {
@@ -8,6 +25,10 @@ function sendNativeRequest(request: NativeHostRequest, options?: { timeoutMs?: n
     const timeoutId = setTimeout(() => {
       if (settled) return;
       settled = true;
+      // Cancel the pending request in background
+      if (request.kind === 'request') {
+        chrome.runtime.sendMessage({ type: 'ageaf:native-cancel', requestId: request.id });
+      }
       reject(new Error('native request timed out'));
     }, timeoutMs);
 
@@ -34,8 +55,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'POST', path: '/v1/jobs', body: payload },
       });
-      if (response.kind !== 'response') throw new Error('native createJob failed');
-      return response.body as { jobId: string };
+      return unwrapNativeResponse(response) as { jobId: string };
     },
 
     async streamJobEvents(
@@ -122,8 +142,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'POST', path: `/v1/jobs/${jobId}/respond`, body: payload },
       });
-      if (response.kind !== 'response') throw new Error('native respond failed');
-      return response.body ?? {};
+      return unwrapNativeResponse(response) ?? {};
     },
 
     async fetchClaudeRuntimeMetadata() {
@@ -132,8 +151,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'GET', path: '/v1/runtime/claude/metadata' },
       });
-      if (response.kind !== 'response') throw new Error('native metadata failed');
-      return response.body;
+      return unwrapNativeResponse(response);
     },
 
     async fetchCodexRuntimeMetadata() {
@@ -142,8 +160,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'POST', path: '/v1/runtime/codex/metadata', body: {} },
       });
-      if (response.kind !== 'response') throw new Error('native metadata failed');
-      return response.body;
+      return unwrapNativeResponse(response);
     },
 
     async fetchHostToolsStatus() {
@@ -152,8 +169,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'GET', path: '/v1/host/tools' },
       });
-      if (response.kind !== 'response') throw new Error('native host tools failed');
-      return response.body;
+      return unwrapNativeResponse(response);
     },
 
     async setHostToolsEnabled(enabled: boolean) {
@@ -162,8 +178,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'POST', path: '/v1/host/tools', body: { enabled } },
       });
-      if (response.kind !== 'response') throw new Error('native host tools update failed');
-      return response.body;
+      return unwrapNativeResponse(response);
     },
 
     async updateClaudeRuntimePreferences(payload: {
@@ -175,8 +190,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'POST', path: '/v1/runtime/claude/preferences', body: payload },
       });
-      if (response.kind !== 'response') throw new Error('native preferences failed');
-      return response.body;
+      return unwrapNativeResponse(response);
     },
 
     async fetchClaudeRuntimeContextUsage() {
@@ -185,8 +199,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'GET', path: '/v1/runtime/claude/context?sessionScope=project' },
       });
-      if (response.kind !== 'response') throw new Error('native context failed');
-      return response.body;
+      return unwrapNativeResponse(response);
     },
 
     async fetchCodexRuntimeContextUsage(payload?: { threadId?: string }) {
@@ -199,8 +212,7 @@ export function nativeTransport(_options: Options) {
           body: payload ?? {},
         },
       });
-      if (response.kind !== 'response') throw new Error('native context failed');
-      return response.body;
+      return unwrapNativeResponse(response);
     },
 
     async fetchHostHealth() {
@@ -209,8 +221,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'GET', path: '/v1/health' },
       });
-      if (response.kind !== 'response') throw new Error('native health failed');
-      return response.body;
+      return unwrapNativeResponse(response);
     },
   };
 }

@@ -7,6 +7,7 @@ import {
   fetchClaudeRuntimeMetadata,
   fetchCodexRuntimeContextUsage,
   fetchCodexRuntimeMetadata,
+  fetchHostHealth,
   fetchHostToolsStatus,
   respondToJobRequest,
   setHostToolsEnabled,
@@ -421,19 +422,17 @@ const Panel = () => {
     const now = Date.now();
     const isFresh = (timestamp: number) => now - timestamp < HEALTH_TTL_MS;
 
-    if (!options.hostUrl) {
+    // Native mode doesn't require hostUrl
+    if (options.transport !== 'native' && !options.hostUrl) {
       setConnectionHealth({ hostConnected: false, runtimeWorking: false });
       return;
     }
 
     let healthData: any = null;
     try {
-      // Check host connection
-      const healthResponse = await fetch(new URL('/v1/health', options.hostUrl).toString());
-      if (healthResponse.ok) {
-        lastHostOkAtRef.current = now;
-        healthData = await healthResponse.json().catch(() => null);
-      }
+      // Check host connection (transport-aware)
+      healthData = await fetchHostHealth(options);
+      lastHostOkAtRef.current = now;
     } catch {
       // Host not reachable
     }

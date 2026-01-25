@@ -9,7 +9,9 @@ function applyOptionDefaults(input: Options): Options {
   if (options.transport !== 'http' && options.transport !== 'native') {
     options.transport = 'http';
   }
-  if (!options.hostUrl) options.hostUrl = 'http://127.0.0.1:3210';
+  if (options.transport !== 'native' && !options.hostUrl) {
+    options.hostUrl = 'http://127.0.0.1:3210';
+  }
   if (options.claudeLoadUserSettings === undefined) options.claudeLoadUserSettings = true;
   options.claudeSessionScope = 'project';
   if (options.claudeYoloMode === undefined) options.claudeYoloMode = true;

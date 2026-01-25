@@ -1,14 +1,19 @@
-export type NativeHostRequest = {
-  id: string;
-  kind: 'request';
-  request: {
-    method: 'GET' | 'POST';
-    path: string;
-    headers?: Record<string, string>;
-    body?: unknown;
-    stream?: boolean;
-  };
-};
+export type NativeHostRequest =
+  | {
+      id: string;
+      kind: 'request';
+      request: {
+        method: 'GET' | 'POST';
+        path: string;
+        headers?: Record<string, string>;
+        body?: unknown;
+        stream?: boolean;
+      };
+    }
+  | {
+      id: string;
+      kind: 'cancel';
+    };
 
 export type NativeHostResponse =
   | { id: string; kind: 'response'; status: number; body?: unknown; headers?: Record<string, string> }

@@ -36,7 +36,11 @@ function ensureNativePort() {
 
     // Drain all streaming ports with error
     for (const [id, port] of streamPorts.entries()) {
-      port.postMessage({ id, kind: 'error', message: errorMessage });
+      try {
+        port.postMessage({ id, kind: 'error', message: errorMessage });
+      } catch {
+        // Port may already be disconnected, ignore
+      }
     }
     streamPorts.clear();
 
@@ -52,6 +56,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     pending.set(request.id, sendResponse);
     port.postMessage(request);
     return true;
+  }
+  if (message?.type === 'ageaf:native-cancel') {
+    const requestId = message.requestId as string;
+    pending.delete(requestId);
+    return undefined;
   }
   return undefined;
 });

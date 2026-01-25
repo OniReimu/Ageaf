@@ -22,7 +22,14 @@ export function decodeNativeMessages(buffer: Buffer): {
     const payload = buffer
       .subarray(offset + 4, offset + 4 + length)
       .toString('utf8');
-    messages.push(JSON.parse(payload) as NativeMessage);
+
+    try {
+      messages.push(JSON.parse(payload) as NativeMessage);
+    } catch (error) {
+      console.error('Native messaging protocol: malformed JSON frame', error);
+      // Skip malformed frame and continue processing
+    }
+
     offset += 4 + length;
   }
 
