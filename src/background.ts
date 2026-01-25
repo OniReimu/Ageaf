@@ -26,6 +26,20 @@ function ensureNativePort() {
     }
   });
   nativePort.onDisconnect.addListener(() => {
+    const errorMessage = chrome.runtime.lastError?.message || 'Native host disconnected';
+
+    // Drain all pending requests with error
+    for (const [id, handler] of pending.entries()) {
+      handler({ id, kind: 'error', message: errorMessage });
+    }
+    pending.clear();
+
+    // Drain all streaming ports with error
+    for (const [id, port] of streamPorts.entries()) {
+      port.postMessage({ id, kind: 'error', message: errorMessage });
+    }
+    streamPorts.clear();
+
     nativePort = null;
   });
   return nativePort;

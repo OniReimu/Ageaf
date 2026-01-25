@@ -236,6 +236,21 @@ export function createJobForTest(provider: 'claude' | 'codex') {
   return id;
 }
 
+export function createDoneJobForTest(provider: 'claude' | 'codex') {
+  const id = crypto.randomUUID();
+  jobs.set(id, {
+    id,
+    events: [
+      { event: 'plan', data: { message: 'Job queued' } },
+      { event: 'done', data: { status: 'complete' } },
+    ],
+    subscribers: new Set(),
+    done: true,
+    provider,
+  });
+  return id;
+}
+
 export function subscribeToJobEventsForTest(jobId: string, subscriber: JobSubscriber) {
   const result = subscribeToJobEvents(jobId, subscriber);
   return result.ok && !result.done ? result.unsubscribe : undefined;
