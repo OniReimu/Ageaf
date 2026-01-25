@@ -33,6 +33,8 @@ export function buildServer() {
   return server;
 }
 
+// Auto-start HTTP server for development mode
+// Note: For native messaging, import buildServer() and use server.inject()
 if (process.env.AGEAF_START_SERVER !== 'false') {
   const server = buildServer();
   const port = Number(process.env.PORT ?? 3210);
