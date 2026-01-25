@@ -27,22 +27,18 @@ You must have either:
 ## Quick Start
 
 ### Local Development
+0. Under the project directory.
 
-1. Install dependencies:
+1. Install dependencies and build and load the extension:
    ```bash
    npm install
-   cd host && npm install
-   ```
-
-2. Start the host:
-   ```bash
-   cd host
-   npm run dev
-   ```
-
-3. Build and load the extension:
-   ```bash
    npm run watch
+   ```
+
+2. (A separate terminal) Install dependencies for the host and start the host:
+   ```bash
+   cd host && npm install
+   npm run dev
    ```
    
    Then load the unpacked extension:
