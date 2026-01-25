@@ -31,9 +31,17 @@ export function runNativeMessagingHost({
   output?: NodeJS.WritableStream;
 }) {
   let carry = Buffer.alloc(0);
+  const activeSubscriptions = new Map<string, () => void>();
 
   const send = (message: NativeHostResponse) => {
     output.write(encodeNativeMessage(message));
+  };
+
+  const cleanup = () => {
+    for (const unsubscribe of activeSubscriptions.values()) {
+      unsubscribe();
+    }
+    activeSubscriptions.clear();
   };
 
   input.on('data', async (chunk: Buffer) => {
@@ -56,12 +64,24 @@ export function runNativeMessagingHost({
 
         const subscription = subscribeToJobEvents(jobId, {
           send: (event) => send({ id: request.id, kind: 'event', event }),
-          end: () => send({ id: request.id, kind: 'end' }),
+          end: () => {
+            send({ id: request.id, kind: 'end' });
+            activeSubscriptions.delete(request.id);
+          },
         });
 
         if (!subscription.ok) {
           send({ id: request.id, kind: 'error', message: subscription.error });
+          continue;
         }
+
+        if (subscription.done) {
+          // Already completed, no cleanup needed
+          continue;
+        }
+
+        // Track subscription for cleanup
+        activeSubscriptions.set(request.id, subscription.unsubscribe);
         continue;
       }
 
@@ -81,11 +101,23 @@ export function runNativeMessagingHost({
           body = bodyText;
         }
 
+        // Normalize headers to string values only
+        const normalizedHeaders: Record<string, string> = {};
+        for (const [key, value] of Object.entries(reply.headers)) {
+          if (typeof value === 'string') {
+            normalizedHeaders[key] = value;
+          } else if (Array.isArray(value)) {
+            normalizedHeaders[key] = value.join(', ');
+          } else if (typeof value === 'number') {
+            normalizedHeaders[key] = String(value);
+          }
+        }
+
         send({
           id: request.id,
           kind: 'response',
           status: reply.statusCode,
-          headers: reply.headers as Record<string, string>,
+          headers: normalizedHeaders,
           body,
         });
       } catch (error) {
@@ -97,4 +129,8 @@ export function runNativeMessagingHost({
       }
     }
   });
+
+  input.on('end', cleanup);
+  input.on('close', cleanup);
+  input.on('error', cleanup);
 }
