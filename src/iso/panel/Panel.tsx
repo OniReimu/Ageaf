@@ -258,6 +258,9 @@ const Panel = () => {
   const [settings, setSettings] = useState<Options | null>(null);
   const [settingsMessage, setSettingsMessage] = useState('');
   const [hostToolsStatus, setHostToolsStatus] = useState<HostToolsStatus | null>(null);
+  const [nativeStatus, setNativeStatus] = useState<'unknown' | 'available' | 'unavailable'>(
+    'unknown'
+  );
   const [isSending, setIsSending] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -470,6 +473,16 @@ const Panel = () => {
     }
 
     setConnectionHealth({ hostConnected, runtimeWorking });
+  };
+
+  const checkNativeHost = async () => {
+    try {
+      const options = await getOptions();
+      await fetchHostHealth(options);
+      setNativeStatus('available');
+    } catch {
+      setNativeStatus('unavailable');
+    }
   };
 
   useEffect(() => {
@@ -2841,9 +2854,21 @@ const Panel = () => {
                           />
                         </>
                       ) : (
-                        <p class="ageaf-settings__hint">
-                          Native messaging uses the installed companion app.
-                        </p>
+                        <>
+                          <p class="ageaf-settings__hint">
+                            Native messaging uses the installed companion app.
+                          </p>
+                          <p class="ageaf-settings__hint">
+                            Native host status: {nativeStatus}
+                          </p>
+                          <button
+                            type="button"
+                            class="ageaf-settings__button"
+                            onClick={checkNativeHost}
+                          >
+                            Retry
+                          </button>
+                        </>
                       )}
                     </div>
                   ) : null}
