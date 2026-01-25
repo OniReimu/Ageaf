@@ -1,10 +1,12 @@
 # <img src="public/icons/icon_48.png" width="45" align="left"> Ageaf
 
-A browser extension for the Overleaf website with a Cursor-like agent panel.
+![Ageaf](assets/screenshot.png)
+
+Ageaf is an Chrome Plugin that adds an agent panel specifically to Overleaf, enabling Claude Code and Codex CLI features.
 
 ## Features
 
-- In-page agent chat panel
+- In-page agent panel
 - Rewrite selection
 - Fix compile errors
 - Bib cleanup and related content discovery
@@ -30,12 +32,17 @@ A browser extension for the Overleaf website with a Cursor-like agent panel.
    npm run watch
    ```
    
-   Then load the unpacked extension from `build/` in `chrome://extensions`
+   Then load the unpacked extension:
+   - Open Chrome and navigate to `chrome://extensions`
+   - Enable "Developer mode" (toggle in the top-right corner)
+   - Click "Load unpacked"
+   - Select the `build/` directory from this repository
+   - After making changes, click the reload icon on the extension card in `chrome://extensions`, then refresh your Overleaf tab
 
 ### Distribution (macOS)
 
 See [docs/macos-distribution.md](docs/macos-distribution.md) for building and distributing the `.pkg` installer.
 
----
+## License
 
-This project was bootstrapped with [Chrome Extension CLI](https://github.com/dutiyesh/chrome-extension-cli)
+MIT License. See [LICENSE](LICENSE) for details.
