@@ -10,6 +10,7 @@ export type {
   HostToolsStatus,
   ClaudeContextUsageResponse,
   CodexContextUsageResponse,
+  HostHealthResponse,
 } from './httpClient';
 
 export { JobEvent };

@@ -17,7 +17,6 @@ async function readOneMessage(stream: PassThrough) {
 }
 
 test('native messaging host answers health requests', async () => {
-  // Note: Run with AGEAF_START_SERVER=false to prevent auto-start
   const server = buildServer();
 
   const input = new PassThrough();

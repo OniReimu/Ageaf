@@ -25,3 +25,19 @@ test('native messaging protocol buffers partial frames', () => {
   assert.deepEqual(secondPass.messages, [input]);
   assert.equal(secondPass.carry.length, 0);
 });
+
+test('native messaging protocol drops overlarge frames', () => {
+  const originalConsoleError = console.error;
+  console.error = () => {};
+
+  const header = Buffer.alloc(4);
+  header.writeUInt32LE(0xffffffff, 0);
+
+  try {
+    const { messages, carry } = decodeNativeMessages(header);
+    assert.deepEqual(messages, []);
+    assert.equal(carry.length, 0);
+  } finally {
+    console.error = originalConsoleError;
+  }
+});

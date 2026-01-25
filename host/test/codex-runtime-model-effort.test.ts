@@ -31,7 +31,7 @@ test('Codex runtime forwards model and reasoning effort when provided', async ()
     const deltas = events.filter((event) => event.event === 'delta');
     assert.ok(deltas.length > 0, 'expected delta events');
     assert.equal(
-      deltas.map((event) => String(event.data?.text ?? '')).join(''),
+      deltas.map((event) => String((event.data as any)?.text ?? '')).join(''),
       'Hello from Codex [model=gpt-5.2 effort=xhigh]'
     );
   } finally {

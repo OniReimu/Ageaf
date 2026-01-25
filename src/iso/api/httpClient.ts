@@ -322,5 +322,13 @@ export async function fetchHostHealth(options: Options) {
   if (!response.ok) {
     throw new Error(`Host health request failed (${response.status})`);
   }
-  return response.json() as Promise<{ status: string }>;
+  return response.json() as Promise<HostHealthResponse>;
 }
+
+export type HostHealthResponse = {
+  status: string;
+  // Present on current host implementation; optional for forwards/backwards compatibility.
+  claude?: {
+    configured?: boolean;
+  };
+};

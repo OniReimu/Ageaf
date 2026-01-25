@@ -46,9 +46,15 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+.context/
 .cache/
 .parcel-cache/
 .turbo/
 
 # Git
 .worktrees/
+
+# Agent planning artifacts
+progress.md
+findings.md
+task_plan.md

@@ -1,5 +1,16 @@
 import type { Options } from '../../types';
 import type { NativeHostRequest, NativeHostResponse } from './nativeProtocol';
+import type { Transport } from './transport';
+import type {
+  ClaudeContextUsageResponse,
+  ClaudeRuntimeMetadata,
+  CodexContextUsageResponse,
+  CodexRuntimeMetadata,
+  HostHealthResponse,
+  HostToolsStatus,
+  JobPayload,
+} from '../api/httpClient';
+import type { JobEvent } from '../api/sse';
 
 function unwrapNativeResponse(response: NativeHostResponse): unknown {
   if (response.kind === 'error') {
@@ -47,9 +58,10 @@ function sendNativeRequest(request: NativeHostRequest, options?: { timeoutMs?: n
   });
 }
 
-export function nativeTransport(_options: Options) {
+export function nativeTransport(_options: Options): Transport {
+  const options = _options;
   return {
-    async createJob(payload: unknown) {
+    async createJob(payload: JobPayload) {
       const response = await sendNativeRequest({
         id: crypto.randomUUID(),
         kind: 'request',
@@ -60,7 +72,7 @@ export function nativeTransport(_options: Options) {
 
     async streamJobEvents(
       jobId: string,
-      onEvent: (event: { event: string; data: unknown }) => void,
+      onEvent: (event: JobEvent) => void,
       request?: { signal?: AbortSignal }
     ) {
       return new Promise<void>((resolve, reject) => {
@@ -136,7 +148,7 @@ export function nativeTransport(_options: Options) {
       });
     },
 
-    async respondToJobRequest(jobId: string, payload: unknown) {
+    async respondToJobRequest(jobId: string, payload: { requestId: number | string; result: unknown }) {
       const response = await sendNativeRequest({
         id: crypto.randomUUID(),
         kind: 'request',
@@ -151,16 +163,23 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'GET', path: '/v1/runtime/claude/metadata' },
       });
-      return unwrapNativeResponse(response);
+      return unwrapNativeResponse(response) as ClaudeRuntimeMetadata;
     },
 
     async fetchCodexRuntimeMetadata() {
       const response = await sendNativeRequest({
         id: crypto.randomUUID(),
         kind: 'request',
-        request: { method: 'POST', path: '/v1/runtime/codex/metadata', body: {} },
+        request: {
+          method: 'POST',
+          path: '/v1/runtime/codex/metadata',
+          body: {
+            cliPath: options.openaiCodexCliPath,
+            envVars: options.openaiEnvVars,
+          },
+        },
       });
-      return unwrapNativeResponse(response);
+      return unwrapNativeResponse(response) as CodexRuntimeMetadata;
     },
 
     async fetchHostToolsStatus() {
@@ -169,7 +188,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'GET', path: '/v1/host/tools' },
       });
-      return unwrapNativeResponse(response);
+      return unwrapNativeResponse(response) as HostToolsStatus;
     },
 
     async setHostToolsEnabled(enabled: boolean) {
@@ -178,7 +197,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'POST', path: '/v1/host/tools', body: { enabled } },
       });
-      return unwrapNativeResponse(response);
+      return unwrapNativeResponse(response) as { toolsEnabled: boolean };
     },
 
     async updateClaudeRuntimePreferences(payload: {
@@ -190,7 +209,12 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'POST', path: '/v1/runtime/claude/preferences', body: payload },
       });
-      return unwrapNativeResponse(response);
+      return unwrapNativeResponse(response) as {
+        currentModel: string | null;
+        modelSource?: string;
+        currentThinkingMode: string;
+        maxThinkingTokens: number | null;
+      };
     },
 
     async fetchClaudeRuntimeContextUsage() {
@@ -199,7 +223,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'GET', path: '/v1/runtime/claude/context?sessionScope=project' },
       });
-      return unwrapNativeResponse(response);
+      return unwrapNativeResponse(response) as ClaudeContextUsageResponse;
     },
 
     async fetchCodexRuntimeContextUsage(payload?: { threadId?: string }) {
@@ -209,10 +233,14 @@ export function nativeTransport(_options: Options) {
         request: {
           method: 'POST',
           path: '/v1/runtime/codex/context',
-          body: payload ?? {},
+          body: {
+            cliPath: options.openaiCodexCliPath,
+            envVars: options.openaiEnvVars,
+            threadId: payload?.threadId,
+          },
         },
       });
-      return unwrapNativeResponse(response);
+      return unwrapNativeResponse(response) as CodexContextUsageResponse;
     },
 
     async fetchHostHealth() {
@@ -221,7 +249,7 @@ export function nativeTransport(_options: Options) {
         kind: 'request',
         request: { method: 'GET', path: '/v1/health' },
       });
-      return unwrapNativeResponse(response);
+      return unwrapNativeResponse(response) as HostHealthResponse;
     },
   };
 }

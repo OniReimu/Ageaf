@@ -14,6 +14,7 @@ import {
   streamJobEvents,
   updateClaudeRuntimePreferences,
 } from '../api/client';
+import type { NativeHostRequest, NativeHostResponse } from '../messaging/nativeProtocol';
 import { getOptions } from '../../utils/helper';
 import { LOCAL_STORAGE_KEY_OPTIONS } from '../../constants';
 import { Options } from '../../types';
@@ -261,6 +262,7 @@ const Panel = () => {
   const [nativeStatus, setNativeStatus] = useState<'unknown' | 'available' | 'unavailable'>(
     'unknown'
   );
+  const [nativeStatusError, setNativeStatusError] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -476,12 +478,48 @@ const Panel = () => {
   };
 
   const checkNativeHost = async () => {
+    setNativeStatusError(null);
+
+    const request: NativeHostRequest = {
+      id: crypto.randomUUID(),
+      kind: 'request',
+      request: { method: 'GET', path: '/v1/health' },
+    };
+
     try {
-      const options = await getOptions();
-      await fetchHostHealth(options);
-      setNativeStatus('available');
-    } catch {
+      const response = await new Promise<NativeHostResponse>((resolve, reject) => {
+        const timeoutMs = 2_000;
+        const timeoutId = setTimeout(() => {
+          reject(new Error('native check timed out'));
+        }, timeoutMs);
+
+        chrome.runtime.sendMessage({ type: 'ageaf:native-request', request }, (message) => {
+          clearTimeout(timeoutId);
+
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError?.message) {
+            reject(new Error(runtimeError.message));
+            return;
+          }
+
+          resolve(message as NativeHostResponse);
+        });
+      });
+
+      if (response.kind === 'response' && response.status >= 200 && response.status < 300) {
+        setNativeStatus('available');
+        return;
+      }
+
       setNativeStatus('unavailable');
+      if (response.kind === 'error') {
+        setNativeStatusError(response.message);
+      } else {
+        setNativeStatusError(`Unexpected response kind: ${response.kind}`);
+      }
+    } catch (error) {
+      setNativeStatus('unavailable');
+      setNativeStatusError(error instanceof Error ? error.message : 'native check failed');
     }
   };
 
@@ -2834,8 +2872,10 @@ const Panel = () => {
                           })
                         }
                       >
-                        <option value="http">HTTP (dev)</option>
-                        <option value="native">Native Messaging (prod)</option>
+                        <option value="http">HTTP</option>
+                        <option value="native" disabled>
+                          Native Messaging (experimental - disabled)
+                        </option>
                       </select>
                       {settings.transport !== 'native' ? (
                         <>
@@ -2861,6 +2901,9 @@ const Panel = () => {
                           <p class="ageaf-settings__hint">
                             Native host status: {nativeStatus}
                           </p>
+                          {nativeStatusError ? (
+                            <p class="ageaf-settings__hint">Native host error: {nativeStatusError}</p>
+                          ) : null}
                           <button
                             type="button"
                             class="ageaf-settings__button"

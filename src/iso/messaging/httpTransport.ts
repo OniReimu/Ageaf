@@ -1,4 +1,5 @@
 import type { Options } from '../../types';
+import type { Transport } from './transport';
 import {
   createJob as httpCreateJob,
   streamJobEvents as httpStreamJobEvents,
@@ -14,7 +15,7 @@ import {
   type JobPayload,
 } from '../api/httpClient';
 
-export function httpTransport(options: Options) {
+export function httpTransport(options: Options): Transport {
   return {
     createJob: (
       payload: JobPayload,

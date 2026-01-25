@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Ageaf host wrapper - auto-detects mode based on stdin
+# Requires Node to be installed and available on PATH.
+if ! command -v node >/dev/null 2>&1; then
+  echo "ageaf-host: Node.js is required but was not found on PATH." >&2
+  echo "Install Node 20+ and retry." >&2
+  exit 127
+fi
+
+cd /usr/local/share/ageaf-host
+
+# If stdin is NOT a TTY (piped by Chrome), run native messaging mode
+# Otherwise (manual launch), run HTTP server mode
+if [[ ! -t 0 ]]; then
+  exec node dist/src/native.js
+else
+  exec node dist/src/start.js "$@"
+fi

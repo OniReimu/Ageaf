@@ -7,7 +7,7 @@
     "dev": "tsx watch src/start.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/start.js",
-    "test": "tsx --test",
+    "test": "tsx --test test/**/*.test.ts",
     "native": "tsx src/native.ts"
   },
   "dependencies": {

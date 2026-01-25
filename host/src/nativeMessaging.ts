@@ -30,7 +30,9 @@ export function runNativeMessagingHost({
   input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
 }) {
-  let carry = Buffer.alloc(0);
+  // Use the broad Buffer type to avoid ArrayBuffer vs SharedArrayBuffer generic mismatches
+  // across Node versions (subarray() can return Buffer<ArrayBufferLike>).
+  let carry: Buffer = Buffer.alloc(0) as Buffer;
   const activeSubscriptions = new Map<string, () => void>();
   let processingChain = Promise.resolve();
 
@@ -80,17 +82,19 @@ export function runNativeMessagingHost({
     }
 
     try {
-      const reply = await server.inject({
+      // Fastify's inject types can be overly broad/thenable depending on TS/Node libs.
+      // Treat the response as a minimal shape we need.
+      const reply = (await server.inject({
         method: request.request.method,
         url: request.request.path,
-        payload: request.request.body,
-        headers: request.request.headers,
-      });
+        payload: request.request.body as any,
+        headers: request.request.headers as any,
+      } as any)) as any;
 
-      const bodyText = reply.body;
+      const bodyText: string = typeof reply.body === 'string' ? reply.body : String(reply.body ?? '');
       let body: unknown = bodyText;
       try {
-        body = bodyText ? JSON.parse(bodyText) : undefined;
+        body = bodyText ? (JSON.parse(bodyText) as unknown) : undefined;
       } catch {
         body = bodyText;
       }
@@ -110,7 +114,7 @@ export function runNativeMessagingHost({
       send({
         id: request.id,
         kind: 'response',
-        status: reply.statusCode,
+        status: typeof reply.statusCode === 'number' ? reply.statusCode : 500,
         headers: normalizedHeaders,
         body,
       });
