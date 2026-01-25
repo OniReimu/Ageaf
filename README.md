@@ -11,6 +11,19 @@ Ageaf is an Chrome Plugin that adds an agent panel specifically to Overleaf, ena
 - Fix compile errors
 - Bib cleanup and related content discovery
 
+## Authentication & Requirements
+
+Ageaf integrates with [Claude Code](https://code.claude.com/docs/en/overview) and [Codex CLI](https://developers.openai.com/codex/cli) agents. Per the terms of service of Anthropic and OpenAI, authentication and subscription management are handled through their official entrypoints:
+
+- **Claude Code**: [https://code.claude.com/docs/en/overview](https://code.claude.com/docs/en/overview)
+- **Codex CLI**: [https://developers.openai.com/codex/cli](https://developers.openai.com/codex/cli)
+
+You must have either:
+- An official subscription (Claude Pro/Max/Teams/Enterprise or ChatGPT Plus/Pro/Business/Enterprise), or
+- Valid API keys
+
+**We strongly encourage using official subscriptions** for better cost-efficiency, higher token limits, and a seamless experience with Ageaf.
+
 ## Quick Start
 
 ### Local Development
