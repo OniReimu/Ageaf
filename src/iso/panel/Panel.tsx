@@ -276,6 +276,7 @@ const Panel = () => {
   });
   const lastHostOkAtRef = useRef(0);
   const lastRuntimeOkAtRef = useRef(0);
+  const lastCodexMetadataCheckAtRef = useRef(0);
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(DEFAULT_WIDTH);
   const isDragging = useRef(false);
@@ -415,6 +416,7 @@ const Panel = () => {
 
   const checkConnectionHealth = async () => {
     const HEALTH_TTL_MS = 15_000;
+    const CODEX_METADATA_CHECK_MS = 30_000;
     const options = await getOptions();
     const now = Date.now();
     const isFresh = (timestamp: number) => now - timestamp < HEALTH_TTL_MS;
@@ -424,11 +426,13 @@ const Panel = () => {
       return;
     }
 
+    let healthData: any = null;
     try {
       // Check host connection
       const healthResponse = await fetch(new URL('/v1/health', options.hostUrl).toString());
       if (healthResponse.ok) {
         lastHostOkAtRef.current = now;
+        healthData = await healthResponse.json().catch(() => null);
       }
     } catch {
       // Host not reachable
@@ -438,18 +442,32 @@ const Panel = () => {
     let runtimeWorking = false;
 
     if (hostConnected) {
-      // Verify the runtime responds (covers CLI install + auth via account login OR API key).
-      try {
-        if (chatProvider === 'codex') {
-          await fetchCodexRuntimeMetadata(options);
-        } else {
-          await fetchClaudeRuntimeMetadata(options);
+      if (chatProvider === 'claude') {
+        // IMPORTANT: do NOT call /v1/runtime/claude/metadata here.
+        // That path can trigger "List available models" queries, which may consume tokens.
+        // Instead, use the lightweight /v1/health signal + "last successful job" stickiness.
+        const configured = Boolean(healthData?.claude?.configured);
+        if (configured) {
+          lastRuntimeOkAtRef.current = now;
         }
-        lastRuntimeOkAtRef.current = now;
-      } catch {
-        // keep lastRuntimeOkAtRef as-is; TTL avoids false negatives during brief hiccups
+        runtimeWorking = configured || isFresh(lastRuntimeOkAtRef.current);
+      } else {
+        // Codex metadata is local CLI-backed and does not consume LLM tokens, but starting the
+        // app-server repeatedly is still expensive. Throttle these checks.
+        const shouldCheckCodex =
+          now - lastCodexMetadataCheckAtRef.current > CODEX_METADATA_CHECK_MS ||
+          !isFresh(lastRuntimeOkAtRef.current);
+        if (shouldCheckCodex) {
+          lastCodexMetadataCheckAtRef.current = now;
+          try {
+            await fetchCodexRuntimeMetadata(options);
+            lastRuntimeOkAtRef.current = now;
+          } catch {
+            // keep lastRuntimeOkAtRef as-is; TTL avoids brief flicker
+          }
+        }
+        runtimeWorking = isFresh(lastRuntimeOkAtRef.current);
       }
-      runtimeWorking = isFresh(lastRuntimeOkAtRef.current);
     }
 
     setConnectionHealth({ hostConnected, runtimeWorking });
@@ -532,6 +550,7 @@ const Panel = () => {
           setYoloMode((options.openaiApprovalPolicy ?? 'never') === 'never');
           // Update connection health - runtime is working since we got metadata
           const now = Date.now();
+          lastHostOkAtRef.current = now;
           lastRuntimeOkAtRef.current = now;
           setConnectionHealth({ hostConnected: true, runtimeWorking: true });
           void refreshContextUsage({ provider: 'codex', conversationId });
@@ -550,6 +569,7 @@ const Panel = () => {
         setYoloMode(options.claudeYoloMode ?? true);
         // Update connection health - runtime is working since we got metadata
         const now = Date.now();
+        lastHostOkAtRef.current = now;
         lastRuntimeOkAtRef.current = now;
         setConnectionHealth({ hostConnected: true, runtimeWorking: true });
         void refreshContextUsage({ provider: 'claude', conversationId });
@@ -2787,19 +2807,45 @@ const Panel = () => {
                   {settingsTab === 'connection' ? (
                     <div class="ageaf-settings__section">
                       <h3>Connection</h3>
-                      <label class="ageaf-settings__label" for="ageaf-host-url">
-                        Host URL
+                      <label class="ageaf-settings__label" for="ageaf-transport-mode">
+                        Transport
                       </label>
-                      <input
-                        id="ageaf-host-url"
+                      <select
+                        id="ageaf-transport-mode"
                         class="ageaf-settings__input"
-                        type="text"
-                        value={settings.hostUrl ?? ''}
-                        onInput={(event) =>
-                          updateSettings({ hostUrl: (event.target as HTMLInputElement).value })
+                        value={settings.transport ?? 'http'}
+                        onChange={(event) =>
+                          updateSettings({
+                            transport: (event.currentTarget as HTMLSelectElement).value as
+                              | 'http'
+                              | 'native',
+                          })
                         }
-                        placeholder="http://127.0.0.1:3210"
-                      />
+                      >
+                        <option value="http">HTTP (dev)</option>
+                        <option value="native">Native Messaging (prod)</option>
+                      </select>
+                      {settings.transport !== 'native' ? (
+                        <>
+                          <label class="ageaf-settings__label" for="ageaf-host-url">
+                            Host URL
+                          </label>
+                          <input
+                            id="ageaf-host-url"
+                            class="ageaf-settings__input"
+                            type="text"
+                            value={settings.hostUrl ?? ''}
+                            onInput={(event) =>
+                              updateSettings({ hostUrl: (event.target as HTMLInputElement).value })
+                            }
+                            placeholder="http://127.0.0.1:3210"
+                          />
+                        </>
+                      ) : (
+                        <p class="ageaf-settings__hint">
+                          Native messaging uses the installed companion app.
+                        </p>
+                      )}
                     </div>
                   ) : null}
                   {settingsTab === 'authentication' ? (

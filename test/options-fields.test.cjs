@@ -7,6 +7,7 @@ test('Settings modal includes Ageaf host and Claude fields', () => {
   const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
   const contents = fs.readFileSync(panelPath, 'utf8');
 
+  assert.match(contents, /ageaf-transport-mode/);
   assert.match(contents, /ageaf-host-url/);
   assert.doesNotMatch(contents, /ageaf-pairing-token/);
   assert.match(contents, /ageaf-claude-cli/);
