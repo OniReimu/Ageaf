@@ -105,10 +105,19 @@ export function registerJobs(server: FastifyInstance) {
       setLastClaudeRuntimeConfig(payload.runtime.claude);
     }
     if (provider === 'codex') {
+      const threadId = payload.runtime?.codex?.threadId;
+      const sessionCwd = threadId
+        ? path.join(os.homedir(), '.ageaf', 'codex', 'sessions', threadId.trim())
+        : ensureAgeafWorkspaceCwd();
+      try {
+        fs.mkdirSync(sessionCwd, { recursive: true });
+      } catch {
+        // ignore
+      }
       job.codex = {
         cliPath: payload.runtime?.codex?.cliPath,
         envVars: payload.runtime?.codex?.envVars,
-        cwd: ensureAgeafWorkspaceCwd(),
+        cwd: sessionCwd,
       };
     }
     reply.send({ jobId: id });

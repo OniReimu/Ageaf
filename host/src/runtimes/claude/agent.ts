@@ -40,6 +40,7 @@ export type ClaudeRuntimeConfig = {
   maxThinkingTokens?: number | null;
   yoloMode?: boolean;
   sessionScope?: 'project' | 'home';
+  conversationId?: string;
 };
 
 const PatchSchema = z.object({

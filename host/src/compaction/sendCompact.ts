@@ -29,6 +29,19 @@ function ensureAgeafWorkspaceCwd(): string {
   return workspace;
 }
 
+function getCodexSessionCwd(threadId?: string): string {
+  if (!threadId || !threadId.trim()) {
+    return ensureAgeafWorkspaceCwd();
+  }
+  const sessionDir = path.join(os.homedir(), '.ageaf', 'codex', 'sessions', threadId.trim());
+  try {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  } catch {
+    // ignore directory creation failures
+  }
+  return sessionDir;
+}
+
 export async function sendCompactCommand(
   provider: 'claude' | 'codex',
   payload: any,
@@ -59,17 +72,17 @@ async function sendCodexCompact(
   runtime: CodexRuntimeConfig | undefined,
   emitEvent: EmitEvent
 ): Promise<void> {
-  const cwd = ensureAgeafWorkspaceCwd();
+  const threadId = typeof runtime?.threadId === 'string' ? runtime.threadId.trim() : '';
+  if (!threadId) {
+    throw new Error('No Codex thread to compact yet. Send a message first.');
+  }
+
+  const cwd = getCodexSessionCwd(threadId);
   const appServer = await getCodexAppServer({
     cliPath: runtime?.cliPath,
     envVars: runtime?.envVars,
     cwd,
   });
-
-  const threadId = typeof runtime?.threadId === 'string' ? runtime.threadId.trim() : '';
-  if (!threadId) {
-    throw new Error('No Codex thread to compact yet. Send a message first.');
-  }
 
   const approvalPolicy = normalizeApprovalPolicy(runtime?.approvalPolicy);
   const model =

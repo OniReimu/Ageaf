@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import {
   createJob,
+  deleteSession,
   fetchClaudeRuntimeContextUsage,
   fetchClaudeRuntimeMetadata,
   fetchCodexRuntimeContextUsage,
@@ -13,6 +14,7 @@ import {
   setHostToolsEnabled,
   streamJobEvents,
   updateClaudeRuntimePreferences,
+  type JobEvent,
 } from '../api/client';
 import type { NativeHostRequest, NativeHostResponse } from '../messaging/nativeProtocol';
 import { getOptions } from '../../utils/helper';
@@ -598,18 +600,18 @@ const Panel = () => {
           const metadata = await fetchCodexRuntimeMetadata(options);
           if (cancelled) return;
           const models = (metadata.models ?? []).filter(
-            (model) => !model.value.includes('gpt-5.1')
+            (model: RuntimeModel) => !model.value.includes('gpt-5.1')
           );
           setRuntimeModels(models);
           const resolvedModel =
             metadata.currentModel ??
-            models.find((model) => model.isDefault)?.value ??
+            models.find((model: RuntimeModel) => model.isDefault)?.value ??
             models[0]?.value ??
             null;
           setCurrentModel(resolvedModel);
           const selectedModel =
-            (resolvedModel ? models.find((model) => model.value === resolvedModel) : undefined) ??
-            models.find((model) => model.isDefault) ??
+            (resolvedModel ? models.find((model: RuntimeModel) => model.value === resolvedModel) : undefined) ??
+            models.find((model: RuntimeModel) => model.isDefault) ??
             models[0] ??
             null;
           const supportedEfforts: Array<{ reasoningEffort: string; description: string }> =
@@ -1683,6 +1685,7 @@ const Panel = () => {
       const runtimeModel = currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
       const runtimeThinkingTokens =
         currentThinkingTokens ?? options.claudeMaxThinkingTokens ?? null;
+      const conversationId = chatConversationIdRef.current;
       return {
         claude: {
           cliPath: options.claudeCliPath,
@@ -1692,6 +1695,7 @@ const Panel = () => {
           maxThinkingTokens: runtimeThinkingTokens ?? undefined,
           sessionScope: 'project' as const,
           yoloMode,
+          conversationId: conversationId ?? undefined,
         },
       };
     }
@@ -1734,7 +1738,7 @@ const Panel = () => {
 	        userSettings: { autoCompactEnabled: true },
 	      });
 
-	      await streamJobEvents(options, jobId, (event) => {
+	      await streamJobEvents(options, jobId, (event: JobEvent) => {
 	        if (event.event === 'usage') {
 	          const usedTokens = Number(event.data?.usedTokens ?? 0);
 	          const contextWindow = Number(event.data?.contextWindow ?? 0) || null;
@@ -2086,6 +2090,7 @@ const Panel = () => {
                   maxThinkingTokens: runtimeThinkingTokens ?? undefined,
                   sessionScope: 'project' as const,
                   yoloMode,
+                  conversationId: chatConversationIdRef.current ?? undefined,
           },
         },
         overleaf: { url: window.location.href },
@@ -2117,7 +2122,7 @@ const Panel = () => {
       setToolRequests([]);
       setToolRequestInputs({});
       setToolRequestBusy(false);
-      await streamJobEvents(options, jobId, (event) => {
+      await streamJobEvents(options, jobId, (event: JobEvent) => {
         if (interruptedRef.current) return;
 
         if (event.event === 'delta') {
@@ -2475,7 +2480,7 @@ const Panel = () => {
     scheduleChatSave();
   };
 
-  const onCloseSession = () => {
+  const onCloseSession = async () => {
     if (chatActionsDisabled) return;
     const projectId = chatProjectIdRef.current;
     const state = chatStateRef.current;
@@ -2485,6 +2490,16 @@ const Panel = () => {
     const currentConversation = findConversation(state, currentId);
     if (!currentConversation) return;
     const currentProvider = currentConversation.provider;
+
+    // Delete session directory and runtime state on the host
+    try {
+      const options = await getOptions();
+      await deleteSession(options, currentProvider, currentId);
+    } catch (error) {
+      console.error(`Failed to delete ${currentProvider} session ${currentId}:`, error);
+      // Continue with UI cleanup even if backend deletion fails
+    }
+
     const orderedBefore = getOrderedSessionIds(state);
     const currentIndex = Math.max(0, orderedBefore.indexOf(currentId));
     let nextState = deleteConversation(state, currentProvider, currentId);

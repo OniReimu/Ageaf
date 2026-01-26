@@ -45,6 +45,22 @@ function ensureAgeafWorkspaceCwd(): string {
   return workspace;
 }
 
+function getCodexSessionCwd(threadId?: string): string {
+  // If no threadId, use shared workspace
+  if (!threadId || !threadId.trim()) {
+    return ensureAgeafWorkspaceCwd();
+  }
+
+  // Per-thread session isolation under ~/.ageaf/codex/sessions/{threadId}
+  const sessionDir = path.join(os.homedir(), '.ageaf', 'codex', 'sessions', threadId.trim());
+  try {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  } catch {
+    // ignore directory creation failures
+  }
+  return sessionDir;
+}
+
 function extractThreadId(response: any): string | null {
   const candidate =
     response?.result?.threadId ??
@@ -98,7 +114,8 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
   }
 
   const runtime = payload.runtime?.codex ?? {};
-  const cwd = ensureAgeafWorkspaceCwd();
+  let threadId = typeof runtime.threadId === 'string' ? runtime.threadId.trim() : '';
+  const cwd = getCodexSessionCwd(threadId);
   const approvalPolicy = normalizeApprovalPolicy(runtime.approvalPolicy);
   const model =
     typeof runtime.model === 'string' && runtime.model.trim() ? runtime.model.trim() : null;
@@ -112,7 +129,6 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
     cwd,
   });
 
-  let threadId = runtime.threadId?.trim() || '';
   if (!threadId) {
     const threadResponse = await appServer.request('thread/start', {
       model,

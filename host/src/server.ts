@@ -4,6 +4,7 @@ import { registerHealth } from './routes/health.js';
 import { registerHostTools } from './routes/hostTools.js';
 import { registerJobs } from './routes/jobs.js';
 import { registerRuntime } from './routes/runtime.js';
+import registerSessionRoutes from './routes/sessions.js';
 
 export function buildServer() {
   const server = Fastify({ logger: false });
@@ -14,7 +15,7 @@ export function buildServer() {
       reply.header('Access-Control-Allow-Origin', origin);
       reply.header('Vary', 'Origin');
     }
-    reply.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    reply.header('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
     reply.header('Access-Control-Allow-Headers', 'content-type');
 
     if (request.method === 'OPTIONS') {
@@ -29,6 +30,7 @@ export function buildServer() {
   registerHostTools(server);
   registerJobs(server);
   registerRuntime(server);
+  void registerSessionRoutes(server);
 
   return server;
 }

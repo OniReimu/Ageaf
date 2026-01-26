@@ -28,5 +28,12 @@ export function getClaudeSessionCwd(runtime?: ClaudeRuntimeConfig): string {
     return os.homedir();
   }
 
+  // Per-conversation session isolation under ~/.ageaf/claude/sessions/{conversationId}
+  const conversationId = runtime?.conversationId?.trim();
+  if (conversationId) {
+    const sessionDir = path.join(os.homedir(), '.ageaf', 'claude', 'sessions', conversationId);
+    return ensureDirectory(sessionDir);
+  }
+
   return getAgeafWorkspaceCwd();
 }
