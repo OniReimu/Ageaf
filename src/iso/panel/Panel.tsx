@@ -348,14 +348,41 @@ const Panel = () => {
     chatProvider === 'codex' ? 'ageaf-provider--openai' : 'ageaf-provider--anthropic';
 
   const getConnectionHealthTooltip = () => {
+    let baseMessage = '';
     if (!connectionHealth.hostConnected) {
-      return 'Host not running. Check if the host server is started.';
-    }
-    if (!connectionHealth.runtimeWorking) {
+      baseMessage = 'Host not running. Check if the host server is started.';
+    } else if (!connectionHealth.runtimeWorking) {
       const cliName = chatProvider === 'codex' ? 'Codex CLI' : 'Claude Code CLI';
-      return `${cliName} not working. Check if CLI is installed and you are logged in.`;
+      baseMessage = `${cliName} not working. Check if CLI is installed and you are logged in.`;
+    } else {
+      baseMessage = 'Connected';
     }
-    return 'Connected';
+
+    // Add session ID if available
+    if (chatConversationIdRef.current) {
+      const conversationId = chatConversationIdRef.current;
+      const state = chatStateRef.current;
+      const conversation = state ? findConversation(state, conversationId) : null;
+      
+      let sessionId = '';
+      if (conversation?.provider === 'codex' && conversation?.providerState?.codex?.threadId) {
+        const threadId = conversation.providerState.codex.threadId;
+        sessionId = threadId.includes('-') ? threadId.split('-')[0] : threadId.slice(0, 8);
+      } else if (conversationId) {
+        if (conversationId.startsWith('conv-')) {
+          const parts = conversationId.split('-');
+          sessionId = parts.length > 2 ? parts[parts.length - 1].slice(0, 8) : conversationId.slice(-8);
+        } else {
+          sessionId = conversationId.includes('-') ? conversationId.split('-')[0] : conversationId.slice(0, 8);
+        }
+      }
+
+      if (sessionId) {
+        return `${baseMessage}\nSession: ${sessionId}`;
+      }
+    }
+
+    return baseMessage;
   };
 
   const getCachedStoredUsage = (
@@ -1727,9 +1754,9 @@ const Panel = () => {
       const codexThreadId = conversation?.providerState?.codex?.threadId;
       const codexModelCandidate = currentModel ?? null;
       const codexRuntimeModel =
-        codexModelCandidate
+        (codexModelCandidate
           ? runtimeModels.find((entry) => entry.value === codexModelCandidate)
-          : null ??
+          : null) ??
         runtimeModels.find((entry) => entry.isDefault) ??
         runtimeModels.find((entry) => entry.supportedReasoningEfforts !== undefined) ??
         runtimeModels[0] ??
@@ -2734,92 +2761,43 @@ const Panel = () => {
       </div>
       <div class="ageaf-panel__inner" id="ageaf-panel-inner">
       <header class="ageaf-panel__header">
-        <div class="ageaf-panel__title">
-          <img
-            src={
-              (() => {
-                try {
-                  if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
-                    const url = chrome.runtime.getURL('icons/icon_128.png');
-                    const version = chrome.runtime.getManifest?.()?.version ?? 'dev';
-                    return `${url}?v=${version}`;
-                  }
-                } catch {
-                  // Extension context invalidated - fall back to relative path
+        <img
+          src={
+            (() => {
+              try {
+                if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
+                  const url = chrome.runtime.getURL('icons/icon_128.png');
+                  const version = chrome.runtime.getManifest?.()?.version ?? 'dev';
+                  return `${url}?v=${version}`;
                 }
-                return 'icons/icon_128.png';
-              })()
-            }
-            class="ageaf-panel__logo"
-            style={{
-              width: '56px',
-              height: '56px',
-              background: 'transparent',
-              borderRadius: '0',
-              boxShadow: 'none',
-              objectFit: 'cover',
-              objectPosition: 'center',
-              display: 'block',
-            }}
-            alt="Ageaf Logo"
-          />
-          <div>
-            <div class="ageaf-panel__name">Ageaf</div>
-            <div class="ageaf-panel__tagline">
-              Ask me to rewrite, explain, or fix LaTeX errors.
-            </div>
-          </div>
+              } catch {
+                // Extension context invalidated - fall back to relative path
+              }
+              return 'icons/icon_128.png';
+            })()
+          }
+          class="ageaf-panel__logo"
+          alt="Ageaf Logo"
+        />
+        <div class="ageaf-panel__name">Ageaf</div>
+        <div
+          class={`ageaf-provider ${providerIndicatorClass} ${
+            !connectionHealth.hostConnected || !connectionHealth.runtimeWorking
+              ? 'ageaf-provider--disconnected'
+              : ''
+          } ${
+            !connectionHealth.hostConnected
+              ? 'ageaf-provider--host-disconnected'
+              : !connectionHealth.runtimeWorking
+                ? 'ageaf-provider--runtime-disconnected'
+                : ''
+          }`}
+          aria-label={`Provider: ${providerDisplay.label}`}
+          data-tooltip={getConnectionHealthTooltip()}
+        >
+          <span class="ageaf-provider__dot" aria-hidden="true" />
+          <span class="ageaf-provider__label">{providerDisplay.label}</span>
         </div>
-          <div class="ageaf-panel__header-right">
-	          <div
-	            class={`ageaf-provider ${providerIndicatorClass} ${
-	              !connectionHealth.hostConnected || !connectionHealth.runtimeWorking
-	                ? 'ageaf-provider--disconnected'
-	                : ''
-	            } ${
-	              !connectionHealth.hostConnected
-	                ? 'ageaf-provider--host-disconnected'
-	                : !connectionHealth.runtimeWorking
-	                  ? 'ageaf-provider--runtime-disconnected'
-	                  : ''
-	            }`}
-	            aria-label={`Provider: ${providerDisplay.label}`}
-	            data-tooltip={getConnectionHealthTooltip()}
-	          >
-	            <span class="ageaf-provider__dot" aria-hidden="true" />
-	            <span class="ageaf-provider__label">{providerDisplay.label}</span>
-	          </div>
-          {chatConversationIdRef.current ? (
-            <div class="ageaf-panel__session-id">
-              Session: {(() => {
-                const conversationId = chatConversationIdRef.current;
-                if (!conversationId) return '';
-                
-                // For Codex, show the threadId (matches session directory)
-                // For Claude, show the conversation ID
-                const state = chatStateRef.current;
-                const conversation = state
-                  ? findConversation(state, conversationId)
-                  : null;
-                
-                if (conversation?.provider === 'codex' && conversation?.providerState?.codex?.threadId) {
-                  const threadId = conversation.providerState.codex.threadId;
-                  // Show first segment of UUID or first 8 chars
-                  return threadId.includes('-') ? threadId.split('-')[0] : threadId.slice(0, 8);
-                }
-                
-                // For Claude or Codex without threadId yet, show conversation ID
-                const id = conversationId;
-                if (id.startsWith('conv-')) {
-                  const parts = id.split('-');
-                  // Show the random suffix (last part) - more unique than timestamp
-                  return parts.length > 2 ? parts[parts.length - 1].slice(0, 8) : id.slice(-8);
-                }
-                return id.includes('-') ? id.split('-')[0] : id.slice(0, 8);
-              })()}
-            </div>
-          ) : null}
-          </div>
       </header>
       <div class="ageaf-panel__body">
           <div class="ageaf-panel__chat" ref={chatRef}>
