@@ -310,6 +310,81 @@ const Panel = () => {
     claude?: { models: RuntimeModel[]; thinkingModes: ThinkingMode[]; fetchedAt: number };
     codex?: { models: RuntimeModel[]; thinkingModes: ThinkingMode[]; fetchedAt: number };
   }>({});
+
+  // Per-session runtime state for async job handling
+  type SessionRuntimeState = {
+    // Job execution state
+    isSending: boolean;
+    activeJobId: string | null;
+    abortController: AbortController | null;
+    interrupted: boolean;
+
+    // Message queue
+    queue: Array<{ text: string; timestamp: number }>;
+
+    // Streaming state
+    streamingText: string;
+    streamTokens: string[];
+    streamTimerId: number | null;
+
+    // Thinking state
+    thinkingTimerId: number | null;
+    thinkingStartTime: number | null;
+    thinkingComplete: boolean;
+
+    // Activity tracking
+    activityStartTime: number | null;
+    lastActivity: number;
+
+    // Pending completion
+    pendingDone: { status: string; message?: string } | null;
+  };
+
+  const sessionStates = useRef<Map<string, SessionRuntimeState>>(new Map());
+
+  // Create initial session state
+  const createInitialState = (): SessionRuntimeState => ({
+    isSending: false,
+    activeJobId: null,
+    abortController: null,
+    interrupted: false,
+    queue: [],
+    streamingText: '',
+    streamTokens: [],
+    streamTimerId: null,
+    thinkingTimerId: null,
+    thinkingStartTime: null,
+    thinkingComplete: false,
+    activityStartTime: null,
+    lastActivity: Date.now(),
+    pendingDone: null,
+  });
+
+  // Get or create session state
+  const getSessionState = (conversationId: string): SessionRuntimeState => {
+    if (!sessionStates.current.has(conversationId)) {
+      sessionStates.current.set(conversationId, createInitialState());
+    }
+    return sessionStates.current.get(conversationId)!;
+  };
+
+  // Get current active session state
+  const getCurrentSessionState = (): SessionRuntimeState => {
+    const id = chatConversationIdRef.current;
+    return id ? getSessionState(id) : createInitialState();
+  };
+
+  // Cleanup session state when closing
+  const cleanupSessionState = (conversationId: string) => {
+    const state = sessionStates.current.get(conversationId);
+    if (state) {
+      state.abortController?.abort();
+      if (state.streamTimerId != null) clearInterval(state.streamTimerId);
+      if (state.thinkingTimerId != null) clearInterval(state.thinkingTimerId);
+    }
+    sessionStates.current.delete(conversationId);
+  };
+
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(DEFAULT_WIDTH);
   const isDragging = useRef(false);
@@ -464,7 +539,11 @@ const Panel = () => {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        if (!isSendingRef.current && streamTimerRef.current == null) return;
+        // Check current session state, not global refs
+        const conversationId = chatConversationIdRef.current;
+        if (!conversationId) return;
+        const sessionState = getSessionState(conversationId);
+        if (!sessionState.isSending && sessionState.streamTimerId == null) return;
         event.preventDefault();
         interruptInFlightJob();
       }
@@ -924,8 +1003,6 @@ const Panel = () => {
     streamingTextRef.current = '';
     streamTokensRef.current = [];
     pendingDoneRef.current = null;
-    stopStreamTimer();
-    stopThinkingTimer();
 
     setContextUsageFromStored(getCachedStoredUsage(conversation, provider));
     void refreshContextUsage({ provider, conversationId: conversation.id });
@@ -1911,119 +1988,173 @@ const Panel = () => {
 
   const thinkingEnabled = currentThinkingMode !== 'off';
 
-  const stopThinkingTimer = () => {
-    if (thinkingTimerRef.current !== null) {
-      window.clearInterval(thinkingTimerRef.current);
-      thinkingTimerRef.current = null;
+  const stopThinkingTimer = (conversationId: string) => {
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.thinkingTimerId !== null) {
+      window.clearInterval(sessionState.thinkingTimerId);
+      sessionState.thinkingTimerId = null;
     }
   };
 
-  const startThinkingTimer = () => {
-    stopThinkingTimer();
-    lastThinkingSecondsRef.current = 0;
-    thinkingCompleteRef.current = false;
-    if (!thinkingEnabled) {
-      setStreamingState('Working · ESC to interrupt', true);
-      return;
+  const startThinkingTimer = (conversationId: string) => {
+    stopThinkingTimer(conversationId);
+    const sessionState = getSessionState(conversationId);
+    sessionState.thinkingStartTime = Date.now();
+    sessionState.thinkingComplete = false;
+
+    // Only update UI if this is the current session
+    if (conversationId === chatConversationIdRef.current) {
+      if (!thinkingEnabled) {
+        setStreamingState('Working · ESC to interrupt', true);
+      } else {
+        setStreamingState('Thinking 0s · ESC to interrupt', true);
+      }
     }
-    setStreamingState('Thinking 0s · ESC to interrupt', true);
-    thinkingTimerRef.current = window.setInterval(() => {
-      if (!activityStartRef.current) return;
-      const seconds = Math.max(0, Math.floor((Date.now() - activityStartRef.current) / 1000));
-      if (seconds !== lastThinkingSecondsRef.current) {
-        lastThinkingSecondsRef.current = seconds;
+
+    if (!thinkingEnabled) return;
+
+    sessionState.thinkingTimerId = window.setInterval(() => {
+      if (!sessionState.activityStartTime) return;
+      const seconds = Math.max(0, Math.floor((Date.now() - sessionState.activityStartTime) / 1000));
+
+      // Only update UI if this is still the current session
+      if (conversationId === chatConversationIdRef.current) {
         setStreamingStatus(`Thinking ${seconds}s · ESC to interrupt`);
       }
     }, 250);
   };
 
-  const markThinkingComplete = () => {
-    if (thinkingCompleteRef.current) return;
-    thinkingCompleteRef.current = true;
+  const markThinkingComplete = (conversationId: string) => {
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.thinkingComplete) return;
+    sessionState.thinkingComplete = true;
 
-    if (activityStartRef.current) {
-      lastThinkingSecondsRef.current = Math.max(
+    let thinkingSeconds = 0;
+    if (sessionState.activityStartTime) {
+      thinkingSeconds = Math.max(
         0,
-        Math.floor((Date.now() - activityStartRef.current) / 1000)
+        Math.floor((Date.now() - sessionState.activityStartTime) / 1000)
       );
     }
 
-    stopThinkingTimer();
-    if (!thinkingEnabled) {
-      setStreamingStatus('Responding · ESC to interrupt');
-      return;
-    }
-    setStreamingStatus(`Thought for ${lastThinkingSecondsRef.current}s · ESC to interrupt`);
-  };
+    stopThinkingTimer(conversationId);
 
-  const stopStreamTimer = () => {
-    if (streamTimerRef.current !== null) {
-      window.clearInterval(streamTimerRef.current);
-      streamTimerRef.current = null;
+    // Only update UI if this is the current session
+    if (conversationId === chatConversationIdRef.current) {
+      if (!thinkingEnabled) {
+        setStreamingStatus('Responding · ESC to interrupt');
+      } else {
+        setStreamingStatus(`Thought for ${thinkingSeconds}s · ESC to interrupt`);
+      }
     }
   };
 
-  const maybeFinalizeStream = () => {
-    if (!pendingDoneRef.current) return;
-    if (streamTokensRef.current.length > 0) return;
-
-    const pending = pendingDoneRef.current;
-    pendingDoneRef.current = null;
-    const finalText = streamingTextRef.current.trim();
-    stopThinkingTimer();
-    const duration = Math.max(0, lastThinkingSecondsRef.current);
-    const statusLine = thinkingEnabled ? `Thought for ${duration}s` : undefined;
-    activityStartRef.current = null;
-
-    if (pending.status === 'ok' && finalText) {
-      setMessages((prev) => [
-        ...prev,
-        createMessage({
-          role: 'assistant',
-          content: finalText,
-          ...(statusLine ? { statusLine } : {}),
-        }),
-      ]);
+  const stopStreamTimer = (conversationId: string) => {
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.streamTimerId !== null) {
+      window.clearInterval(sessionState.streamTimerId);
+      sessionState.streamTimerId = null;
     }
-    if (pending.status !== 'ok') {
-      const message = pending.message ?? 'Job failed';
-      setMessages((prev) => [...prev, createMessage({ role: 'system', content: message })]);
-    }
-
-    setStreamingText('');
-    streamingTextRef.current = '';
-    streamTokensRef.current = [];
-    stopStreamTimer();
-    setStreamingState(null, false);
-
-    if (chatProvider === 'claude') {
-      void refreshContextUsage();
-    }
-    finishJob();
   };
 
-  const startStreamTimer = () => {
-    if (streamTimerRef.current !== null) return;
-    streamTimerRef.current = window.setInterval(() => {
-      if (streamTokensRef.current.length === 0) {
-        if (pendingDoneRef.current) {
-          maybeFinalizeStream();
+  const maybeFinalizeStream = (conversationId: string, provider: ProviderId) => {
+    const sessionState = getSessionState(conversationId);
+    if (!sessionState.pendingDone) return;
+    if (sessionState.streamTokens.length > 0) return;
+
+    const pending = sessionState.pendingDone;
+    sessionState.pendingDone = null;
+    const finalText = sessionState.streamingText.trim();
+    stopThinkingTimer(conversationId);
+
+    let thinkingSeconds = 0;
+    if (sessionState.activityStartTime) {
+      thinkingSeconds = Math.max(
+        0,
+        Math.floor((Date.now() - sessionState.activityStartTime) / 1000)
+      );
+    }
+    const statusLine = thinkingEnabled ? `Thought for ${thinkingSeconds}s` : undefined;
+    sessionState.activityStartTime = null;
+
+    // Always persist messages to stored conversation (even if background)
+    const state = chatStateRef.current;
+    if (state) {
+      const conversation = findConversation(state, conversationId);
+      if (conversation) {
+        let updatedMessages = [...conversation.messages];
+
+        if (pending.status === 'ok' && finalText) {
+          updatedMessages.push({
+            role: 'assistant' as const,
+            content: finalText,
+            ...(statusLine ? { statusLine } : {}),
+          });
+        }
+        if (pending.status !== 'ok') {
+          const message = pending.message ?? 'Job failed';
+          updatedMessages.push({
+            role: 'system' as const,
+            content: message,
+          });
+        }
+
+        chatStateRef.current = setConversationMessages(
+          state,
+          conversation.provider,
+          conversationId,
+          updatedMessages
+        );
+        scheduleChatSave();
+
+        // Only update UI if this is the current session
+        if (conversationId === chatConversationIdRef.current) {
+          setMessages(updatedMessages.map(m => createMessage(m)));
+          setStreamingText('');
+          streamingTextRef.current = '';
+          stopStreamTimer(conversationId);
+          setStreamingState(null, false);
+
+          if (provider === 'claude') {
+            void refreshContextUsage();
+          }
+        }
+      }
+    }
+
+    finishSessionJob(conversationId);
+  };
+
+  const startStreamTimer = (conversationId: string, provider: ProviderId) => {
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.streamTimerId !== null) return;
+
+    sessionState.streamTimerId = window.setInterval(() => {
+      if (sessionState.streamTokens.length === 0) {
+        if (sessionState.pendingDone) {
+          maybeFinalizeStream(conversationId, provider);
         } else {
-          stopStreamTimer();
+          stopStreamTimer(conversationId);
         }
         return;
       }
-      const next = streamTokensRef.current.shift();
+      const next = sessionState.streamTokens.shift();
       if (!next) return;
-      streamingTextRef.current += next;
-      setStreamingText(streamingTextRef.current);
+      sessionState.streamingText += next;
+
+      // Only update UI if this is the current session
+      if (conversationId === chatConversationIdRef.current) {
+        streamingTextRef.current = sessionState.streamingText;
+        setStreamingText(sessionState.streamingText);
+      }
     }, 30);
   };
 
-  const enqueueStreamTokens = (text: string) => {
+  const enqueueStreamTokens = (conversationId: string, provider: ProviderId, text: string) => {
+    const sessionState = getSessionState(conversationId);
     const tokens = text.match(/\s+|[^\s]+/g) ?? [text];
-    streamTokensRef.current.push(...tokens);
-    startStreamTimer();
+    sessionState.streamTokens.push(...tokens);
+    startStreamTimer(conversationId, provider);
   };
 
   const setSending = (value: boolean) => {
@@ -2031,41 +2162,89 @@ const Panel = () => {
     setIsSending(value);
   };
 
-  const enqueueMessage = (text: string) => {
-    queueRef.current.push({ text });
-    setQueueCount(queueRef.current.length);
+  const enqueueMessage = (conversationId: string, text: string) => {
+    const sessionState = getSessionState(conversationId);
+    sessionState.queue.push({ text, timestamp: Date.now() });
+
+    // Update queue count for current session
+    if (conversationId === chatConversationIdRef.current) {
+      queueRef.current.push({ text });
+      setQueueCount(sessionState.queue.length);
+    }
   };
 
-  const dequeueMessage = () => {
-    const next = queueRef.current.shift();
-    setQueueCount(queueRef.current.length);
+  const dequeueMessage = (conversationId: string) => {
+    const sessionState = getSessionState(conversationId);
+    const next = sessionState.queue.shift();
+
+    // Update queue count for current session
+    if (conversationId === chatConversationIdRef.current) {
+      const nextGlobal = queueRef.current.shift();
+      setQueueCount(sessionState.queue.length);
+    }
+
     return next;
   };
 
-  const finishJob = () => {
-    abortControllerRef.current = null;
-    activeJobIdRef.current = null;
-    interruptedRef.current = false;
-    thinkingCompleteRef.current = false;
-    setToolRequests([]);
-    setToolRequestInputs({});
-    setToolRequestBusy(false);
-    setSending(false);
-    const next = dequeueMessage();
-    if (next) {
+  const finishSessionJob = (conversationId: string) => {
+    const sessionState = getSessionState(conversationId);
+
+    // Clear job state
+    sessionState.isSending = false;  // FIX: Must clear sending state
+    sessionState.abortController = null;
+    sessionState.activeJobId = null;
+    sessionState.interrupted = false;
+    sessionState.thinkingComplete = false;
+
+    // Update UI if this is the current session
+    if (conversationId === chatConversationIdRef.current) {
+      abortControllerRef.current = null;
+      activeJobIdRef.current = null;
+      interruptedRef.current = false;
+      thinkingCompleteRef.current = false;
+      setToolRequests([]);
+      setToolRequestInputs({});
+      setToolRequestBusy(false);
+      setSending(false);
+    }
+
+    // Process next queued message for this session
+    // NOTE: sendMessage will read current session refs, so only process queue if this IS the current session
+    const next = dequeueMessage(conversationId);
+    if (next && conversationId === chatConversationIdRef.current) {
       void sendMessage(next.text);
     }
   };
 
-  function interruptInFlightJob() {
-    if (interruptedRef.current) return;
-    if (!isSendingRef.current && streamTimerRef.current == null) return;
+  // Legacy wrapper for backward compatibility
+  const finishJob = () => {
+    const conversationId = chatConversationIdRef.current;
+    if (conversationId) {
+      finishSessionJob(conversationId);
+    }
+  };
 
+  function interruptCurrentSession() {
+    const conversationId = chatConversationIdRef.current;
+    if (!conversationId) return;
+
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.interrupted) return;
+    if (!sessionState.isSending && sessionState.streamTimerId == null) return;
+
+    sessionState.interrupted = true;
+    sessionState.isSending = false;
+    const controller = sessionState.abortController;
+
+    // Cleanup timers
+    stopThinkingTimer(conversationId);
+    stopStreamTimer(conversationId);
+    sessionState.streamTokens = [];
+    sessionState.pendingDone = null;
+
+    // Update UI
     interruptedRef.current = true;
     setSending(false);
-    const controller = abortControllerRef.current;
-    stopThinkingTimer();
-    stopStreamTimer();
     streamTokensRef.current = [];
     pendingDoneRef.current = null;
     setPatch(null);
@@ -2073,8 +2252,9 @@ const Panel = () => {
     setToolRequestInputs({});
     setToolRequestBusy(false);
     activeJobIdRef.current = null;
+    sessionState.activeJobId = null;
 
-    const partial = streamingTextRef.current.trim();
+    const partial = sessionState.streamingText.trim();
     const content = partial
       ? `${partial}\n\n${INTERRUPTED_BY_USER_MARKER}`
       : INTERRUPTED_BY_USER_MARKER;
@@ -2082,33 +2262,59 @@ const Panel = () => {
 
     setStreamingText('');
     streamingTextRef.current = '';
+    sessionState.streamingText = '';
     setStreamingState(null, false);
+
+    // Abort the job
     controller?.abort();
+    sessionState.abortController = null;
     abortControllerRef.current = null;
+
     if (!controller) {
-      finishJob();
+      finishSessionJob(conversationId);
     }
+  }
+
+  // Legacy wrapper for backward compatibility
+  function interruptInFlightJob() {
+    interruptCurrentSession();
   }
 
   const sendMessage = async (text: string) => {
     const bridge = window.ageafBridge;
     if (!bridge) return;
+
+    const conversationId = chatConversationIdRef.current;
+    if (!conversationId) return;
+
+    // TypeScript: conversationId is guaranteed non-null from this point
+    const sessionConversationId: string = conversationId;
     const provider = chatProvider;
+    const sessionState = getSessionState(sessionConversationId);
+
+    // Update session state
+    sessionState.isSending = true;
+    sessionState.interrupted = false;
+    sessionState.activityStartTime = Date.now();
+    sessionState.pendingDone = null;
+
+    const abortController = new AbortController();
+    sessionState.abortController = abortController;
+
+    // Update UI for current session
     scrollToBottom();
     setMessages((prev) => [...prev, createMessage({ role: 'user', content: text })]);
-
     setSending(true);
     setPatch(null);
     setStreamingText('');
     streamingTextRef.current = '';
     streamTokensRef.current = [];
     pendingDoneRef.current = null;
-    stopStreamTimer();
     activityStartRef.current = Date.now();
-    startThinkingTimer();
     interruptedRef.current = false;
-    const abortController = new AbortController();
     abortControllerRef.current = abortController;
+
+    startThinkingTimer(sessionConversationId);
 
     try {
       const selection = await bridge.requestSelection();
@@ -2117,11 +2323,10 @@ const Panel = () => {
         currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
       const runtimeThinkingTokens =
         currentThinkingTokens ?? options.claudeMaxThinkingTokens ?? null;
-      const conversationId = chatConversationIdRef.current;
       const state = chatStateRef.current;
       const conversation =
-        conversationId && state
-          ? findConversation(state, conversationId)
+        state
+          ? findConversation(state, sessionConversationId)
           : null;
 	      const codexThreadId =
 	        provider === 'codex'
@@ -2191,7 +2396,7 @@ const Panel = () => {
                   maxThinkingTokens: runtimeThinkingTokens ?? undefined,
                   sessionScope: 'project' as const,
                   yoloMode,
-                  conversationId: chatConversationIdRef.current ?? undefined,
+                  conversationId: sessionConversationId,
           },
         },
         overleaf: { url: window.location.href },
@@ -2219,18 +2424,22 @@ const Panel = () => {
       lastHostOkAtRef.current = okNow;
       lastRuntimeOkAtRef.current = okNow;
       setConnectionHealth({ hostConnected: true, runtimeWorking: true });
+
+      sessionState.activeJobId = jobId;
       activeJobIdRef.current = jobId;
       setToolRequests([]);
       setToolRequestInputs({});
       setToolRequestBusy(false);
+
       await streamJobEvents(options, jobId, (event: JobEvent) => {
-        if (interruptedRef.current) return;
+        // Check if job was interrupted
+        if (sessionState.interrupted) return;
 
         if (event.event === 'delta') {
           const deltaText = event.data?.text ?? '';
           if (deltaText) {
-            markThinkingComplete();
-            enqueueStreamTokens(deltaText);
+            markThinkingComplete(sessionConversationId);
+            enqueueStreamTokens(sessionConversationId, provider, deltaText);
           }
         }
 
@@ -2276,83 +2485,108 @@ const Panel = () => {
           const contextWindow = Number(event.data?.contextWindow ?? 0) || null;
           const normalized = normalizeContextUsage({ usedTokens, contextWindow });
           setContextUsage(normalized);
-          if (conversationId) {
-            const state = chatStateRef.current;
-            if (state) {
-              const nextUsage: StoredContextUsage = {
-                usedTokens: normalized.usedTokens,
-                contextWindow: normalized.contextWindow,
-                percentage: normalized.percentage ?? null,
-                updatedAt: Date.now(),
-              };
-              chatStateRef.current = setConversationContextUsage(
-                state,
-                provider,
-                conversationId,
-                nextUsage
-              );
-              scheduleChatSave();
-            }
+          const state = chatStateRef.current;
+          if (state) {
+            const nextUsage: StoredContextUsage = {
+              usedTokens: normalized.usedTokens,
+              contextWindow: normalized.contextWindow,
+              percentage: normalized.percentage ?? null,
+              updatedAt: Date.now(),
+            };
+            chatStateRef.current = setConversationContextUsage(
+              state,
+              provider,
+              sessionConversationId,
+              nextUsage
+            );
+            scheduleChatSave();
           }
           return;
         }
 
         if (event.event === 'patch') {
-          markThinkingComplete();
-          setPatch(event.data as Patch);
+          markThinkingComplete(sessionConversationId);
+          // Only update UI if this is the current session
+          if (sessionConversationId === chatConversationIdRef.current) {
+            setPatch(event.data as Patch);
+          }
         }
 
         if (event.event === 'done') {
-          markThinkingComplete();
+          markThinkingComplete(sessionConversationId);
           const status = event.data?.status ?? 'ok';
-          pendingDoneRef.current = {
+          sessionState.pendingDone = {
             status,
             message: event.data?.message,
           };
+          pendingDoneRef.current = sessionState.pendingDone;
           if (provider === 'codex') {
             const threadId = event.data?.threadId;
             if (typeof threadId === 'string' && threadId) {
               const projectId = chatProjectIdRef.current;
-              const conversationId = chatConversationIdRef.current;
               const state = chatStateRef.current;
-              if (projectId && conversationId && state) {
-                chatStateRef.current = setConversationCodexThreadId(state, conversationId, threadId);
+              if (projectId && state) {
+                chatStateRef.current = setConversationCodexThreadId(state, sessionConversationId, threadId);
                 scheduleChatSave();
               }
             }
           }
-          maybeFinalizeStream();
+          maybeFinalizeStream(sessionConversationId, provider);
         }
       }, { signal: abortController.signal });
     } catch (error) {
       const isAbortError =
-        interruptedRef.current &&
+        sessionState.interrupted &&
         error instanceof Error &&
         error.name === 'AbortError';
       if (isAbortError) {
+        // Update session state
+        sessionState.activityStartTime = null;
+        sessionState.pendingDone = null;
+        sessionState.streamTokens = [];
+        stopStreamTimer(sessionConversationId);
+        stopThinkingTimer(sessionConversationId);
+        sessionState.streamingText = '';
+
+        // Update UI if current session
+        if (sessionConversationId === chatConversationIdRef.current) {
+          setStreamingState(null, false);
+          activityStartRef.current = null;
+          pendingDoneRef.current = null;
+          streamTokensRef.current = [];
+          setStreamingText('');
+          streamingTextRef.current = '';
+        }
+        finishSessionJob(sessionConversationId);
+        return;
+      }
+
+      // Handle non-abort errors
+      const message = error instanceof Error ? error.message : 'Request failed';
+
+      // Update session state
+      sessionState.activityStartTime = null;
+      sessionState.pendingDone = null;
+      sessionState.streamTokens = [];
+      stopStreamTimer(sessionConversationId);
+      stopThinkingTimer(sessionConversationId);
+      sessionState.streamingText = '';
+
+      // Update UI if current session
+      if (sessionConversationId === chatConversationIdRef.current) {
+        setMessages((prev) => [...prev, createMessage({ role: 'system', content: message })]);
         setStreamingState(null, false);
         activityStartRef.current = null;
         pendingDoneRef.current = null;
         streamTokensRef.current = [];
-        stopStreamTimer();
-        stopThinkingTimer();
-            setStreamingText('');
-            streamingTextRef.current = '';
-        finishJob();
-            return;
-          }
-      const message = error instanceof Error ? error.message : 'Request failed';
-      setMessages((prev) => [...prev, createMessage({ role: 'system', content: message })]);
-      setStreamingState(null, false);
-      activityStartRef.current = null;
-      pendingDoneRef.current = null;
-      streamTokensRef.current = [];
-      stopStreamTimer();
-      stopThinkingTimer();
-      setStreamingText('');
-      streamingTextRef.current = '';
-      finishJob();
+        setStreamingText('');
+        streamingTextRef.current = '';
+      }
+      finishSessionJob(sessionConversationId);
     } finally {
+      if (sessionState.abortController === abortController) {
+        sessionState.abortController = null;
+      }
       if (abortControllerRef.current === abortController) {
         abortControllerRef.current = null;
       }
@@ -2364,10 +2598,15 @@ const Panel = () => {
     const { text, hasContent } = serializeEditorContent();
     if (!bridge || !hasContent) return;
 
+    const conversationId = chatConversationIdRef.current;
+    if (!conversationId) return;
+
+    const sessionState = getSessionState(conversationId);
+
     clearEditor();
     scrollToBottom();
-    if (isSendingRef.current) {
-      enqueueMessage(text);
+    if (sessionState.isSending) {
+      enqueueMessage(conversationId, text);
       return;
     }
     void sendMessage(text);
@@ -2535,10 +2774,13 @@ const Panel = () => {
     if (!projectId || !state) return;
     const { state: nextState, conversation, evicted } = startNewConversation(state, provider);
     
-    // Clean up evicted session directories
+    // Clean up evicted session directories and runtime state
     if (evicted.length > 0) {
       const options = await getOptions();
       for (const evictedId of evicted) {
+        // Clean up runtime state (abort jobs, clear timers)
+        cleanupSessionState(evictedId);
+
         try {
           // For Codex, need to look up the conversation to get threadId
           const evictedConversation = findConversation(state, evictedId);
@@ -2570,7 +2812,7 @@ const Panel = () => {
   };
 
   const onSelectSession = (conversationId: string) => {
-    if (chatActionsDisabled) return;
+    // Session switching is always allowed - no blocking
     const projectId = chatProjectIdRef.current;
     const state = chatStateRef.current;
     if (!projectId || !state) return;
@@ -2582,17 +2824,45 @@ const Panel = () => {
     chatStateRef.current = setActiveConversation(state, provider, conversationId);
     setActiveSessionId(conversationId);
     setChatProvider(provider);
+
+    // Sync UI state from new session's session state
+    const sessionState = getSessionState(conversationId);
+
+    // Update sending and queue state
+    isSendingRef.current = sessionState.isSending;
+    setIsSending(sessionState.isSending);
+    setQueueCount(sessionState.queue.length);
+    queueRef.current = sessionState.queue.map(q => ({ text: q.text }));
+
+    // Update streaming state
+    streamingTextRef.current = sessionState.streamingText;
+    setStreamingText(sessionState.streamingText);
+    streamTokensRef.current = [...sessionState.streamTokens];
+    pendingDoneRef.current = sessionState.pendingDone;
+    activityStartRef.current = sessionState.activityStartTime;
+    interruptedRef.current = sessionState.interrupted;
+    thinkingCompleteRef.current = sessionState.thinkingComplete;
+    abortControllerRef.current = sessionState.abortController;
+    activeJobIdRef.current = sessionState.activeJobId;
+
+    // Update streaming status display
+    if (sessionState.isSending || sessionState.streamTimerId) {
+      const status = sessionState.thinkingTimerId && !sessionState.thinkingComplete
+        ? 'Thinking · ESC to interrupt'
+        : sessionState.streamTimerId
+        ? 'Streaming · ESC to interrupt'
+        : 'Working · ESC to interrupt';
+      setStreamingState(status, true);
+    } else {
+      setStreamingState(null, false);
+    }
+
+    // Reset tool UI state (these are not per-session)
     setPatch(null);
     setToolRequests([]);
     setToolRequestInputs({});
     setToolRequestBusy(false);
-    setStreamingState(null, false);
-    setStreamingText('');
-    streamingTextRef.current = '';
-    streamTokensRef.current = [];
-    pendingDoneRef.current = null;
-    stopStreamTimer();
-    stopThinkingTimer();
+
     setMessages(conversation.messages.map((message) => createMessage(message)));
     scrollToBottom();
     setContextUsageFromStored(getCachedStoredUsage(conversation, provider));
@@ -2601,7 +2871,7 @@ const Panel = () => {
   };
 
   const onCloseSession = async () => {
-    if (chatActionsDisabled) return;
+    // Session closing is always allowed - no blocking
     const projectId = chatProjectIdRef.current;
     const state = chatStateRef.current;
     const currentId = chatConversationIdRef.current;
@@ -2610,6 +2880,9 @@ const Panel = () => {
     const currentConversation = findConversation(state, currentId);
     if (!currentConversation) return;
     const currentProvider = currentConversation.provider;
+
+    // Cleanup session state (abort jobs, clear timers)
+    cleanupSessionState(currentId);
 
     // Delete session directory and runtime state on the host
     // For Codex, use threadId (matches session directory name)
@@ -2685,8 +2958,6 @@ const Panel = () => {
     streamingTextRef.current = '';
     streamTokensRef.current = [];
     pendingDoneRef.current = null;
-    stopStreamTimer();
-    stopThinkingTimer();
 
     setMessages(
       nextConversation ? nextConversation.messages.map((message) => createMessage(message)) : []
@@ -2696,7 +2967,7 @@ const Panel = () => {
     scheduleChatSave();
   };
 
-  const chatActionsDisabled = isSending || queueCount > 0;
+  // Session switching is always allowed - no blocking during streaming
   const activeToolRequest = toolRequests[0] ?? null;
   const activeToolQuestions: ToolInputQuestion[] =
     activeToolRequest?.kind === 'user_input' && Array.isArray(activeToolRequest.params?.questions)
@@ -3081,9 +3352,19 @@ const Panel = () => {
                 const state = chatStateRef.current;
                 const conversation = state ? findConversation(state, id) : null;
                 const providerLabel = conversation?.provider === 'codex' ? 'OpenAI' : 'Anthropic';
+
+                // Get per-session activity status
+                const sessionState = sessionStates.current.get(id);
+                const isActive = sessionState?.isSending || (sessionState?.queue.length ?? 0) > 0;
+                const statusIcon = sessionState?.isSending
+                  ? '⟳' // spinning/thinking
+                  : (sessionState?.queue.length ?? 0) > 0
+                  ? `${sessionState?.queue.length ?? 0}` // queue count
+                  : null;
+
                 return (
         <button
-                    class={`ageaf-session-tab ${id === activeSessionId ? 'is-active' : ''}`}
+                    class={`ageaf-session-tab ${id === activeSessionId ? 'is-active' : ''} ${isActive ? 'is-busy' : ''}`}
                     type="button"
                     role="tab"
                     aria-selected={id === activeSessionId}
@@ -3091,22 +3372,21 @@ const Panel = () => {
                     data-tooltip={providerLabel}
                     onClick={() => onSelectSession(id)}
                     key={id}
-                    disabled={chatActionsDisabled}
                   >
                     {index + 1}
+                    {statusIcon && <span class="ageaf-session__status">{statusIcon}</span>}
                   </button>
                 );
               })}
             </div>
             <div class="ageaf-toolbar-actions">
-              <div class="ageaf-toolbar-menu" data-disabled={chatActionsDisabled ? 'true' : 'false'}>
+              <div class="ageaf-toolbar-menu">
                 <button
                   class="ageaf-toolbar-button"
                   type="button"
                   aria-haspopup="menu"
                   aria-label="New chat"
                   data-tooltip="New chat"
-                  disabled={chatActionsDisabled}
                 >
                   ＋
                 </button>
@@ -3135,7 +3415,6 @@ const Panel = () => {
                 onClick={onClearChat}
                 aria-label="Clear chat"
                 data-tooltip="Clear chat"
-                disabled={chatActionsDisabled}
               >
                 ⌫
               </button>
@@ -3145,7 +3424,6 @@ const Panel = () => {
                 onClick={onCloseSession}
                 aria-label="Close session"
                 data-tooltip="Close session"
-                disabled={chatActionsDisabled}
               >
                 ×
               </button>

@@ -679,6 +679,22 @@
   color: var(--ageaf-panel-text);
 }
 
+.ageaf-session-tab.is-busy {
+  border-left: 3px solid rgba(57, 185, 138, 0.75);
+}
+
+.ageaf-session__status {
+  margin-left: 4px;
+  font-size: 10px;
+  opacity: 0.8;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
 .ageaf-session-tab:disabled {
   opacity: 0.55;
   cursor: not-allowed;
