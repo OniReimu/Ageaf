@@ -228,6 +228,26 @@ type ContextUsage = {
   percentage?: number | null;
 };
 
+function normalizeContextUsage(input: {
+  usedTokens: number;
+  contextWindow: number | null;
+  percentage?: number | null;
+}): ContextUsage {
+  let usedTokens = Number.isFinite(input.usedTokens) ? Math.max(0, input.usedTokens) : 0;
+  const contextWindow =
+    input.contextWindow && Number.isFinite(input.contextWindow) && input.contextWindow > 0
+      ? input.contextWindow
+      : null;
+
+  if (contextWindow) {
+    usedTokens = Math.min(usedTokens, contextWindow);
+  }
+  const percentage =
+    contextWindow && contextWindow > 0 ? Math.round((usedTokens / contextWindow) * 100) : null;
+
+  return { usedTokens, contextWindow, percentage };
+}
+
 type HostToolsStatus = {
   toolsEnabled: boolean;
   toolsAvailable: boolean;
@@ -275,6 +295,7 @@ const Panel = () => {
   const [currentThinkingTokens, setCurrentThinkingTokens] = useState<number | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [yoloMode, setYoloMode] = useState(true);
+  const [autoCompactEnabled, setAutoCompactEnabled] = useState(false);
   const [copiedItems, setCopiedItems] = useState<Record<string, boolean>>({});
   const [connectionHealth, setConnectionHealth] = useState<ConnectionHealth>({
     hostConnected: false,
@@ -347,11 +368,13 @@ const Panel = () => {
       setContextUsage(null);
       return;
     }
-    setContextUsage({
-      usedTokens: stored.usedTokens,
-      contextWindow: stored.contextWindow,
-      percentage: stored.percentage,
-    });
+    setContextUsage(
+      normalizeContextUsage({
+        usedTokens: stored.usedTokens,
+        contextWindow: stored.contextWindow,
+        percentage: stored.percentage,
+      })
+    );
   };
 
   const getContextUsageThrottleMs = (provider: ProviderId) =>
@@ -477,51 +500,61 @@ const Panel = () => {
     setConnectionHealth({ hostConnected, runtimeWorking });
   };
 
-  const checkNativeHost = async () => {
-    setNativeStatusError(null);
+	  const checkNativeHost = async () => {
+	    setNativeStatusError(null);
 
-    const request: NativeHostRequest = {
-      id: crypto.randomUUID(),
-      kind: 'request',
-      request: { method: 'GET', path: '/v1/health' },
-    };
+	    const request: NativeHostRequest = {
+	      id: crypto.randomUUID(),
+	      kind: 'request',
+	      request: { method: 'GET', path: '/v1/health' },
+	    };
 
-    try {
-      const response = await new Promise<NativeHostResponse>((resolve, reject) => {
-        const timeoutMs = 2_000;
-        const timeoutId = setTimeout(() => {
-          reject(new Error('native check timed out'));
-        }, timeoutMs);
+	    try {
+	      const response = await new Promise<NativeHostResponse>((resolve, reject) => {
+	        const timeoutMs = 10_000;
+	        const timeoutId = setTimeout(() => {
+	          reject(new Error('native check timed out'));
+	        }, timeoutMs);
 
-        chrome.runtime.sendMessage({ type: 'ageaf:native-request', request }, (message) => {
-          clearTimeout(timeoutId);
+	        chrome.runtime.sendMessage({ type: 'ageaf:native-request', request }, (message) => {
+	          clearTimeout(timeoutId);
 
-          const runtimeError = chrome.runtime.lastError;
-          if (runtimeError?.message) {
-            reject(new Error(runtimeError.message));
-            return;
-          }
+	          const runtimeError = chrome.runtime.lastError;
+	          if (runtimeError?.message) {
+	            reject(new Error(runtimeError.message));
+	            return;
+	          }
 
-          resolve(message as NativeHostResponse);
-        });
-      });
+	          resolve(message as NativeHostResponse);
+	        });
+	      });
 
-      if (response.kind === 'response' && response.status >= 200 && response.status < 300) {
-        setNativeStatus('available');
-        return;
-      }
+	      if (response.kind === 'response' && response.status >= 200 && response.status < 300) {
+	        setNativeStatus('available');
+	        return;
+	      }
 
-      setNativeStatus('unavailable');
-      if (response.kind === 'error') {
-        setNativeStatusError(response.message);
-      } else {
-        setNativeStatusError(`Unexpected response kind: ${response.kind}`);
-      }
-    } catch (error) {
-      setNativeStatus('unavailable');
-      setNativeStatusError(error instanceof Error ? error.message : 'native check failed');
-    }
-  };
+	      setNativeStatus('unavailable');
+	      if (response.kind === 'error') {
+	        setNativeStatusError(response.message);
+	      } else if (response.kind === 'response') {
+	        const detail =
+	          typeof response.body === 'object' && response.body && 'message' in response.body
+	            ? String((response.body as { message: unknown }).message)
+	            : undefined;
+	        setNativeStatusError(
+	          detail
+	            ? `Health check failed (${response.status}): ${detail}`
+	            : `Health check failed (${response.status})`
+	        );
+	      } else {
+	        setNativeStatusError(`Unexpected response kind: ${response.kind}`);
+	      }
+	    } catch (error) {
+	      setNativeStatus('unavailable');
+	      setNativeStatusError(error instanceof Error ? error.message : 'native check failed');
+	    }
+	  };
 
   useEffect(() => {
     let cancelled = false;
@@ -542,12 +575,12 @@ const Panel = () => {
       const conversation = conversationId && state ? findConversation(state, conversationId) : null;
       setContextUsageFromStored(getCachedStoredUsage(conversation, chatProvider));
 
-      if (!options.hostUrl) {
-        setRuntimeModels([]);
-        if (chatProvider === 'codex') {
-          setThinkingModes(
-            FALLBACK_THINKING_MODES.map((mode) => ({ ...mode, maxThinkingTokens: null }))
-          );
+	      if (options.transport !== 'native' && !options.hostUrl) {
+	        setRuntimeModels([]);
+	        if (chatProvider === 'codex') {
+	          setThinkingModes(
+	            FALLBACK_THINKING_MODES.map((mode) => ({ ...mode, maxThinkingTokens: null }))
+	          );
           setCurrentThinkingMode('off');
           setCurrentThinkingTokens(null);
           setCurrentModel(null);
@@ -598,6 +631,7 @@ const Panel = () => {
           setCurrentThinkingMode(getThinkingModeIdForCodexEffort(effort));
           setCurrentThinkingTokens(null);
           setYoloMode((options.openaiApprovalPolicy ?? 'never') === 'never');
+          setAutoCompactEnabled(options.autoCompactEnabled ?? false);
           // Update connection health - runtime is working since we got metadata
           const now = Date.now();
           lastHostOkAtRef.current = now;
@@ -617,6 +651,7 @@ const Panel = () => {
         );
         setCurrentThinkingTokens(metadata.maxThinkingTokens ?? options.claudeMaxThinkingTokens ?? null);
         setYoloMode(options.claudeYoloMode ?? true);
+        setAutoCompactEnabled(options.autoCompactEnabled ?? false);
         // Update connection health - runtime is working since we got metadata
         const now = Date.now();
         lastHostOkAtRef.current = now;
@@ -640,6 +675,7 @@ const Panel = () => {
         setCurrentThinkingTokens(options.claudeMaxThinkingTokens ?? null);
         setCurrentModel(options.claudeModel ?? DEFAULT_MODEL_VALUE);
         setYoloMode(options.claudeYoloMode ?? true);
+        setAutoCompactEnabled(options.autoCompactEnabled ?? false);
       }
     };
 
@@ -1409,17 +1445,17 @@ const Panel = () => {
     }
   };
 
-  const applyRuntimePreferences = async (payload: {
-    model?: string | null;
-    thinkingMode?: string | null;
-  }) => {
-    const options = settings ?? (await getOptions());
-    if (!options.hostUrl) return;
+	  const applyRuntimePreferences = async (payload: {
+	    model?: string | null;
+	    thinkingMode?: string | null;
+	  }) => {
+	    const options = settings ?? (await getOptions());
+	    if (options.transport !== 'native' && !options.hostUrl) return;
 
-    try {
-      const response = await updateClaudeRuntimePreferences(options, payload);
-      if (response.currentModel !== undefined) {
-        setCurrentModel(response.currentModel);
+	    try {
+	      const response = await updateClaudeRuntimePreferences(options, payload);
+	      if (response.currentModel !== undefined) {
+	        setCurrentModel(response.currentModel);
       }
       if (response.currentThinkingMode) {
         setCurrentThinkingMode(response.currentThinkingMode);
@@ -1450,24 +1486,29 @@ const Panel = () => {
     }
 
     const throttleMs = getContextUsageThrottleMs(provider);
-    if (!params?.force && cached && Date.now() - cached.updatedAt < throttleMs) {
-      return;
-    }
+	    if (!params?.force && cached && Date.now() - cached.updatedAt < throttleMs) {
+	      return;
+	    }
 
-    if (contextRefreshInFlightRef.current) return;
-    const options = settings ?? (await getOptions());
-    if (!options.hostUrl) return;
-    contextRefreshInFlightRef.current = true;
+	    if (contextRefreshInFlightRef.current) return;
+	    const options = settings ?? (await getOptions());
+	    if (options.transport !== 'native' && !options.hostUrl) return;
+	    contextRefreshInFlightRef.current = true;
 
     try {
       if (provider === 'codex') {
         const threadId = conversation?.providerState?.codex?.threadId;
         const usage = await fetchCodexRuntimeContextUsage(options, { threadId });
         if (usage.contextWindow || usage.usedTokens > 0 || usage.percentage !== null) {
-          const nextUsage: StoredContextUsage = {
+          const normalized = normalizeContextUsage({
             usedTokens: usage.usedTokens,
             contextWindow: usage.contextWindow,
             percentage: usage.percentage,
+          });
+          const nextUsage: StoredContextUsage = {
+            usedTokens: normalized.usedTokens,
+            contextWindow: normalized.contextWindow,
+            percentage: normalized.percentage ?? null,
             updatedAt: Date.now(),
           };
           const latestState = chatStateRef.current;
@@ -1481,11 +1522,13 @@ const Panel = () => {
             scheduleChatSave();
           }
           if (chatConversationIdRef.current === conversationId) {
-            setContextUsage({
-              usedTokens: nextUsage.usedTokens,
-              contextWindow: nextUsage.contextWindow,
-              percentage: nextUsage.percentage,
-            });
+            setContextUsage(
+              normalizeContextUsage({
+                usedTokens: nextUsage.usedTokens,
+                contextWindow: nextUsage.contextWindow,
+                percentage: nextUsage.percentage,
+              })
+            );
           }
         }
         return;
@@ -1493,10 +1536,15 @@ const Panel = () => {
 
       const usage = await fetchClaudeRuntimeContextUsage(options);
       if (usage.contextWindow || usage.usedTokens > 0 || usage.percentage !== null) {
-        const nextUsage: StoredContextUsage = {
+        const normalized = normalizeContextUsage({
           usedTokens: usage.usedTokens,
           contextWindow: usage.contextWindow,
           percentage: usage.percentage,
+        });
+        const nextUsage: StoredContextUsage = {
+          usedTokens: normalized.usedTokens,
+          contextWindow: normalized.contextWindow,
+          percentage: normalized.percentage ?? null,
           updatedAt: Date.now(),
         };
         const latestState = chatStateRef.current;
@@ -1510,11 +1558,13 @@ const Panel = () => {
           scheduleChatSave();
         }
         if (chatConversationIdRef.current === conversationId) {
-          setContextUsage({
-            usedTokens: nextUsage.usedTokens,
-            contextWindow: nextUsage.contextWindow,
-            percentage: nextUsage.percentage,
-          });
+          setContextUsage(
+            normalizeContextUsage({
+              usedTokens: nextUsage.usedTokens,
+              contextWindow: nextUsage.contextWindow,
+              percentage: nextUsage.percentage,
+            })
+          );
         }
       }
     } catch {
@@ -1581,6 +1631,177 @@ const Panel = () => {
       return;
     }
     await persistRuntimeOptions({ claudeYoloMode: next });
+  };
+
+  const onToggleAutoCompact = async () => {
+    const next = !autoCompactEnabled;
+    setAutoCompactEnabled(next);
+    await persistRuntimeOptions({ autoCompactEnabled: next });
+  };
+
+  const getRuntimeConfig = async () => {
+    const options = await getOptions();
+    if (chatProvider === 'codex') {
+      const conversationId = chatConversationIdRef.current;
+      const state = chatStateRef.current;
+      const conversation =
+        conversationId && state
+          ? findConversation(state, conversationId)
+          : null;
+      const codexThreadId = conversation?.providerState?.codex?.threadId;
+      const codexModelCandidate = currentModel ?? null;
+      const codexRuntimeModel =
+        codexModelCandidate
+          ? runtimeModels.find((entry) => entry.value === codexModelCandidate)
+          : null ??
+        runtimeModels.find((entry) => entry.isDefault) ??
+        runtimeModels.find((entry) => entry.supportedReasoningEfforts !== undefined) ??
+        runtimeModels[0] ??
+        null;
+      const codexModel =
+        codexRuntimeModel?.supportedReasoningEfforts !== undefined
+          ? codexRuntimeModel.value
+          : null;
+      const codexEffort =
+        codexModel
+          ? getCodexEffortForThinkingMode(
+              currentThinkingMode as ThinkingMode['id'],
+              codexRuntimeModel ?? null
+            ) ?? codexRuntimeModel?.defaultReasoningEffort ?? null
+          : null;
+      return {
+        codex: {
+          cliPath: options.openaiCodexCliPath,
+          envVars: options.openaiEnvVars,
+          approvalPolicy: options.openaiApprovalPolicy,
+          ...(codexModel ? { model: codexModel } : {}),
+          ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
+          ...(codexThreadId ? { threadId: codexThreadId } : {}),
+        },
+      };
+    } else {
+      const runtimeModel = currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
+      const runtimeThinkingTokens =
+        currentThinkingTokens ?? options.claudeMaxThinkingTokens ?? null;
+      return {
+        claude: {
+          cliPath: options.claudeCliPath,
+          envVars: options.claudeEnvVars,
+          loadUserSettings: options.claudeLoadUserSettings,
+          model: runtimeModel ?? undefined,
+          maxThinkingTokens: runtimeThinkingTokens ?? undefined,
+          sessionScope: 'project' as const,
+          yoloMode,
+        },
+      };
+    }
+  };
+
+	  const onManualCompact = async () => {
+	    if (!chatConversationIdRef.current) {
+	      return;
+	    }
+
+    // Confirmation dialog
+    const confirmed = window.confirm(
+      'Compact this conversation?\n\n' +
+      'Chat history will be summarised to reduce context usage. This action cannot be undone.'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setSending(true);
+
+    // Add system message to chat
+    setMessages((prev) => [
+      ...prev,
+      createMessage({
+        role: 'system',
+        content: 'Chat compact in progress. Chat history will be summarised.'
+      })
+    ]);
+
+	    try {
+	      const options = await getOptions();
+	      const runtime = await getRuntimeConfig();
+	      const { jobId } = await createJob(options, {
+	        provider: chatProvider,
+	        action: 'chat',
+	        compaction: { requestCompaction: true },
+	        runtime,
+	        userSettings: { autoCompactEnabled: true },
+	      });
+
+	      await streamJobEvents(options, jobId, (event) => {
+	        if (event.event === 'usage') {
+	          const usedTokens = Number(event.data?.usedTokens ?? 0);
+	          const contextWindow = Number(event.data?.contextWindow ?? 0) || null;
+	          const normalized = normalizeContextUsage({ usedTokens, contextWindow });
+	          setContextUsage(normalized);
+
+	          const conversationId = chatConversationIdRef.current;
+	          if (conversationId) {
+	            const state = chatStateRef.current;
+	            if (state) {
+	              const nextUsage: StoredContextUsage = {
+	                usedTokens: normalized.usedTokens,
+	                contextWindow: normalized.contextWindow,
+	                percentage: normalized.percentage ?? null,
+	                updatedAt: Date.now(),
+	              };
+	              chatStateRef.current = setConversationContextUsage(
+	                state,
+	                chatProvider,
+	                conversationId,
+	                nextUsage
+	              );
+	              scheduleChatSave();
+	            }
+	          }
+	          return;
+	        }
+
+	        if (event.event === 'done') {
+	          const status = event.data?.status ?? 'ok';
+	          if (status === 'ok') {
+	            setMessages((prev) => [
+	              ...prev,
+	              createMessage({
+	                role: 'system',
+	                content: 'Compaction complete. Context usage updated.',
+	              }),
+	            ]);
+	            void refreshContextUsage({ force: true });
+	            return;
+	          }
+
+	          const message =
+	            typeof event.data?.message === 'string' && event.data.message
+	              ? event.data.message
+	              : 'Unknown error';
+	          setMessages((prev) => [
+	            ...prev,
+	            createMessage({
+	              role: 'system',
+	              content: `Compaction failed: ${message}`,
+	            }),
+	          ]);
+	        }
+	      });
+	    } catch (error) {
+	      // Add error message to chat
+	      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: `Compaction failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+        })
+      ]);
+    } finally {
+      setSending(false);
+    }
   };
 
   const thinkingEnabled = currentThinkingMode !== 'off';
@@ -1850,6 +2071,7 @@ const Panel = () => {
               userSettings: {
                 displayName: options.displayName,
                 customSystemPrompt: options.customSystemPrompt,
+                autoCompactEnabled: options.autoCompactEnabled,
               },
             }
           : {
@@ -1880,6 +2102,7 @@ const Panel = () => {
                 enableTools: options.enableTools,
                 enableCommandBlocklist: options.enableCommandBlocklist,
                 blockedCommandsUnix: options.blockedCommandsUnix,
+                autoCompactEnabled: options.autoCompactEnabled,
               },
             };
 
@@ -1906,6 +2129,14 @@ const Panel = () => {
         }
 
         if (event.event === 'plan') {
+          // Display compaction-related plan events in chat
+          const message = (event.data as any)?.message;
+          if (typeof message === 'string' && message.toLowerCase().includes('compact')) {
+            setMessages((prev) => [
+              ...prev,
+              createMessage({ role: 'system', content: message })
+            ]);
+          }
           return;
         }
 
@@ -1937,18 +2168,15 @@ const Panel = () => {
         if (event.event === 'usage') {
           const usedTokens = Number(event.data?.usedTokens ?? 0);
           const contextWindow = Number(event.data?.contextWindow ?? 0) || null;
-          const percentage =
-            contextWindow && contextWindow > 0
-              ? Math.round((usedTokens / contextWindow) * 100)
-              : null;
-          setContextUsage({ usedTokens, contextWindow, percentage });
+          const normalized = normalizeContextUsage({ usedTokens, contextWindow });
+          setContextUsage(normalized);
           if (conversationId) {
             const state = chatStateRef.current;
             if (state) {
               const nextUsage: StoredContextUsage = {
-                usedTokens,
-                contextWindow,
-                percentage,
+                usedTokens: normalized.usedTokens,
+                contextWindow: normalized.contextWindow,
+                percentage: normalized.percentage ?? null,
                 updatedAt: Date.now(),
               };
               chatStateRef.current = setConversationContextUsage(
@@ -2591,12 +2819,12 @@ const Panel = () => {
               )}
             </div>
           ) : null}
-          </div>
           {!isAtBottom ? (
             <button class="ageaf-panel__scroll" type="button" onClick={scrollToBottom}>
               Scroll to bottom
             </button>
           ) : null}
+          </div>
           <div class="ageaf-runtime">
           <div class="ageaf-runtime__picker">
             <button class="ageaf-runtime__button" type="button" aria-haspopup="listbox">
@@ -2666,6 +2894,16 @@ const Panel = () => {
               />
             </svg>
             <span class="ageaf-runtime__value">{usagePercent}%</span>
+            <button
+              type="button"
+              class="ageaf-runtime__compact-button"
+              onClick={onManualCompact}
+              disabled={isSending || !chatConversationIdRef.current}
+              data-tooltip="Compact conversation"
+              aria-label="Compact conversation"
+            >
+              ⚡
+            </button>
           </div>
 	          <button
 	            class={`ageaf-runtime__yolo ${yoloMode ? 'is-on' : ''}`}
@@ -2871,12 +3109,10 @@ const Panel = () => {
                               | 'native',
                           })
                         }
-                      >
-                        <option value="http">HTTP</option>
-                        <option value="native" disabled>
-                          Native Messaging (experimental - disabled)
-                        </option>
-                      </select>
+	                      >
+	                        <option value="http">HTTP</option>
+	                        <option value="native">Native Messaging (prod)</option>
+	                      </select>
                       {settings.transport !== 'native' ? (
                         <>
                           <label class="ageaf-settings__label" for="ageaf-host-url">
@@ -3150,6 +3386,21 @@ const Panel = () => {
                       />
                       <p class="ageaf-settings__hint">
                         Patterns to block on Unix, one per line. Supports regex.
+                      </p>
+
+                      <label class="ageaf-settings__checkbox">
+                        <input
+                          type="checkbox"
+                          checked={settings.autoCompactEnabled ?? false}
+                          onChange={(event) =>
+                            updateSettings({ autoCompactEnabled: event.currentTarget.checked })
+                          }
+                        />
+                        Auto-compact at 85% context usage
+                      </label>
+                      <p class="ageaf-settings__hint">
+                        Automatically compacts conversation when approaching context limit.
+                        Sends /compact command to the provider before your request.
                       </p>
                     </div>
                   ) : null}

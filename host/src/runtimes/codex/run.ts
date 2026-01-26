@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import type { JobEvent } from '../../types.js';
 import { getCodexAppServer } from './appServer.js';
+import { parseCodexTokenUsage } from './tokenUsage.js';
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -60,17 +61,6 @@ function normalizeApprovalPolicy(value: unknown): CodexApprovalPolicy {
     return value;
   }
   return 'on-request';
-}
-
-function parseTokenUsage(payload: any): { usedTokens: number; contextWindow: number | null } | null {
-  const raw = payload?.tokenUsage ?? payload?.token_usage;
-  if (!raw || typeof raw !== 'object') return null;
-  const total = (raw as any).total ?? {};
-  const usedTokens = Number(total.totalTokens ?? total.total_tokens ?? 0);
-  const contextWindowRaw = (raw as any).modelContextWindow ?? (raw as any).model_context_window;
-  const contextWindow = Number(contextWindowRaw ?? 0) || null;
-  if (!Number.isFinite(usedTokens)) return null;
-  return { usedTokens, contextWindow };
 }
 
 function buildPrompt(payload: CodexJobPayload) {
@@ -227,7 +217,7 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
       }
 
       if (method === 'thread/tokenUsage/updated') {
-        const usage = parseTokenUsage(params);
+        const usage = parseCodexTokenUsage(params);
         if (usage) {
           emitEvent({
             event: 'usage',

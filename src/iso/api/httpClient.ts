@@ -47,6 +47,10 @@ export type JobPayload = {
     enableTools?: boolean;
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
+    autoCompactEnabled?: boolean;
+  };
+  compaction?: {
+    requestCompaction: boolean;
   };
 };
 
