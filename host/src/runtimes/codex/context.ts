@@ -23,6 +23,19 @@ function ensureAgeafWorkspaceCwd(): string {
   return workspace;
 }
 
+function getCodexSessionCwd(threadId?: string): string {
+  if (!threadId || !threadId.trim()) {
+    return ensureAgeafWorkspaceCwd();
+  }
+  const sessionDir = path.join(os.homedir(), '.ageaf', 'codex', 'sessions', threadId.trim());
+  try {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  } catch {
+    // ignore directory creation failures
+  }
+  return sessionDir;
+}
+
 function computePercentage(usedTokens: number, contextWindow: number | null): number | null {
   if (!contextWindow || contextWindow <= 0) return null;
   return Math.round((usedTokens / contextWindow) * 100);
@@ -44,7 +57,7 @@ export async function getCodexContextUsage(config: {
     };
   }
 
-  const cwd = ensureAgeafWorkspaceCwd();
+  const cwd = getCodexSessionCwd(config.threadId);
   const appServer = await getCodexAppServer({
     cliPath: config.cliPath,
     envVars: config.envVars,

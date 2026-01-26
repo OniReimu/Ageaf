@@ -14,6 +14,7 @@ export type JobPayload = {
       maxThinkingTokens?: number | null;
       sessionScope?: 'project' | 'home';
       yoloMode?: boolean;
+      conversationId?: string;
     };
     codex?: {
       cliPath?: string;

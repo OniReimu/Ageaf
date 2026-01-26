@@ -29,6 +29,19 @@ function ensureAgeafWorkspaceCwd(): string {
   return workspace;
 }
 
+function getCodexSessionCwd(threadId?: string): string {
+  if (!threadId || !threadId.trim()) {
+    return ensureAgeafWorkspaceCwd();
+  }
+  const sessionDir = path.join(os.homedir(), '.ageaf', 'codex', 'sessions', threadId.trim());
+  try {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  } catch {
+    // ignore directory creation failures
+  }
+  return sessionDir;
+}
+
 function normalizeModel(raw: any): CodexModel | null {
   if (!raw || typeof raw !== 'object') return null;
   const id = typeof raw.id === 'string' ? raw.id : null;
