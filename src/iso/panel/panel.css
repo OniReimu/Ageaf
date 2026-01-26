@@ -231,12 +231,15 @@
   padding: 18px 20px;
   border-bottom: 1px solid var(--ageaf-panel-border);
   background: transparent;
+  min-width: 0;
 }
 
 .ageaf-panel__title {
   display: flex;
   gap: 12px;
   align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .ageaf-panel__logo {
@@ -363,6 +366,7 @@
   grid-template-rows: 1fr auto;
   gap: 10px;
   min-height: 0;
+  min-width: 0;
 }
 
 .ageaf-panel__chat {
@@ -371,6 +375,7 @@
   overflow-y: auto;
   height: 100%;
   min-height: 0;
+  min-width: 0;
   padding-right: 6px;
   align-content: start;
   grid-auto-rows: max-content;
@@ -638,6 +643,7 @@
   gap: 8px;
   background: var(--ageaf-panel-bg);
   position: relative;
+  min-width: 0;
 }
 
 .ageaf-panel__toolbar {
@@ -881,10 +887,11 @@
 }
 
 .ageaf-panel__scroll {
-  position: absolute;
-  bottom: 52px;
-  left: 50%;
-  transform: translateX(-50%);
+  position: sticky;
+  bottom: 12px;
+  left: auto;
+  transform: none;
+  justify-self: center;
   padding: 6px 12px;
   border-radius: 999px;
   border: 1px solid var(--ageaf-panel-border);
@@ -893,22 +900,25 @@
   font-size: 12px;
   cursor: pointer;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  z-index: 3;
 }
 
 .ageaf-runtime {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   min-height: 38px;
   padding-top: 6px;
   border-top: 1px solid rgba(39, 50, 42, 0.6);
+  min-width: 0;
 }
 
 .ageaf-runtime__picker {
   position: relative;
   flex-shrink: 0;
-  min-width: fit-content;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .ageaf-runtime__button {
@@ -916,7 +926,10 @@
   align-items: center;
   gap: 6px;
   height: 32px;
-  min-width: fit-content;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border-radius: 999px;
   border: 1px solid rgba(57, 185, 138, 0.25);
   background: rgba(15, 20, 17, 0.8);
@@ -941,6 +954,29 @@
 .ageaf-runtime__value--accent {
   color: var(--ageaf-panel-accent);
   font-weight: 600;
+}
+
+.ageaf-runtime__compact-button {
+  margin-left: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  background: var(--ageaf-panel-bg-hover);
+  color: var(--ageaf-panel-text);
+  border: 1px solid var(--ageaf-panel-border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ageaf-runtime__compact-button:hover:not(:disabled) {
+  background: var(--ageaf-panel-accent);
+  color: #fff;
+  border-color: var(--ageaf-panel-accent);
+}
+
+.ageaf-runtime__compact-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .ageaf-runtime__menu {

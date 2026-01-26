@@ -14,6 +14,7 @@ import { runRewriteSelection } from '../workflows/rewriteSelection.js';
 import { runFixCompileError } from '../workflows/fixCompileError.js';
 import { setLastClaudeRuntimeConfig } from '../runtimes/claude/state.js';
 import type { ClaudeRuntimeConfig } from '../runtimes/claude/agent.js';
+import { sendCompactCommand, getContextUsage } from '../compaction/sendCompact.js';
 
 type JobSubscriber = {
   send: (event: JobEvent) => void;
@@ -48,6 +49,10 @@ type JobRequestPayload = {
     enableTools?: boolean;
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
+    autoCompactEnabled?: boolean;
+  };
+  compaction?: {
+    requestCompaction: boolean;
   };
 };
 
@@ -111,6 +116,84 @@ export function registerJobs(server: FastifyInstance) {
     void (async () => {
       try {
         emitEvent({ event: 'plan', data: { message: 'Job queued' } });
+
+        // Auto-compaction check
+        const autoCompactEnabled = payload.userSettings?.autoCompactEnabled ?? false;
+        if (autoCompactEnabled && payload.compaction?.requestCompaction !== true) {
+          try {
+            const usage = await getContextUsage(provider, payload);
+            if (usage && usage.percentage && usage.percentage >= 85) {
+              emitEvent({
+                event: 'plan',
+                data: { message: `Context at ${usage.percentage}%. Auto-compacting...` },
+              });
+
+              await sendCompactCommand(provider, payload, emitEvent);
+
+              // Refresh usage from the runtime after compaction so the client indicator updates.
+              try {
+                const nextUsage = await getContextUsage(provider, payload);
+                if (nextUsage) {
+                  emitEvent({
+                    event: 'usage',
+                    data: {
+                      model: nextUsage.model ?? null,
+                      usedTokens: nextUsage.usedTokens ?? 0,
+                      contextWindow: nextUsage.contextWindow ?? null,
+                    },
+                  });
+                }
+              } catch (error) {
+                // Ignore usage refresh failures; continue with the request.
+                console.error('Post-compaction usage refresh failed:', error);
+              }
+
+              emitEvent({
+                event: 'plan',
+                data: { message: 'Compaction complete. Processing your request...' },
+              });
+            }
+          } catch (error) {
+            // Log error but continue with request
+            console.error('Auto-compaction failed:', error);
+          }
+        }
+
+        // Manual compaction request
+        if (payload.compaction?.requestCompaction === true) {
+          emitEvent({ event: 'plan', data: { message: 'Compacting...' } });
+          try {
+            await sendCompactCommand(provider, payload, emitEvent);
+            // Refresh usage from the runtime after compaction so the client indicator updates.
+            try {
+              const nextUsage = await getContextUsage(provider, payload);
+              if (nextUsage) {
+                emitEvent({
+                  event: 'usage',
+                  data: {
+                    model: nextUsage.model ?? null,
+                    usedTokens: nextUsage.usedTokens ?? 0,
+                    contextWindow: nextUsage.contextWindow ?? null,
+                  },
+                });
+              }
+            } catch (error) {
+              // Ignore usage refresh failures; compaction itself may still have succeeded.
+              console.error('Post-compaction usage refresh failed:', error);
+            }
+            emitEvent({ event: 'done', data: { status: 'ok', message: 'Compaction complete' } });
+          } catch (error) {
+            emitEvent({
+              event: 'done',
+              data: {
+                status: 'error',
+                message: error instanceof Error ? error.message : 'Compaction failed',
+              },
+            });
+          }
+          return;
+        }
+
         if (provider === 'codex') {
           if (payload.action && payload.action !== 'chat') {
             emitEvent({

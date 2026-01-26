@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { getCodexAppServer } from './appServer.js';
+import { parseCodexTokenUsage } from './tokenUsage.js';
 
 export type CodexContextUsage = {
   configured: boolean;
@@ -20,17 +21,6 @@ function ensureAgeafWorkspaceCwd(): string {
     // ignore workspace creation failures
   }
   return workspace;
-}
-
-function parseTokenUsage(payload: any): { usedTokens: number; contextWindow: number | null } | null {
-  const raw = payload?.tokenUsage ?? payload?.token_usage;
-  if (!raw || typeof raw !== 'object') return null;
-  const total = (raw as any).total ?? {};
-  const usedTokens = Number(total.totalTokens ?? total.total_tokens ?? 0);
-  const contextWindowRaw = (raw as any).modelContextWindow ?? (raw as any).model_context_window;
-  const contextWindow = Number(contextWindowRaw ?? 0) || null;
-  if (!Number.isFinite(usedTokens)) return null;
-  return { usedTokens, contextWindow };
 }
 
 function computePercentage(usedTokens: number, contextWindow: number | null): number | null {
@@ -77,8 +67,8 @@ export async function getCodexContextUsage(config: {
       const response = await appServer.request(candidate.method, candidate.params);
       if ((response as any).error) continue;
       const usage =
-        parseTokenUsage((response as any).result) ??
-        parseTokenUsage(response as any) ??
+        parseCodexTokenUsage((response as any).result) ??
+        parseCodexTokenUsage(response as any) ??
         null;
       if (usage) {
         return {
@@ -102,5 +92,4 @@ export async function getCodexContextUsage(config: {
     percentage: null,
   };
 }
-
 
