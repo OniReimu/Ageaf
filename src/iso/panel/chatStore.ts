@@ -260,12 +260,20 @@ export function ensureActiveConversation(
 export function startNewConversation(
   state: StoredProjectChat,
   provider: ProviderId
-): { state: StoredProjectChat; conversation: StoredConversation } {
+): { state: StoredProjectChat; conversation: StoredConversation; evicted: string[] } {
   const providerState = state.providers[provider] ?? { activeConversationId: null, conversations: [] };
   const conversation = createConversation(provider);
+  const allConversations = [conversation, ...providerState.conversations];
+  const nextConversations = allConversations.slice(0, MAX_CONVERSATIONS_PER_PROVIDER);
+  
+  // Track conversations that were evicted (beyond the max limit)
+  const evictedIds = allConversations
+    .slice(MAX_CONVERSATIONS_PER_PROVIDER)
+    .map((conv) => conv.id);
+  
   const nextProviderState: StoredProviderState = {
     activeConversationId: conversation.id,
-    conversations: [conversation, ...providerState.conversations].slice(0, MAX_CONVERSATIONS_PER_PROVIDER),
+    conversations: nextConversations,
   };
   return {
     state: {
@@ -277,6 +285,7 @@ export function startNewConversation(
       } as Record<ProviderId, StoredProviderState>,
     },
     conversation,
+    evicted: evictedIds,
   };
 }
 

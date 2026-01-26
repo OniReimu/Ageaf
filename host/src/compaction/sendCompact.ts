@@ -149,6 +149,32 @@ async function sendCodexCompact(
     });
   });
 
+  // Try to resume the thread first in case it's not in Codex's active memory
+  try {
+    await appServer.request('thread/resume', {
+      threadId,
+      history: null,
+      path: null,
+      model,
+      modelProvider: null,
+      cwd,
+      approvalPolicy,
+      sandbox: 'read-only',
+      config: null,
+      baseInstructions: null,
+      developerInstructions: null,
+    });
+  } catch (resumeError) {
+    // If resume fails with "thread not found", the thread is truly gone
+    const errorMsg = String((resumeError as any)?.message ?? resumeError ?? '');
+    if (errorMsg.toLowerCase().includes('not found') || errorMsg.toLowerCase().includes('unknown')) {
+      throw new Error(
+        `Thread ${threadId} not found. The Codex session may have expired. Start a new conversation.`
+      );
+    }
+    // Other errors - continue and try turn/start anyway
+  }
+
   const turnResponse = await appServer.request('turn/start', {
     threadId,
     input: [{ type: 'text', text: '/compact' }],
