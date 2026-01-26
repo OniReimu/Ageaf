@@ -63,27 +63,17 @@ export default async function registerSessionRoutes(server: FastifyInstance) {
 }
 
 async function deleteCodexThread(threadId: string): Promise<void> {
-  // Codex doesn't have a built-in "delete thread" command, but we can try
-  // to use the app server API if it exists. For now, this is a placeholder.
+  // Codex doesn't have a built-in "delete thread" command.
   // The session directory cleanup is the primary cleanup mechanism.
+  // 
+  // We intentionally don't try to spawn the Codex app server here because:
+  // 1. It can fail if Codex CLI is not installed/configured
+  // 2. The app server spawn can crash the host if not properly handled
+  // 3. Session directory deletion is sufficient for cleanup
+  //
+  // If Codex adds thread deletion support in the future, implement it here
+  // with proper error handling and app server lifecycle management.
   
-  // Attempt to get app server and issue a deletion request (if supported)
-  try {
-    const sessionCwd = path.join(os.homedir(), '.ageaf', 'codex', 'sessions', threadId);
-    const appServer = await getCodexAppServer({
-      cwd: sessionCwd,
-    });
-
-    // Note: As of current Codex CLI, there's no native "delete thread" RPC.
-    // This is a placeholder for future API support. The primary cleanup is
-    // the session directory removal.
-    
-    // If Codex adds thread deletion support in the future, implement here:
-    // await appServer.request('thread/delete', { threadId });
-    
-  } catch (error) {
-    // Silently fail - session directory cleanup is sufficient
-    console.warn(`Could not delete Codex thread ${threadId} via API (not critical):`, error);
-  }
+  // For now, this is a no-op. Session directory deletion happens in the caller.
 }
 

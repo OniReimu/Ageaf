@@ -2428,11 +2428,30 @@ const Panel = () => {
     scheduleChatSave();
   };
 
-  const onNewChat = (provider: ProviderId) => {
+  const onNewChat = async (provider: ProviderId) => {
     const projectId = chatProjectIdRef.current;
     const state = chatStateRef.current;
     if (!projectId || !state) return;
-    const { state: nextState, conversation } = startNewConversation(state, provider);
+    const { state: nextState, conversation, evicted } = startNewConversation(state, provider);
+    
+    // Clean up evicted session directories
+    if (evicted.length > 0) {
+      const options = await getOptions();
+      for (const evictedId of evicted) {
+        try {
+          // For Codex, need to look up the conversation to get threadId
+          const evictedConversation = findConversation(state, evictedId);
+          const sessionIdToDelete =
+            provider === 'codex' && evictedConversation?.providerState?.codex?.threadId
+              ? evictedConversation.providerState.codex.threadId
+              : evictedId;
+          await deleteSession(options, provider, sessionIdToDelete);
+        } catch (error) {
+          console.error(`Failed to delete evicted ${provider} session ${evictedId}:`, error);
+        }
+      }
+    }
+    
     chatStateRef.current = nextState;
     chatConversationIdRef.current = conversation.id;
     setSessionIds(getOrderedSessionIds(nextState));
@@ -2492,9 +2511,15 @@ const Panel = () => {
     const currentProvider = currentConversation.provider;
 
     // Delete session directory and runtime state on the host
+    // For Codex, use threadId (matches session directory name)
+    // For Claude, use conversationId
     try {
       const options = await getOptions();
-      await deleteSession(options, currentProvider, currentId);
+      const sessionIdToDelete =
+        currentProvider === 'codex' && currentConversation.providerState?.codex?.threadId
+          ? currentConversation.providerState.codex.threadId
+          : currentId;
+      await deleteSession(options, currentProvider, sessionIdToDelete);
     } catch (error) {
       console.error(`Failed to delete ${currentProvider} session ${currentId}:`, error);
       // Continue with UI cleanup even if backend deletion fails
@@ -2519,6 +2544,25 @@ const Panel = () => {
       nextState = created.state;
       nextActiveId = created.conversation.id;
       orderedAfter = getOrderedSessionIds(nextState);
+      
+      // Clean up evicted sessions
+      if (created.evicted.length > 0) {
+        const options = await getOptions();
+        for (const evictedId of created.evicted) {
+          try {
+            // For Codex, need to look up the conversation to get threadId
+            // Look up from the state before startNewConversation removed it
+            const evictedConversation = findConversation(state, evictedId);
+            const sessionIdToDelete =
+              currentProvider === 'codex' && evictedConversation?.providerState?.codex?.threadId
+                ? evictedConversation.providerState.codex.threadId
+                : evictedId;
+            await deleteSession(options, currentProvider, sessionIdToDelete);
+          } catch (error) {
+            console.error(`Failed to delete evicted ${currentProvider} session ${evictedId}:`, error);
+          }
+        }
+      }
     }
 
     chatStateRef.current = nextState;
@@ -2652,6 +2696,7 @@ const Panel = () => {
             </div>
           </div>
         </div>
+          <div class="ageaf-panel__header-right">
 	          <div
 	            class={`ageaf-provider ${providerIndicatorClass} ${
 	              !connectionHealth.hostConnected || !connectionHealth.runtimeWorking
@@ -2670,6 +2715,37 @@ const Panel = () => {
 	            <span class="ageaf-provider__dot" aria-hidden="true" />
 	            <span class="ageaf-provider__label">{providerDisplay.label}</span>
 	          </div>
+          {chatConversationIdRef.current ? (
+            <div class="ageaf-panel__session-id">
+              Session: {(() => {
+                const conversationId = chatConversationIdRef.current;
+                if (!conversationId) return '';
+                
+                // For Codex, show the threadId (matches session directory)
+                // For Claude, show the conversation ID
+                const state = chatStateRef.current;
+                const conversation = state
+                  ? findConversation(state, conversationId)
+                  : null;
+                
+                if (conversation?.provider === 'codex' && conversation?.providerState?.codex?.threadId) {
+                  const threadId = conversation.providerState.codex.threadId;
+                  // Show first segment of UUID or first 8 chars
+                  return threadId.includes('-') ? threadId.split('-')[0] : threadId.slice(0, 8);
+                }
+                
+                // For Claude or Codex without threadId yet, show conversation ID
+                const id = conversationId;
+                if (id.startsWith('conv-')) {
+                  const parts = id.split('-');
+                  // Show the random suffix (last part) - more unique than timestamp
+                  return parts.length > 2 ? parts[parts.length - 1].slice(0, 8) : id.slice(-8);
+                }
+                return id.includes('-') ? id.split('-')[0] : id.slice(0, 8);
+              })()}
+            </div>
+          ) : null}
+          </div>
       </header>
       <div class="ageaf-panel__body">
           <div class="ageaf-panel__chat" ref={chatRef}>
@@ -2986,7 +3062,7 @@ const Panel = () => {
                   <button
                     class="ageaf-toolbar-menu__option"
                     type="button"
-                    onClick={() => onNewChat('claude')}
+                    onClick={() => void onNewChat('claude')}
                     role="menuitem"
                   >
                     Anthropic
@@ -2994,7 +3070,7 @@ const Panel = () => {
                   <button
                     class="ageaf-toolbar-menu__option"
                     type="button"
-                    onClick={() => onNewChat('codex')}
+                    onClick={() => void onNewChat('codex')}
                     role="menuitem"
                   >
                     OpenAI
