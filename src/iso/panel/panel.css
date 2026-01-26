@@ -1023,7 +1023,8 @@
   background: transparent;
 }
 
-.ageaf-runtime__picker:hover .ageaf-runtime__menu {
+.ageaf-runtime__picker:hover .ageaf-runtime__menu,
+.ageaf-runtime__menu:hover {
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;

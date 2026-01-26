@@ -306,6 +306,10 @@ const Panel = () => {
   const lastHostOkAtRef = useRef(0);
   const lastRuntimeOkAtRef = useRef(0);
   const lastCodexMetadataCheckAtRef = useRef(0);
+  const metadataCacheRef = useRef<{
+    claude?: { models: RuntimeModel[]; thinkingModes: ThinkingMode[]; fetchedAt: number };
+    codex?: { models: RuntimeModel[]; thinkingModes: ThinkingMode[]; fetchedAt: number };
+  }>({});
   const dragStartX = useRef(0);
   const dragStartWidth = useRef(DEFAULT_WIDTH);
   const isDragging = useRef(false);
@@ -597,18 +601,40 @@ const Panel = () => {
 
       try {
         if (chatProvider === 'codex') {
-          const metadata = await fetchCodexRuntimeMetadata(options);
-          if (cancelled) return;
-          const models = (metadata.models ?? []).filter(
-            (model: RuntimeModel) => !model.value.includes('gpt-5.1')
-          );
+          // Check cache first - 5 minute TTL
+          const cached = metadataCacheRef.current.codex;
+          const now = Date.now();
+          const cacheAge = cached ? now - cached.fetchedAt : Infinity;
+          const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+          let models: RuntimeModel[];
+          let metadata: any;
+
+          if (cached && cacheAge < CACHE_TTL) {
+            // Use cached metadata
+            models = cached.models;
+          } else {
+            // Fetch fresh metadata
+            metadata = await fetchCodexRuntimeMetadata(options);
+            if (cancelled) return;
+            models = (metadata.models ?? []).filter(
+              (model: RuntimeModel) => !model.value.includes('gpt-5.1')
+            );
+          }
+
           setRuntimeModels(models);
-          const resolvedModel =
-            metadata.currentModel ??
-            models.find((model: RuntimeModel) => model.isDefault)?.value ??
-            models[0]?.value ??
-            null;
+
+          // Determine model selection
+          const resolvedModel = metadata
+            ? (metadata.currentModel ??
+               models.find((model: RuntimeModel) => model.isDefault)?.value ??
+               models[0]?.value ??
+               null)
+            : (models.find((model: RuntimeModel) => model.isDefault)?.value ??
+               models[0]?.value ??
+               null);
           setCurrentModel(resolvedModel);
+
           const selectedModel =
             (resolvedModel ? models.find((model: RuntimeModel) => model.value === resolvedModel) : undefined) ??
             models.find((model: RuntimeModel) => model.isDefault) ??
@@ -628,14 +654,25 @@ const Panel = () => {
           setThinkingModes(
             nextThinkingModes.length > 0 ? nextThinkingModes : FALLBACK_THINKING_MODES
           );
-          const effort =
-            metadata.currentReasoningEffort ?? selectedModel?.defaultReasoningEffort ?? null;
+
+          // Store in cache if freshly fetched
+          if (metadata) {
+            metadataCacheRef.current.codex = {
+              models,
+              thinkingModes: nextThinkingModes.length > 0 ? nextThinkingModes : FALLBACK_THINKING_MODES,
+              fetchedAt: now,
+            };
+          }
+
+          const effort = metadata
+            ? (metadata.currentReasoningEffort ?? selectedModel?.defaultReasoningEffort ?? null)
+            : (selectedModel?.defaultReasoningEffort ?? null);
           setCurrentThinkingMode(getThinkingModeIdForCodexEffort(effort));
           setCurrentThinkingTokens(null);
           setYoloMode((options.openaiApprovalPolicy ?? 'never') === 'never');
           setAutoCompactEnabled(options.autoCompactEnabled ?? false);
+
           // Update connection health - runtime is working since we got metadata
-          const now = Date.now();
           lastHostOkAtRef.current = now;
           lastRuntimeOkAtRef.current = now;
           setConnectionHealth({ hostConnected: true, runtimeWorking: true });
@@ -643,19 +680,56 @@ const Panel = () => {
           return;
         }
 
-        const metadata = await fetchClaudeRuntimeMetadata(options);
-        if (cancelled) return;
-        setRuntimeModels(metadata.models ?? []);
-        setThinkingModes(metadata.thinkingModes ?? FALLBACK_THINKING_MODES);
-        setCurrentModel(metadata.currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE);
-        setCurrentThinkingMode(
-          metadata.currentThinkingMode ?? options.claudeThinkingMode ?? 'off'
+        // Check cache first - 5 minute TTL
+        const cached = metadataCacheRef.current.claude;
+        const now = Date.now();
+        const cacheAge = cached ? now - cached.fetchedAt : Infinity;
+        const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+        let models: RuntimeModel[];
+        let thinkingModes: ThinkingMode[];
+        let metadata: any = null;
+
+        if (cached && cacheAge < CACHE_TTL) {
+          // Use cached metadata
+          models = cached.models;
+          thinkingModes = cached.thinkingModes;
+        } else {
+          // Fetch fresh metadata
+          metadata = await fetchClaudeRuntimeMetadata(options);
+          if (cancelled) return;
+          models = metadata.models ?? [];
+          thinkingModes = metadata.thinkingModes ?? FALLBACK_THINKING_MODES;
+
+          // Store in cache
+          metadataCacheRef.current.claude = {
+            models,
+            thinkingModes,
+            fetchedAt: now,
+          };
+        }
+
+        setRuntimeModels(models);
+        setThinkingModes(thinkingModes);
+        setCurrentModel(
+          metadata
+            ? (metadata.currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE)
+            : (options.claudeModel ?? DEFAULT_MODEL_VALUE)
         );
-        setCurrentThinkingTokens(metadata.maxThinkingTokens ?? options.claudeMaxThinkingTokens ?? null);
+        setCurrentThinkingMode(
+          metadata
+            ? (metadata.currentThinkingMode ?? options.claudeThinkingMode ?? 'off')
+            : (options.claudeThinkingMode ?? 'off')
+        );
+        setCurrentThinkingTokens(
+          metadata
+            ? (metadata.maxThinkingTokens ?? options.claudeMaxThinkingTokens ?? null)
+            : (options.claudeMaxThinkingTokens ?? null)
+        );
         setYoloMode(options.claudeYoloMode ?? true);
         setAutoCompactEnabled(options.autoCompactEnabled ?? false);
+
         // Update connection health - runtime is working since we got metadata
-        const now = Date.now();
         lastHostOkAtRef.current = now;
         lastRuntimeOkAtRef.current = now;
         setConnectionHealth({ hostConnected: true, runtimeWorking: true });
