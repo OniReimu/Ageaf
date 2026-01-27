@@ -40,7 +40,7 @@ const common = {
         test: /\.css$/,
         use: [MiniCssExtractPlugin.loader, 'css-loader'],
       },
-      // Check for images imported in .js files and
+      // Check for images imported in .js files
       {
         test: IMAGE_TYPES,
         use: [
@@ -52,6 +52,14 @@ const common = {
             },
           },
         ],
+      },
+      // Handle font files (for KaTeX and other libraries)
+      {
+        test: /\.(woff|woff2|eot|ttf|otf)$/,
+        type: 'asset/resource',
+        generator: {
+          filename: 'fonts/[name][ext]',
+        },
       },
     ],
   },
