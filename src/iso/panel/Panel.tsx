@@ -2184,6 +2184,8 @@ const Panel = () => {
     const pending = sessionState.pendingDone;
     sessionState.pendingDone = null;
     const finalText = sessionState.streamingText.trim();
+    // Clear buffer so it can't be reused for the next reply.
+    sessionState.streamingText = '';
     stopThinkingTimer(conversationId);
 
     let thinkingSeconds = 0;
@@ -2416,6 +2418,10 @@ const Panel = () => {
     sessionState.interrupted = false;
     sessionState.activityStartTime = Date.now();
     sessionState.pendingDone = null;
+    // IMPORTANT: Reset streaming buffers so previous replies can't leak into this reply.
+    stopStreamTimer(sessionConversationId);
+    sessionState.streamTokens = [];
+    sessionState.streamingText = '';
 
     const abortController = new AbortController();
     sessionState.abortController = abortController;
