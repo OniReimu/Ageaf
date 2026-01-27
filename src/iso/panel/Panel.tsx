@@ -2732,6 +2732,30 @@ const Panel = () => {
   };
 
   const onInputKeyDown = (event: KeyboardEvent) => {
+    // Local undo/redo for the editor to avoid Overleaf intercepting Cmd/Ctrl+Z/Y.
+    if (event.metaKey || event.ctrlKey) {
+      const key = event.key.toLowerCase();
+      const editor = editorRef.current;
+
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault();
+        if (editor) {
+          editor.focus();
+          document.execCommand('undo');
+        }
+        return;
+      }
+
+      if ((key === 'z' && event.shiftKey) || key === 'y') {
+        event.preventDefault();
+        if (editor) {
+          editor.focus();
+          document.execCommand('redo');
+        }
+        return;
+      }
+    }
+
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
       void insertChipFromSelection();
