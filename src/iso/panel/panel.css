@@ -382,6 +382,7 @@
   border: 1px solid rgba(255, 255, 255, 0.04);
   display: inline-block;
   max-width: 100%;
+  min-width: 0;
   align-self: start;
   justify-self: start;
   white-space: normal;
@@ -464,6 +465,7 @@
 
 .ageaf-message__content {
   display: block;
+  min-width: 0;
 }
 
 .ageaf-message__interrupt {
@@ -686,6 +688,115 @@
 
 .token.entity {
   cursor: help;
+}
+
+/* LaTeX rendering styles */
+.ageaf-latex {
+  cursor: text;
+  user-select: text;
+  position: relative;
+}
+
+.ageaf-latex--inline {
+  display: inline;
+  margin: 0 2px;
+}
+
+.ageaf-latex--display {
+  /* Keep math self-contained so it can't break wrapping for other content */
+  display: block;
+  margin: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: left;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.ageaf-latex__copy {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  background: rgba(9, 14, 11, 0.92);
+  color: rgba(233, 242, 236, 0.9);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  z-index: 3;
+  /* "Superscript-like" feel */
+  transform: translateY(-4px);
+  flex: 0 0 auto;
+}
+
+.ageaf-latex--display:hover .ageaf-latex__copy,
+.ageaf-latex--display:focus-within .ageaf-latex__copy {
+  opacity: 1;
+}
+
+.ageaf-latex__copy:hover {
+  background: rgba(57, 185, 138, 0.15);
+  border-color: rgba(57, 185, 138, 0.45);
+}
+
+/* Left-align KaTeX rendered output - override KaTeX's default centering */
+.ageaf-latex--display > .katex,
+.ageaf-latex--display > .katex-display {
+  text-align: left !important;
+  margin-left: 0 !important;
+  margin-right: auto !important;
+  display: block;
+}
+
+.ageaf-latex--display .katex-display {
+  text-align: left !important;
+  margin-left: 0 !important;
+  margin-right: auto !important;
+}
+
+.ageaf-latex-fence {
+  margin: 10px 0;
+  /* Shrink-to-fit instead of looking like a fixed full-width block. */
+  display: inline-block;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(18, 24, 20, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  overflow-x: auto;
+  text-align: left;
+}
+
+.ageaf-latex-fence .ageaf-latex--display {
+  margin: 0;
+}
+
+/* Left-align KaTeX output inside fences - override KaTeX's default centering */
+.ageaf-latex-fence .katex,
+.ageaf-latex-fence .katex-display {
+  text-align: left !important;
+  margin-left: 0 !important;
+  margin-right: auto !important;
+  display: block;
+}
+
+.ageaf-latex-fence .katex-display {
+  text-align: left !important;
+  margin-left: 0 !important;
+  margin-right: auto !important;
+}
+
+.ageaf-latex-error {
+  color: rgba(249, 165, 157, 0.95);
+  background: rgba(249, 165, 157, 0.1);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+  font-size: 12px;
 }
 
 /* Ensure code blocks within quotes maintain proper styling */

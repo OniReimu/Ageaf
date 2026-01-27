@@ -1,5 +1,6 @@
 import MarkdownIt from 'markdown-it';
 import Prism from 'prismjs';
+import katex from 'katex';
 
 // Import commonly used language grammars
 import 'prismjs/components/prism-javascript';
@@ -85,6 +86,204 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#039;');
 }
 
+// Render LaTeX math using KaTeX
+function renderLatex(latex: string, displayMode: boolean): string {
+  try {
+    const html = katex.renderToString(latex, {
+      displayMode,
+      throwOnError: false,
+      trust: false,
+      strict: false,
+    });
+    // Wrap in a span with data attribute containing raw LaTeX for copy behavior
+    const mode = displayMode ? 'display' : 'inline';
+    // For display math, include a small "copy source" button inline after the equation.
+    const copyButton = displayMode
+      ? `<button class="ageaf-latex__copy" type="button" data-latex-copy="true" aria-label="Copy LaTeX" title="Copy LaTeX">⧉</button>`
+      : '';
+    return `<span class="ageaf-latex ageaf-latex--${mode}" data-latex="${escapeHtml(
+      latex
+    )}">${html}${copyButton}</span>`;
+  } catch (e) {
+    // If rendering fails, return escaped LaTeX
+    return `<code class="ageaf-latex-error">${escapeHtml(latex)}</code>`;
+  }
+}
+
+// Check if LaTeX content is actually math (equations/notations) vs other LaTeX commands
+function looksLikeMath(source: string): boolean {
+  const trimmed = source.trim();
+  if (!trimmed) return false;
+
+  // Treat full LaTeX documents / non-math artifacts as NOT math (keep as raw code fence).
+  const lowerSource = trimmed.toLowerCase();
+  if (
+    lowerSource.includes('\\documentclass') ||
+    lowerSource.includes('\\begin{document}') ||
+    lowerSource.includes('\\end{document}') ||
+    lowerSource.includes('\\usepackage') ||
+    lowerSource.includes('\\begin{tikzpicture}') ||
+    lowerSource.includes('\\newcommand') ||
+    lowerSource.includes('\\def')
+  ) {
+    return false;
+  }
+
+  // Common non-math LaTeX "prose/layout" commands: keep raw unless explicitly requested.
+  if (
+    lowerSource.includes('\\section') ||
+    lowerSource.includes('\\subsection') ||
+    lowerSource.includes('\\subsubsection') ||
+    lowerSource.includes('\\paragraph') ||
+    lowerSource.includes('\\chapter') ||
+    lowerSource.includes('\\heading') ||
+    lowerSource.includes('\\begin{itemize}') ||
+    lowerSource.includes('\\begin{enumerate}') ||
+    lowerSource.includes('\\item') ||
+    lowerSource.includes('\\begin{figure}') ||
+    lowerSource.includes('\\includegraphics') ||
+    lowerSource.includes('\\caption')
+  ) {
+    return false;
+  }
+
+  // If a would-be math block contains `$`, it's usually prose that incorrectly nests inline math
+  // inside display math (e.g. `\[ Let $x$ ... \]`). KaTeX will choke on this; keep it raw.
+  if (trimmed.includes('$')) {
+    return false;
+  }
+
+  // Math environments
+  const mathEnvs = [
+    '\\begin{equation}',
+    '\\begin{equation*}',
+    '\\begin{align}',
+    '\\begin{align*}',
+    '\\begin{aligned}',
+    '\\begin{eqnarray}',
+    '\\begin{eqnarray*}',
+    '\\begin{gather}',
+    '\\begin{gather*}',
+    '\\begin{multline}',
+    '\\begin{multline*}',
+    '\\begin{cases}',
+    '\\begin{matrix}',
+    '\\begin{pmatrix}',
+    '\\begin{bmatrix}',
+    '\\begin{vmatrix}',
+    '\\begin{Vmatrix}',
+  ];
+
+  for (const env of mathEnvs) {
+    if (lowerSource.includes(env)) return true;
+  }
+
+  // Starting with delimiters alone is not enough; require some actual math signal.
+  const withoutDelims = stripOuterMathDelimiters(trimmed);
+  const lowerNoDelims = withoutDelims.toLowerCase();
+
+  // Common math commands that indicate math content
+  const mathCommands = [
+    '\\frac',
+    '\\sqrt',
+    '\\sum',
+    '\\prod',
+    '\\int',
+    '\\lim',
+    '\\sin',
+    '\\cos',
+    '\\tan',
+    '\\log',
+    '\\ln',
+    '\\exp',
+    '\\max',
+    '\\min',
+    '\\sup',
+    '\\inf',
+    '\\mathbb',
+    '\\mathcal',
+    '\\mathbf',
+    '\\mathit',
+    '\\mathrm',
+    '\\text',
+    '\\left',
+    '\\right',
+    '\\big',
+    '\\Big',
+    '\\bigg',
+    '\\Bigg',
+    '\\lceil',
+    '\\rceil',
+    '\\lfloor',
+    '\\rfloor',
+    '\\langle',
+    '\\rangle',
+    '\\approx',
+    '\\equiv',
+    '\\leq',
+    '\\geq',
+    '\\neq',
+    '\\sim',
+    '\\simeq',
+    '\\cong',
+  ];
+
+  // If it contains several math commands, it's likely math
+  let mathCommandCount = 0;
+  for (const cmd of mathCommands) {
+    if (lowerNoDelims.includes(cmd)) {
+      mathCommandCount++;
+      if (mathCommandCount >= 2) return true; // At least 2 math commands = likely math
+    }
+  }
+
+  // Strong symbol signals for math blocks
+  if (
+    /[=_^]/.test(withoutDelims) ||
+    lowerNoDelims.includes('\\cdot') ||
+    lowerNoDelims.includes('\\times') ||
+    lowerNoDelims.includes('\\to') ||
+    lowerNoDelims.includes('\\mapsto')
+  ) {
+    if (mathCommandCount >= 1) return true;
+    // Even without commands, a short expression with symbols is likely math.
+    if (withoutDelims.length <= 140) return true;
+  }
+
+  // If it's short and contains at least one math command, likely math.
+  if (withoutDelims.length < 120 && mathCommandCount >= 1) return true;
+
+  // Otherwise, assume it's NOT math (keep as raw code)
+  return false;
+}
+
+function stripOuterMathDelimiters(source: string): string {
+  let s = source.trim();
+  if (!s) return s;
+
+  // \[ ... \]
+  if (s.startsWith('\\[') && s.endsWith('\\]')) {
+    return s.slice(2, -2).trim();
+  }
+
+  // \( ... \)
+  if (s.startsWith('\\(') && s.endsWith('\\)')) {
+    return s.slice(2, -2).trim();
+  }
+
+  // $$ ... $$
+  if (s.startsWith('$$') && s.endsWith('$$')) {
+    return s.slice(2, -2).trim();
+  }
+
+  // $ ... $
+  if (s.startsWith('$') && s.endsWith('$') && s.length > 1) {
+    return s.slice(1, -1).trim();
+  }
+
+  return s;
+}
+
 // Custom fence renderer with syntax highlighting
 renderer.renderer.rules.fence = (tokens, idx) => {
   const token = tokens[idx];
@@ -95,6 +294,22 @@ renderer.renderer.rules.fence = (tokens, idx) => {
   const langMatch = info.match(/^(\S+)/);
   const rawLang = langMatch ? langMatch[1] : '';
   const lang = rawLang ? normalizeLanguage(rawLang) : '';
+
+  // Only render fenced ```latex blocks as KaTeX if they contain math equations/notations.
+  // Other LaTeX (document structure, commands, etc.) stays as raw code.
+  // Users can force raw LaTeX by using ```text or ```latex-raw.
+  if (lang === 'latex' && rawLang.toLowerCase() !== 'latex-raw') {
+    const latex = content.trim();
+    if (latex && looksLikeMath(latex)) {
+      // Fenced blocks often include outer delimiters like \[...\] — strip them before KaTeX.
+      const normalized = stripOuterMathDelimiters(latex);
+      const rendered = renderLatex(normalized, true);
+      // IMPORTANT: Do NOT use <pre> here — Panel extracts <pre> into the "quote" UI.
+      // Render as a normal block so math stays in the main message flow.
+      return `<div class="ageaf-latex-fence" data-latex="${escapeHtml(normalized)}">${rendered}</div>\n`;
+    }
+    // If it's LaTeX but not math, fall through to render as raw code block
+  }
 
   let highlightedCode = escapeHtml(content);
   let prismLang = lang;
@@ -119,6 +334,143 @@ renderer.renderer.rules.fence = (tokens, idx) => {
   // Return HTML with language label and highlighted code
   return `<pre class="ageaf-code-block" data-language="${escapeHtml(lang)}" data-language-label="${escapeHtml(displayName)}"><code class="language-${escapeHtml(prismLang)}">${highlightedCode}</code></pre>\n`;
 };
+
+// Add inline LaTeX rule for \(...\) and $...$
+function latexInline(state: any, silent: boolean) {
+  const start = state.pos;
+  const max = state.posMax;
+
+  // Check for \( or $
+  let isBackslash = false;
+  if (state.src.charCodeAt(start) === 0x5C /* \ */ && state.src.charCodeAt(start + 1) === 0x28 /* ( */) {
+    isBackslash = true;
+  } else if (state.src.charCodeAt(start) === 0x24 /* $ */) {
+    isBackslash = false;
+  } else {
+    return false;
+  }
+
+  // Look for closing delimiter
+  const openLen = isBackslash ? 2 : 1;
+  const closePattern = isBackslash ? '\\)' : '$';
+  const closeLen = isBackslash ? 2 : 1;
+
+  let pos = start + openLen;
+  while (pos < max) {
+    if (isBackslash) {
+      if (state.src.charCodeAt(pos) === 0x5C && state.src.charCodeAt(pos + 1) === 0x29) {
+        break;
+      }
+    } else {
+      if (state.src.charCodeAt(pos) === 0x24) {
+        break;
+      }
+    }
+    pos++;
+  }
+
+  if (pos >= max) {
+    return false; // No closing delimiter found
+  }
+
+  if (!silent) {
+    const latex = state.src.slice(start + openLen, pos);
+    const token = state.push('latex_inline', '', 0);
+    token.content = latex;
+  }
+
+  state.pos = pos + closeLen;
+  return true;
+}
+
+// Add block LaTeX rule for \[...\] and $$...$$
+function latexBlock(state: any, startLine: number, endLine: number, silent: boolean) {
+  let pos = state.bMarks[startLine] + state.tShift[startLine];
+  let max = state.eMarks[startLine];
+
+  // Check for \[ or $$
+  let isBackslash = false;
+  if (state.src.charCodeAt(pos) === 0x5C /* \ */ && state.src.charCodeAt(pos + 1) === 0x5B /* [ */) {
+    isBackslash = true;
+  } else if (state.src.charCodeAt(pos) === 0x24 /* $ */ && state.src.charCodeAt(pos + 1) === 0x24) {
+    isBackslash = false;
+  } else {
+    return false;
+  }
+
+  const openLen = 2;
+  pos += openLen;
+
+  // Find closing delimiter
+  const closePattern = isBackslash ? '\\]' : '$$';
+  let nextLine = startLine;
+  let found = false;
+
+  while (nextLine < endLine) {
+    nextLine++;
+    pos = state.bMarks[nextLine] + state.tShift[nextLine];
+    max = state.eMarks[nextLine];
+
+    const line = state.src.slice(pos, max);
+    if (line.includes(closePattern)) {
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    return false;
+  }
+
+  if (!silent) {
+    const oldLineMax = state.lineMax;
+    state.lineMax = nextLine;
+
+    const startPos = state.bMarks[startLine] + state.tShift[startLine] + openLen;
+    // Find the actual position of the closing delimiter
+    const lineStart = state.bMarks[nextLine] + state.tShift[nextLine];
+    const lineEnd = state.eMarks[nextLine];
+    const lineContent = state.src.slice(lineStart, lineEnd);
+    const closeIndex = lineContent.indexOf(closePattern);
+    
+    if (closeIndex === -1) {
+      state.lineMax = oldLineMax;
+      return false;
+    }
+
+    const endPos = lineStart + closeIndex;
+    const latex = state.src.slice(startPos, endPos);
+
+    // Only treat \[...\] / $$...$$ as math if the contents look like math.
+    // Otherwise, leave it as raw text (user likely wants LaTeX source shown).
+    if (!looksLikeMath(latex)) {
+      state.lineMax = oldLineMax;
+      return false;
+    }
+
+    const token = state.push('latex_block', '', 0);
+    token.content = latex;
+    token.map = [startLine, nextLine + 1];
+
+    state.lineMax = oldLineMax;
+  }
+
+  state.line = nextLine + 1;
+  return true;
+}
+
+// Add rendering rules
+renderer.renderer.rules.latex_inline = (tokens, idx) => {
+  return renderLatex(tokens[idx].content, false);
+};
+
+renderer.renderer.rules.latex_block = (tokens, idx) => {
+  return renderLatex(tokens[idx].content, true);
+};
+
+// Register the rules
+renderer.inline.ruler.before('escape', 'latex_inline', latexInline);
+renderer.block.ruler.before('fence', 'latex_block', latexBlock);
 
 function normalizeTaskLists(content: string) {
   const unchecked = content.replace(/^(\s*[-*]\s+)\[ \]\s+/gm, '$1☐ ');

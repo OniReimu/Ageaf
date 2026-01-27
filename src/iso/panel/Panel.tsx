@@ -40,6 +40,7 @@ import {
 } from './chatStore';
 
 import './panel.css';
+import 'katex/dist/katex.min.css';
 
 const DEFAULT_WIDTH = 360;
 const MIN_WIDTH = 280;
@@ -415,6 +416,7 @@ const Panel = () => {
   const chatConversationIdRef = useRef<string | null>(null);
   const chatStateRef = useRef<StoredProjectChat | null>(null);
   const copyResetTimersRef = useRef<Record<string, number>>({});
+  const latexCopyTimersRef = useRef<Map<HTMLElement, number>>(new Map());
   const chatSaveTimerRef = useRef<number | null>(null);
   const contextRefreshInFlightRef = useRef(false);
 
@@ -1060,6 +1062,12 @@ const Panel = () => {
         window.clearTimeout(timers[key]);
       }
       copyResetTimersRef.current = {};
+
+      // Clear any per-element LaTeX copy timers
+      for (const timeoutId of latexCopyTimersRef.current.values()) {
+        window.clearTimeout(timeoutId);
+      }
+      latexCopyTimersRef.current.clear();
     };
   }, []);
 
@@ -1207,6 +1215,66 @@ const Panel = () => {
     }
 
     return { mainHtml: mainContainer.innerHTML, quotes };
+  };
+
+  const extractCopyTextFromQuoteHtml = (html: string): string => {
+    const tempContainer = document.createElement('div');
+    tempContainer.innerHTML = html;
+
+    // Rendered LaTeX fences store the source on the PRE
+    const latexPre = tempContainer.querySelector('pre[data-latex]') as HTMLElement | null;
+    if (latexPre) {
+      const rawLatex = latexPre.getAttribute('data-latex');
+      if (rawLatex) return `\\[${rawLatex}\\]`;
+    }
+
+    // Check for code blocks (PRE > CODE)
+    const preElement = tempContainer.querySelector('pre > code');
+    if (preElement) {
+      return preElement.textContent || '';
+    }
+
+    // Check for blockquote
+    const blockquote = tempContainer.querySelector('blockquote');
+    if (blockquote) {
+      // Process LaTeX elements recursively
+      const extractTextWithLatex = (node: Node): string => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          return node.textContent || '';
+        }
+
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const element = node as HTMLElement;
+
+          // If this is a LaTeX element, extract raw LaTeX from data attribute
+          if (element.classList.contains('ageaf-latex')) {
+            const rawLatex = element.getAttribute('data-latex');
+            if (rawLatex) {
+              // Wrap with appropriate delimiters based on display mode
+              if (element.classList.contains('ageaf-latex--display')) {
+                return `\\[${rawLatex}\\]`;
+              } else {
+                return `\\(${rawLatex}\\)`;
+              }
+            }
+          }
+
+          // Recursively process children
+          let text = '';
+          for (const child of Array.from(element.childNodes)) {
+            text += extractTextWithLatex(child);
+          }
+          return text;
+        }
+
+        return '';
+      };
+
+      return extractTextWithLatex(blockquote);
+    }
+
+    // Fallback to plain text
+    return tempContainer.textContent || '';
   };
 
   const extractQuoteCopyFromMarkdown = (markdown: string) => {
@@ -1494,7 +1562,6 @@ const Panel = () => {
 
   const renderMessageContent = (message: Message) => {
     const { mainHtml, quotes } = extractQuotesFromHtml(renderMarkdown(message.content));
-    const quoteCopies = extractQuoteCopyFromMarkdown(message.content);
     const hasMain = mainHtml.trim().length > 0;
 
     return (
@@ -1503,6 +1570,41 @@ const Panel = () => {
           <div
             class="ageaf-message__content"
             dangerouslySetInnerHTML={{ __html: mainHtml }}
+            onClick={(event) => {
+              const target = event.target as HTMLElement | null;
+              const button = target?.closest?.('[data-latex-copy="true"]') as HTMLElement | null;
+              if (!button) return;
+              event.preventDefault();
+              event.stopPropagation();
+
+              const container = button.closest('.ageaf-latex') as HTMLElement | null;
+              const rawLatex = container?.getAttribute('data-latex');
+              if (!rawLatex) return;
+
+              const isDisplay =
+                container?.classList.contains('ageaf-latex--display') ||
+                Boolean(container?.querySelector('.katex-display'));
+              const wrapped = isDisplay ? `\\[${rawLatex}\\]` : `\\(${rawLatex}\\)`;
+              void (async () => {
+                const success = await copyToClipboard(wrapped);
+                if (!success) return;
+                // Swap icon to tick for 3s, then revert (since this button is inside injected HTML).
+                const existingTimer = latexCopyTimersRef.current.get(button);
+                if (existingTimer != null) {
+                  window.clearTimeout(existingTimer);
+                }
+
+                button.classList.add('is-copied');
+                button.textContent = '✓';
+
+                const timeoutId = window.setTimeout(() => {
+                  button.classList.remove('is-copied');
+                  button.textContent = '⧉';
+                  latexCopyTimersRef.current.delete(button);
+                }, 3000);
+                latexCopyTimersRef.current.set(button, timeoutId);
+              })();
+            }}
           />
         ) : null}
         {quotes.length > 0 ? (
@@ -1510,7 +1612,7 @@ const Panel = () => {
             <div class="ageaf-message__quote-body">
               {quotes.map((quote, index) => {
                 const copyId = `${message.id}-quote-${index}`;
-                const copyText = quoteCopies[index] ?? '';
+                const copyText = extractCopyTextFromQuoteHtml(quote.html);
                 const copyDisabled = !copyText;
                 const isCopied = copiedItems[copyId];
                 const hasLanguage = Boolean(quote.languageLabel);
