@@ -1132,15 +1132,21 @@ const Panel = () => {
     }
   };
 
+  type QuoteData = {
+    html: string;
+    language?: string;
+    languageLabel?: string;
+  };
+
   const extractQuotesFromHtml = (html: string) => {
     if (typeof document === 'undefined') {
-      return { mainHtml: html, quotes: [] as string[] };
+      return { mainHtml: html, quotes: [] as QuoteData[] };
     }
 
     const container = document.createElement('div');
     container.innerHTML = html;
     const mainContainer = document.createElement('div');
-    const quotes: string[] = [];
+    const quotes: QuoteData[] = [];
     const nodes = Array.from(container.childNodes);
 
     const isWhitespaceText = (node: Node) =>
@@ -1163,12 +1169,19 @@ const Panel = () => {
       if (node.nodeType === Node.ELEMENT_NODE) {
         const element = node as HTMLElement;
         if (element.tagName === 'BLOCKQUOTE') {
-          quotes.push(element.outerHTML);
+          quotes.push({ html: element.outerHTML });
           continue;
         }
 
         if (element.tagName === 'PRE') {
-          quotes.push(element.outerHTML);
+          // Extract language info from data attributes
+          const language = element.getAttribute('data-language') || undefined;
+          const languageLabel = element.getAttribute('data-language-label') || undefined;
+          quotes.push({
+            html: element.outerHTML,
+            language,
+            languageLabel,
+          });
           continue;
         }
 
@@ -1495,13 +1508,17 @@ const Panel = () => {
         {quotes.length > 0 ? (
           <div class="ageaf-message__quote">
             <div class="ageaf-message__quote-body">
-              {quotes.map((quoteHtml, index) => {
+              {quotes.map((quote, index) => {
                 const copyId = `${message.id}-quote-${index}`;
                 const copyText = quoteCopies[index] ?? '';
                 const copyDisabled = !copyText;
                 const isCopied = copiedItems[copyId];
+                const hasLanguage = Boolean(quote.languageLabel);
                 return (
                   <div class="ageaf-message__quote-block" key={`${message.id}-quote-${index}`}>
+                    {hasLanguage && (
+                      <div class="ageaf-message__quote-lang">{quote.languageLabel}</div>
+                    )}
                     <button
                       class={`ageaf-message__copy ${copyDisabled ? 'is-disabled' : ''}`}
                       type="button"
@@ -1519,7 +1536,7 @@ const Panel = () => {
                     </button>
                     <div
                       class="ageaf-message__quote-content"
-                      dangerouslySetInnerHTML={{ __html: quoteHtml }}
+                      dangerouslySetInnerHTML={{ __html: quote.html }}
                     />
                   </div>
                 );
