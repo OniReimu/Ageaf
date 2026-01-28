@@ -19,6 +19,8 @@ interface SelectionResponse {
   from: number;
   to: number;
   head: number;
+  lineFrom: number;
+  lineTo: number;
 }
 
 interface ApplyPatchRequest {
@@ -33,6 +35,7 @@ function onSelectionRequest(event: Event) {
   const state = view.state;
   const { from, to, head } = state.selection.main;
 
+  const inclusiveEnd = to > from ? Math.max(from, to - 1) : to;
   const response: SelectionResponse = {
     requestId: detail.requestId,
     selection: state.sliceDoc(from, to),
@@ -41,6 +44,8 @@ function onSelectionRequest(event: Event) {
     from,
     to,
     head,
+    lineFrom: state.doc.lineAt(from).number,
+    lineTo: state.doc.lineAt(inclusiveEnd).number,
   };
 
   window.dispatchEvent(new CustomEvent(RESPONSE_EVENT, { detail: response }));

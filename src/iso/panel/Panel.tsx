@@ -215,6 +215,8 @@ type ChipPayload = {
   text: string;
   filename: string;
   lineCount: number;
+  lineFrom?: number;
+  lineTo?: number;
 };
 
 type ImageAttachment = {
@@ -1120,6 +1122,16 @@ const Panel = () => {
   }, []);
 
   useEffect(() => {
+    const handler = () => {
+      void insertChipFromSelection();
+    };
+    window.addEventListener('ageaf:panel:insert-selection', handler as EventListener);
+    return () => {
+      window.removeEventListener('ageaf:panel:insert-selection', handler as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
     const projectId = chatProjectIdRef.current;
     const conversationId = chatConversationIdRef.current;
     const state = chatStateRef.current;
@@ -1145,8 +1157,8 @@ const Panel = () => {
     '.tex',
   ];
   const MAX_FILE_ATTACHMENTS = 10;
-  const MAX_FILE_BYTES = 512 * 1024;
-  const MAX_TOTAL_FILE_BYTES = 1024 * 1024;
+  const MAX_FILE_BYTES = 10 * 1024 * 1024;
+  const MAX_TOTAL_FILE_BYTES = 100 * 1024 * 1024;
 
   const updateImageAttachments = (next: ImageAttachment[]) => {
     imageAttachmentsRef.current = next;
@@ -1625,14 +1637,33 @@ const Panel = () => {
     const selectors = [
       '[data-testid="file-name"]',
       '.file-tree .selected .name',
-      '.file-tree .selected',
       '.file-tree-item.is-selected .file-tree-item-name',
       '.file-tree-item.selected .file-tree-item-name',
-      '.file-tree-item.is-selected',
-      '.file-tree-item.selected',
+      '.cm-tab.selected .cm-tab-label',
+      '.cm-tab.active .cm-tab-label',
       '.cm-tab.selected',
       '.cm-tab.active',
     ];
+
+    const extractFilename = (value: string) => {
+      const extPattern = FILE_ATTACHMENT_EXTENSIONS.map((ext) =>
+        ext.replace('.', '\\.')
+      ).join('|');
+      const regex = new RegExp(
+        `([A-Za-z0-9_.-]+(?:${extPattern}))`,
+        'gi'
+      );
+      const matches = Array.from(value.matchAll(regex));
+      if (matches.length === 0) return value;
+      let candidate = matches[matches.length - 1][0];
+      if (candidate.toLowerCase().startsWith('description')) {
+        const stripped = candidate.slice('description'.length);
+        if (/^[A-Za-z0-9]/.test(stripped)) {
+          candidate = stripped;
+        }
+      }
+      return candidate;
+    };
 
     for (const selector of selectors) {
       const el = document.querySelector(selector);
@@ -1640,7 +1671,7 @@ const Panel = () => {
       const text = el.textContent?.trim();
       if (!text) continue;
       if (text.length > 120) continue;
-      return text;
+      return extractFilename(text);
     }
 
     return null;
@@ -1783,12 +1814,23 @@ const Panel = () => {
     insertNodeAtCursor(document.createTextNode(text));
   };
 
-  const insertChipFromText = (text: string, filenameOverride?: string) => {
+  const insertChipFromText = (
+    text: string,
+    filenameOverride?: string,
+    lineFrom?: number,
+    lineTo?: number
+  ) => {
     if (!text) return;
     const filename = filenameOverride ?? getActiveFilename() ?? 'snippet.tex';
     const lineCount = getLineCount(text);
     const chipId = createChipId();
-    const payload: ChipPayload = { text, filename, lineCount };
+    const payload: ChipPayload = {
+      text,
+      filename,
+      lineCount,
+      ...(typeof lineFrom === 'number' ? { lineFrom } : {}),
+      ...(typeof lineTo === 'number' ? { lineTo } : {}),
+    };
     chipStoreRef.current = { ...chipStoreRef.current, [chipId]: payload };
 
     const chip = document.createElement('span');
@@ -1797,9 +1839,72 @@ const Panel = () => {
     chip.dataset.chipId = chipId;
     chip.dataset.filename = filename;
     chip.dataset.lines = String(lineCount);
-    chip.setAttribute('aria-label', `${filename} (${lineCount})`);
+    chip.setAttribute(
+      'aria-label',
+      `${filename} ${
+        typeof lineFrom === 'number' && typeof lineTo === 'number'
+          ? lineFrom === lineTo
+            ? lineFrom
+            : `${lineFrom}-${lineTo}`
+          : lineCount > 1
+            ? `1-${lineCount}`
+            : '1'
+      }`
+    );
     chip.setAttribute('contenteditable', 'false');
-    chip.textContent = `📄 ${filename} (${lineCount})`;
+
+    const extMatch = filename.match(/\.[a-z0-9]+$/i);
+    const ext = extMatch ? extMatch[0].toLowerCase() : '';
+    const iconMeta = (() => {
+      switch (ext) {
+        case '.tex':
+          return { label: 'TeX', className: 'tex' };
+        case '.md':
+          return { label: 'MD', className: 'md' };
+        case '.json':
+          return { label: '{}', className: 'json' };
+        case '.yaml':
+        case '.yml':
+          return { label: 'YAML', className: 'yaml' };
+        case '.csv':
+          return { label: 'CSV', className: 'csv' };
+        case '.xml':
+          return { label: 'XML', className: 'xml' };
+        case '.toml':
+          return { label: 'TOML', className: 'toml' };
+        case '.ini':
+          return { label: 'INI', className: 'ini' };
+        case '.log':
+          return { label: 'LOG', className: 'log' };
+        case '.txt':
+          return { label: 'TXT', className: 'txt' };
+        default:
+          return { label: 'FILE', className: 'file' };
+      }
+    })();
+
+    const hasRange = typeof lineFrom === 'number' && typeof lineTo === 'number';
+    const rangeLabel = hasRange
+      ? lineFrom === lineTo
+        ? `${lineFrom}`
+        : `${lineFrom}-${lineTo}`
+      : lineCount > 1
+        ? `1-${lineCount}`
+        : '1';
+
+    const icon = document.createElement('span');
+    icon.className = `ageaf-panel__chip-icon ageaf-panel__chip-icon--${iconMeta.className}`;
+    icon.textContent = iconMeta.label;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'ageaf-panel__chip-name';
+    nameSpan.textContent = filename;
+
+    const rangeSpan = document.createElement('span');
+    rangeSpan.className = 'ageaf-panel__chip-range';
+    rangeSpan.textContent = rangeLabel;
+
+    chip.append(icon, nameSpan, rangeSpan);
     insertNodeAtCursor(chip);
   };
 
@@ -1967,7 +2072,10 @@ const Panel = () => {
     const selection = await bridge.requestSelection();
     const text = selection?.selection ?? '';
     if (!text || !text.trim()) return;
-    insertChipFromText(text);
+    const lineFrom =
+      typeof selection?.lineFrom === 'number' ? selection.lineFrom : undefined;
+    const lineTo = typeof selection?.lineTo === 'number' ? selection.lineTo : undefined;
+    insertChipFromText(text, undefined, lineFrom, lineTo);
   };
 
   const renderMessageContent = (message: Message) => {

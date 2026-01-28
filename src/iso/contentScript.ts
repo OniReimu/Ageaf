@@ -7,6 +7,7 @@ const EDITOR_REQUEST_EVENT = 'ageaf:editor:request';
 const EDITOR_RESPONSE_EVENT = 'ageaf:editor:response';
 const EDITOR_REPLACE_EVENT = 'ageaf:editor:replace';
 const EDITOR_INSERT_EVENT = 'ageaf:editor:insert';
+const PANEL_INSERT_SELECTION_EVENT = 'ageaf:panel:insert-selection';
 const selectionRequests = new Map<string, (payload: any) => void>();
 
 declare global {
@@ -123,6 +124,39 @@ window.ageafBridge = {
   replaceSelection,
   insertAtCursor,
 };
+
+function isPanelTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest('#ageaf-panel-root'));
+}
+
+function isEditorTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest('.cm-editor, .cm-content'));
+}
+
+function hasVisibleSelection() {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return false;
+  if (selection.isCollapsed) return false;
+  const text = selection.toString();
+  return Boolean(text && text.trim().length > 0);
+}
+
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (!(event.metaKey || event.ctrlKey)) return;
+    if (event.shiftKey || event.altKey) return;
+    if (event.key.toLowerCase() !== 'k') return;
+    if (isPanelTarget(event.target)) return;
+    if (!isEditorTarget(event.target)) return;
+    if (!hasVisibleSelection()) return;
+    event.preventDefault();
+    window.dispatchEvent(new CustomEvent(PANEL_INSERT_SELECTION_EVENT));
+  },
+  { capture: true }
+);
 
 try {
   chrome.runtime.onMessage.addListener((request) => {

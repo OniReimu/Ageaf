@@ -30,8 +30,8 @@ export type AttachmentLimits = {
 
 const DEFAULT_LIMITS: AttachmentLimits = {
   maxFiles: 10,
-  maxFileBytes: 512 * 1024,
-  maxTotalBytes: 1024 * 1024,
+  maxFileBytes: 10 * 1024 * 1024,
+  maxTotalBytes: 100 * 1024 * 1024,
 };
 
 const EXT_LANGUAGE: Record<string, string> = {
