@@ -1,9 +1,18 @@
 export type ProviderId = 'claude' | 'codex';
 
+export type StoredImageAttachment = {
+  id: string;
+  name: string;
+  mediaType: string;
+  data: string;
+  size: number;
+};
+
 export type StoredMessage = {
   role: 'system' | 'assistant' | 'user';
   content: string;
   statusLine?: string;
+  images?: StoredImageAttachment[];
 };
 
 export type StoredContextUsage = {
@@ -91,6 +100,19 @@ function coerceProvider(value: any): ProviderId | null {
   return null;
 }
 
+function normalizeStoredImageAttachment(raw: any): StoredImageAttachment | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = typeof raw.id === 'string' ? raw.id : null;
+  const name = typeof raw.name === 'string' ? raw.name : null;
+  const mediaType = typeof raw.mediaType === 'string' ? raw.mediaType : null;
+  const data = typeof raw.data === 'string' ? raw.data : null;
+  const size = Number(raw.size ?? NaN);
+  if (!id || !name || !mediaType || !data || !Number.isFinite(size) || size < 0) {
+    return null;
+  }
+  return { id, name, mediaType, data, size };
+}
+
 function normalizeStoredMessage(raw: any): StoredMessage | null {
   if (!raw || typeof raw !== 'object') return null;
   const role = raw.role;
@@ -98,7 +120,19 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
   const content = typeof raw.content === 'string' ? raw.content : null;
   if (content == null) return null;
   const statusLine = typeof raw.statusLine === 'string' ? raw.statusLine : undefined;
-  return { role, content, statusLine };
+  const imagesRaw = Array.isArray(raw.images) ? raw.images : [];
+  const images = imagesRaw
+    .map((entry: unknown) => normalizeStoredImageAttachment(entry))
+    .filter(
+      (entry: StoredImageAttachment | null): entry is StoredImageAttachment =>
+        Boolean(entry)
+    );
+  return {
+    role,
+    content,
+    ...(statusLine ? { statusLine } : {}),
+    ...(images.length > 0 ? { images } : {}),
+  };
 }
 
 function normalizeStoredContextUsage(raw: any): StoredContextUsage | null {

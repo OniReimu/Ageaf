@@ -2,8 +2,26 @@ import type { JobEvent } from '../../types.js';
 import { runClaudeText, type ClaudeRuntimeConfig } from './agent.js';
 import { getClaudeRuntimeStatus } from './client.js';
 import type { CommandBlocklistConfig } from './safety.js';
+import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
 type EmitEvent = (event: JobEvent) => void;
+
+type ClaudeImageAttachment = {
+  id: string;
+  name: string;
+  mediaType: string;
+  data: string;
+  size: number;
+};
+
+type ClaudeContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+
+type ClaudeUserMessage = {
+  role: 'user';
+  content: ClaudeContentBlock[];
+};
 
 type ClaudeJobPayload = {
   action?: string;
@@ -24,6 +42,101 @@ function getUserMessage(context: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function getContextImages(context: unknown): ClaudeImageAttachment[] {
+  if (!context || typeof context !== 'object') return [];
+  const raw = (context as { images?: unknown }).images;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return null;
+      const candidate = entry as {
+        id?: unknown;
+        name?: unknown;
+        mediaType?: unknown;
+        data?: unknown;
+        size?: unknown;
+      };
+      const id = typeof candidate.id === 'string' ? candidate.id : '';
+      const name = typeof candidate.name === 'string' ? candidate.name : '';
+      const mediaType =
+        typeof candidate.mediaType === 'string' ? candidate.mediaType : '';
+      const data = typeof candidate.data === 'string' ? candidate.data : '';
+      const size = Number(candidate.size ?? NaN);
+      if (!id || !name || !mediaType || !data) return null;
+      if (!Number.isFinite(size) || size < 0) return null;
+      if (!mediaType.startsWith('image/')) return null;
+      return { id, name, mediaType, data, size };
+    })
+    .filter(
+      (entry: ClaudeImageAttachment | null): entry is ClaudeImageAttachment =>
+        Boolean(entry)
+    );
+}
+
+function getContextForPrompt(
+  context: unknown,
+  images: ClaudeImageAttachment[]
+): Record<string, unknown> | null {
+  const base: Record<string, unknown> = {};
+  if (context && typeof context === 'object') {
+    const raw = context as Record<string, unknown>;
+    const pickString = (key: string) => {
+      const value = raw[key];
+      if (typeof value === 'string' && value.trim()) {
+        base[key] = value;
+      }
+    };
+    pickString('message');
+    pickString('selection');
+    pickString('surroundingBefore');
+    pickString('surroundingAfter');
+    pickString('compileLog');
+  }
+
+  if (images.length > 0) {
+    base.images = images.map((image) => ({
+      name: image.name,
+      mediaType: image.mediaType,
+      size: image.size,
+    }));
+  }
+
+  return Object.keys(base).length > 0 ? base : null;
+}
+
+function buildImagePromptStream(
+  promptText: string,
+  images: ClaudeImageAttachment[]
+): AsyncIterable<SDKUserMessage> {
+  const contentBlocks = [
+    ...images.map((image) => ({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: image.mediaType,
+        data: image.data,
+      },
+    })),
+    { type: 'text', text: promptText },
+  ];
+
+  const message: ClaudeUserMessage = {
+    role: 'user',
+    content: contentBlocks,
+  };
+
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield {
+        type: 'user',
+        message,
+        parent_tool_use_id: null,
+        session_id: '',
+      };
+    },
+  };
+}
+
 function isShortGreeting(message?: string): boolean {
   if (!message) return false;
   const normalized = message.trim().toLowerCase();
@@ -40,6 +153,8 @@ export async function runClaudeJob(
   const action = payload.action ?? 'chat';
   const runtimeStatus = getClaudeRuntimeStatus(payload.runtime?.claude);
   const message = getUserMessage(payload.context);
+  const images = getContextImages(payload.context);
+  const contextForPrompt = getContextForPrompt(payload.context, images);
   const greetingMode = isShortGreeting(message);
   const displayName = payload.userSettings?.displayName?.trim();
   const customSystemPrompt = payload.userSettings?.customSystemPrompt?.trim();
@@ -77,9 +192,9 @@ If asked about the model/runtime, use this note and do not guess.`;
   }
   
   const basePrompt = baseParts.join('\n\n');
-  const prompt = payload.context
-    ? `${basePrompt}\\n\\n${runtimeNote}\\n\\nAction: ${action}\\nContext:\\n${JSON.stringify(payload.context, null, 2)}`
-    : `${basePrompt}\\n\\nAction: ${action}`;
+  const promptText = contextForPrompt
+    ? `${basePrompt}\\n\\n${runtimeNote}\\n\\nAction: ${action}\\nContext:\\n${JSON.stringify(contextForPrompt, null, 2)}`
+    : `${basePrompt}\\n\\n${runtimeNote}\\n\\nAction: ${action}`;
 
   const safety: CommandBlocklistConfig = {
     enabled: payload.userSettings?.enableCommandBlocklist ?? false,
@@ -89,7 +204,8 @@ If asked about the model/runtime, use this note and do not guess.`;
   const enableTools = payload.userSettings?.enableTools ?? false;
 
   await runClaudeText({
-    prompt,
+    prompt:
+      images.length > 0 ? buildImagePromptStream(promptText, images) : promptText,
     emitEvent,
     runtime: payload.runtime?.claude,
     safety,
