@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
 import { createInterface } from 'node:readline';
 
 import { getEnhancedPath, parseEnvironmentVariables } from '../claude/cli.js';
@@ -45,7 +47,13 @@ export class CodexAppServer {
     this.started = true;
 
     const customEnv = parseEnvironmentVariables(this.config.envVars ?? '');
-    const cliPath = this.config.cliPath?.trim();
+    const rawCliPath = this.config.cliPath?.trim();
+    const cliPath =
+      rawCliPath === '~'
+        ? os.homedir()
+        : rawCliPath?.startsWith('~/')
+          ? path.join(os.homedir(), rawCliPath.slice(2))
+          : rawCliPath;
     const env = {
       ...process.env,
       ...customEnv,
@@ -60,6 +68,17 @@ export class CodexAppServer {
     });
     this.child = child;
 
+    const handleChildError = (error: Error) => {
+      this.child = null;
+      this.started = false;
+      for (const pending of this.pending.values()) {
+        pending.reject(error);
+      }
+      this.pending.clear();
+    };
+
+    child.on('error', handleChildError);
+
     child.on('exit', () => {
       this.child = null;
       this.started = false;
@@ -67,6 +86,11 @@ export class CodexAppServer {
         pending.reject(new Error('Codex app-server exited'));
       }
       this.pending.clear();
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      child.once('spawn', () => resolve());
+      child.once('error', (error) => reject(error));
     });
 
     const stdout = child.stdout;

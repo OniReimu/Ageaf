@@ -234,27 +234,6 @@ async function sendCodexCompact(
       });
     });
 
-    // Create timeout promise
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        const diagnostics = {
-          threadId,
-          cliAcknowledged,
-          lastMessageTime: Date.now() - lastMessageTime,
-          totalTime: Date.now() - compactStartTime,
-        };
-        console.error(`[Codex Compact] Timeout after ${COMPACT_TIMEOUT_MS}ms`, diagnostics);
-        reject(
-          new Error(
-            `Compaction timed out after ${COMPACT_TIMEOUT_MS / 1000}s. ` +
-            (cliAcknowledged
-              ? 'CLI acknowledged but did not complete (stream may have stalled).'
-              : 'CLI did not acknowledge the compact command.')
-          )
-        );
-      }, COMPACT_TIMEOUT_MS);
-    });
-
     // Try to resume the thread first in case it's not in Codex's active memory
     try {
       await appServer.request('thread/resume', {
@@ -312,6 +291,27 @@ async function sendCodexCompact(
 
     console.log(`[Codex Compact] Command sent for thread ${threadId}, waiting for completion...`);
 
+    let timeoutId: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        const diagnostics = {
+          threadId,
+          cliAcknowledged,
+          lastMessageTime: Date.now() - lastMessageTime,
+          totalTime: Date.now() - compactStartTime,
+        };
+        console.error(`[Codex Compact] Timeout after ${COMPACT_TIMEOUT_MS}ms`, diagnostics);
+        reject(
+          new Error(
+            `Compaction timed out after ${COMPACT_TIMEOUT_MS / 1000}s. ` +
+            (cliAcknowledged
+              ? 'CLI acknowledged but did not complete (stream may have stalled).'
+              : 'CLI did not acknowledge the compact command.')
+          )
+        );
+      }, COMPACT_TIMEOUT_MS);
+    });
+
     // Race between completion and timeout
     try {
       await Promise.race([donePromise, timeoutPromise]);
@@ -322,6 +322,9 @@ async function sendCodexCompact(
     } finally {
       // Always cleanup subscription
       unsubscribe();
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     }
 
     if (failureMessage) {
