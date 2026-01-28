@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { JobEvent } from '../../types.js';
+import { buildAttachmentBlock, getAttachmentLimits } from '../../attachments/textAttachments.js';
 import { getCodexAppServer } from './appServer.js';
 import { parseCodexTokenUsage } from './tokenUsage.js';
 
@@ -41,6 +42,12 @@ function getUserMessage(context: unknown): string | undefined {
   if (!context || typeof context !== 'object') return undefined;
   const value = (context as { message?: unknown }).message;
   return typeof value === 'string' ? value : undefined;
+}
+
+function getContextAttachments(context: unknown) {
+  if (!context || typeof context !== 'object') return [];
+  const raw = (context as { attachments?: unknown }).attachments;
+  return Array.isArray(raw) ? raw : [];
 }
 
 function getContextImages(context: unknown): CodexImageAttachment[] {
@@ -149,9 +156,16 @@ function normalizeApprovalPolicy(value: unknown): CodexApprovalPolicy {
   return 'on-request';
 }
 
-function buildPrompt(payload: CodexJobPayload, contextForPrompt: Record<string, unknown> | null) {
+function buildPrompt(
+  payload: CodexJobPayload,
+  contextForPrompt: Record<string, unknown> | null
+) {
   const action = payload.action ?? 'chat';
-  const message = getUserMessage(payload.context) ?? '';
+  const contextMessage =
+    contextForPrompt && typeof contextForPrompt.message === 'string'
+      ? contextForPrompt.message
+      : undefined;
+  const message = contextMessage ?? getUserMessage(payload.context) ?? '';
   const custom = payload.userSettings?.customSystemPrompt?.trim();
 
   const baseParts = [
@@ -185,7 +199,20 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
 
   const runtime = payload.runtime?.codex ?? {};
   const images = getContextImages(payload.context);
-  const contextForPrompt = getContextForPrompt(payload.context, images);
+  const attachments = getContextAttachments(payload.context);
+  const { block: attachmentBlock } = await buildAttachmentBlock(
+    attachments,
+    getAttachmentLimits()
+  );
+  const rawMessage = getUserMessage(payload.context);
+  const messageWithAttachments = [rawMessage, attachmentBlock]
+    .filter((part) => typeof part === 'string' && part.trim().length > 0)
+    .join('\n\n');
+  const contextWithAttachments =
+    payload.context && typeof payload.context === 'object'
+      ? { ...(payload.context as Record<string, unknown>), message: messageWithAttachments }
+      : { message: messageWithAttachments };
+  const contextForPrompt = getContextForPrompt(contextWithAttachments, images);
   let threadId = typeof runtime.threadId === 'string' ? runtime.threadId.trim() : '';
   const cwd = getCodexSessionCwd(threadId);
   const approvalPolicy = normalizeApprovalPolicy(runtime.approvalPolicy);

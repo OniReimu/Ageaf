@@ -43,6 +43,15 @@ export type JobPayload = {
       data: string;
       size: number;
     }>;
+    attachments?: Array<{
+      id?: string;
+      path?: string;
+      name?: string;
+      ext?: string;
+      sizeBytes?: number;
+      lineCount?: number;
+      content?: string;
+    }>;
   };
   policy?: {
     requireApproval?: boolean;
@@ -202,6 +211,17 @@ export type HostToolsStatus = {
   remoteToggleAllowed: boolean;
 };
 
+export type AttachmentMeta = {
+  id: string;
+  path?: string;
+  name: string;
+  ext: string;
+  sizeBytes: number;
+  lineCount: number;
+  mime: string;
+  content?: string;
+};
+
 export async function fetchHostToolsStatus(options: Options) {
   if (!options.hostUrl) {
     throw new Error('Host URL not configured');
@@ -231,6 +251,63 @@ export async function setHostToolsEnabled(options: Options, enabled: boolean) {
     );
   }
   return response.json() as Promise<{ toolsEnabled: boolean }>;
+}
+
+export async function openAttachmentDialog(
+  options: Options,
+  payload: { multiple?: boolean; extensions?: string[] }
+) {
+  if (!options.hostUrl) {
+    throw new Error('Host URL not configured');
+  }
+  const response = await fetch(
+    new URL('/v1/attachments/open', options.hostUrl).toString(),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`Attachment dialog request failed (${response.status})`);
+  }
+  return response.json() as Promise<{ paths: string[] }>;
+}
+
+export async function validateAttachmentEntries(
+  options: Options,
+  payload: {
+    entries?: Array<{
+      id?: string;
+      path?: string;
+      name?: string;
+      ext?: string;
+      content?: string;
+      sizeBytes?: number;
+      lineCount?: number;
+    }>;
+    paths?: string[];
+    limits?: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number };
+  }
+) {
+  if (!options.hostUrl) {
+    throw new Error('Host URL not configured');
+  }
+  const response = await fetch(
+    new URL('/v1/attachments/validate', options.hostUrl).toString(),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`Attachment validation failed (${response.status})`);
+  }
+  return response.json() as Promise<{
+    attachments: AttachmentMeta[];
+    errors: Array<{ id?: string; path?: string; message: string }>;
+  }>;
 }
 
 export async function updateClaudeRuntimePreferences(

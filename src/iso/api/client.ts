@@ -11,6 +11,8 @@ export {
   fetchClaudeRuntimeContextUsage,
   fetchCodexRuntimeContextUsage,
   fetchHostHealth,
+  openAttachmentDialog,
+  validateAttachmentEntries,
   type JobPayload,
   type ClaudeRuntimeMetadata,
   type CodexRuntimeMetadata,
@@ -18,6 +20,7 @@ export {
   type ClaudeContextUsageResponse,
   type CodexContextUsageResponse,
   type HostHealthResponse,
+  type AttachmentMeta,
 } from './httpClient';
 
 export { streamEvents, type JobEvent } from './sse';
