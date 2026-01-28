@@ -468,6 +468,36 @@
   min-width: 0;
 }
 
+.ageaf-message__file-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ageaf-message__file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(57, 185, 138, 0.35);
+  background: rgba(57, 185, 138, 0.12);
+  color: var(--ageaf-panel-text);
+  font-size: 12px;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.ageaf-message__file-chip-name {
+  font-weight: 600;
+}
+
+.ageaf-message__file-chip-meta {
+  color: var(--ageaf-panel-muted);
+  font-size: 11px;
+}
+
 .ageaf-message__attachments {
   display: flex;
   flex-wrap: wrap;
@@ -941,6 +971,48 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.ageaf-panel__file-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ageaf-panel__file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  background: rgba(57, 185, 138, 0.12);
+  border: 1px solid rgba(57, 185, 138, 0.4);
+  color: var(--ageaf-panel-text);
+  font-size: 12px;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.ageaf-panel__file-chip-name {
+  font-weight: 600;
+}
+
+.ageaf-panel__file-chip-meta {
+  color: var(--ageaf-panel-muted);
+  font-size: 11px;
+}
+
+.ageaf-panel__file-chip-remove {
+  border: none;
+  background: transparent;
+  color: var(--ageaf-panel-text);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.ageaf-panel__file-chip-remove:hover {
+  color: var(--ageaf-panel-accent);
 }
 
 .ageaf-panel__attachment {

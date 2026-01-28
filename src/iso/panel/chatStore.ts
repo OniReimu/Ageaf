@@ -8,11 +8,22 @@ export type StoredImageAttachment = {
   size: number;
 };
 
+export type StoredFileAttachment = {
+  id: string;
+  path?: string;
+  name: string;
+  ext: string;
+  sizeBytes: number;
+  lineCount: number;
+  mime?: string;
+};
+
 export type StoredMessage = {
   role: 'system' | 'assistant' | 'user';
   content: string;
   statusLine?: string;
   images?: StoredImageAttachment[];
+  attachments?: StoredFileAttachment[];
 };
 
 export type StoredContextUsage = {
@@ -113,6 +124,29 @@ function normalizeStoredImageAttachment(raw: any): StoredImageAttachment | null 
   return { id, name, mediaType, data, size };
 }
 
+function normalizeStoredFileAttachment(raw: any): StoredFileAttachment | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = typeof raw.id === 'string' ? raw.id : null;
+  const name = typeof raw.name === 'string' ? raw.name : null;
+  const ext = typeof raw.ext === 'string' ? raw.ext : null;
+  const sizeBytes = Number(raw.sizeBytes ?? NaN);
+  const lineCount = Number(raw.lineCount ?? NaN);
+  const pathValue = typeof raw.path === 'string' ? raw.path : undefined;
+  const mime = typeof raw.mime === 'string' ? raw.mime : undefined;
+  if (
+    !id ||
+    !name ||
+    !ext ||
+    !Number.isFinite(sizeBytes) ||
+    sizeBytes < 0 ||
+    !Number.isFinite(lineCount) ||
+    lineCount < 0
+  ) {
+    return null;
+  }
+  return { id, name, ext, sizeBytes, lineCount, ...(pathValue ? { path: pathValue } : {}), ...(mime ? { mime } : {}) };
+}
+
 function normalizeStoredMessage(raw: any): StoredMessage | null {
   if (!raw || typeof raw !== 'object') return null;
   const role = raw.role;
@@ -127,11 +161,19 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
       (entry: StoredImageAttachment | null): entry is StoredImageAttachment =>
         Boolean(entry)
     );
+  const attachmentsRaw = Array.isArray(raw.attachments) ? raw.attachments : [];
+  const attachments = attachmentsRaw
+    .map((entry: unknown) => normalizeStoredFileAttachment(entry))
+    .filter(
+      (entry: StoredFileAttachment | null): entry is StoredFileAttachment =>
+        Boolean(entry)
+    );
   return {
     role,
     content,
     ...(statusLine ? { statusLine } : {}),
     ...(images.length > 0 ? { images } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
   };
 }
 

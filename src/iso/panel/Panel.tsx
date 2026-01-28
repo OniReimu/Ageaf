@@ -10,11 +10,14 @@ import {
   fetchCodexRuntimeMetadata,
   fetchHostHealth,
   fetchHostToolsStatus,
+  openAttachmentDialog,
   respondToJobRequest,
   setHostToolsEnabled,
   streamJobEvents,
   updateClaudeRuntimePreferences,
+  validateAttachmentEntries,
   type JobEvent,
+  type AttachmentMeta,
 } from '../api/client';
 import type { NativeHostRequest, NativeHostResponse } from '../messaging/nativeProtocol';
 import { getOptions } from '../../utils/helper';
@@ -175,11 +178,13 @@ type Message = {
   content: string;
   statusLine?: string;
   images?: ImageAttachment[];
+  attachments?: FileAttachment[];
 };
 
 type QueuedMessage = {
   text: string;
   images?: ImageAttachment[];
+  attachments?: FileAttachment[];
 };
 
 type Patch = {
@@ -219,6 +224,17 @@ type ImageAttachment = {
   data: string;
   size: number;
   source?: 'paste' | 'drop';
+};
+
+type FileAttachment = {
+  id: string;
+  path?: string;
+  name: string;
+  ext: string;
+  sizeBytes: number;
+  lineCount: number;
+  mime?: string;
+  content?: string;
 };
 
 type RuntimeModel = {
@@ -313,6 +329,8 @@ const Panel = () => {
   const [copiedItems, setCopiedItems] = useState<Record<string, boolean>>({});
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([]);
   const imageAttachmentsRef = useRef<ImageAttachment[]>([]);
+  const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([]);
+  const fileAttachmentsRef = useRef<FileAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const attachmentErrorTimerRef = useRef<number | null>(null);
   const [isDropActive, setIsDropActive] = useState(false);
@@ -338,7 +356,12 @@ const Panel = () => {
     interrupted: boolean;
 
     // Message queue
-    queue: Array<{ text: string; images?: ImageAttachment[]; timestamp: number }>;
+    queue: Array<{
+      text: string;
+      images?: ImageAttachment[];
+      attachments?: FileAttachment[];
+      timestamp: number;
+    }>;
 
     // Streaming state
     streamingText: string;
@@ -985,6 +1008,9 @@ const Panel = () => {
       content: message.content,
       ...(message.statusLine ? { statusLine: message.statusLine } : {}),
       ...(message.images && message.images.length > 0 ? { images: message.images } : {}),
+      ...(message.attachments && message.attachments.length > 0
+        ? { attachments: message.attachments }
+        : {}),
     }));
 
   const flushChatSave = async () => {
@@ -1105,10 +1131,32 @@ const Panel = () => {
 
   const ATTACHMENT_LABEL_REGEX = /^\[Attachment: .+ · \d+ lines\]$/;
   const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+  const FILE_ATTACHMENT_EXTENSIONS = [
+    '.txt',
+    '.md',
+    '.json',
+    '.yaml',
+    '.yml',
+    '.csv',
+    '.xml',
+    '.toml',
+    '.ini',
+    '.log',
+    '.tex',
+  ];
+  const MAX_FILE_ATTACHMENTS = 10;
+  const MAX_FILE_BYTES = 512 * 1024;
+  const MAX_TOTAL_FILE_BYTES = 1024 * 1024;
 
   const updateImageAttachments = (next: ImageAttachment[]) => {
     imageAttachmentsRef.current = next;
     setImageAttachments(next);
+    syncEditorEmpty();
+  };
+
+  const updateFileAttachments = (next: FileAttachment[]) => {
+    fileAttachmentsRef.current = next;
+    setFileAttachments(next);
     syncEditorEmpty();
   };
 
@@ -1219,6 +1267,121 @@ const Panel = () => {
 
   const getImageDataUrl = (image: ImageAttachment) =>
     `data:${image.mediaType};base64,${image.data}`;
+
+  const getFileExtension = (name: string) => {
+    const match = name.match(/\.[a-z0-9]+$/i);
+    return match ? match[0].toLowerCase() : '';
+  };
+
+  const formatLineCount = (value: number) => {
+    if (!Number.isFinite(value) || value <= 0) return '0';
+    if (value >= 1000) {
+      const rounded = Math.round(value / 100) / 10;
+      return `${rounded}k`;
+    }
+    return String(value);
+  };
+
+  const mergeFileAttachments = (
+    existing: FileAttachment[],
+    incoming: FileAttachment[]
+  ) => {
+    const next = [...existing];
+    const seenPaths = new Set(
+      existing.map((item) => (item.path ? item.path : `name:${item.name}:${item.sizeBytes}`))
+    );
+    for (const attachment of incoming) {
+      const key = attachment.path
+        ? attachment.path
+        : `name:${attachment.name}:${attachment.sizeBytes}`;
+      if (seenPaths.has(key)) continue;
+      seenPaths.add(key);
+      next.push(attachment);
+    }
+    return next;
+  };
+
+  const requestAttachmentValidation = async (
+    entries: Array<{ path?: string; name?: string; ext?: string; content?: string }>
+  ): Promise<{
+    attachments: AttachmentMeta[];
+    errors: Array<{ id?: string; path?: string; message: string }>;
+  }> => {
+    const options = await getOptions();
+    if (options.transport !== 'native' && !options.hostUrl) {
+      throw new Error('Host URL not configured');
+    }
+    const response = await validateAttachmentEntries(options, {
+      entries,
+      limits: {
+        maxFiles: MAX_FILE_ATTACHMENTS,
+        maxFileBytes: MAX_FILE_BYTES,
+        maxTotalBytes: MAX_TOTAL_FILE_BYTES,
+      },
+    });
+    return response;
+  };
+
+  const onOpenFilePicker = async () => {
+    try {
+      const options = await getOptions();
+      if (options.transport !== 'native' && !options.hostUrl) {
+        showAttachmentError('Host URL not configured.');
+        return;
+      }
+      const { paths } = await openAttachmentDialog(options, {
+        multiple: true,
+        extensions: FILE_ATTACHMENT_EXTENSIONS,
+      });
+      if (!paths.length) return;
+      const { attachments, errors } = await requestAttachmentValidation(
+        paths.map((path) => ({ path }))
+      );
+      if (errors.length > 0) {
+        showAttachmentError(errors[0].message);
+      }
+      const next = mergeFileAttachments(fileAttachmentsRef.current, attachments);
+      updateFileAttachments(next);
+    } catch (error) {
+      showAttachmentError(
+        error instanceof Error ? error.message : 'Failed to attach files.'
+      );
+    }
+  };
+
+  const addDroppedTextFiles = async (files: File[]) => {
+    const entries: Array<{ name: string; ext: string; content: string }> = [];
+    for (const file of files) {
+      const ext = getFileExtension(file.name);
+      if (!ext || !FILE_ATTACHMENT_EXTENSIONS.includes(ext)) continue;
+      if (file.size > MAX_FILE_BYTES) {
+        showAttachmentError(`File exceeds ${formatBytes(MAX_FILE_BYTES)} limit.`);
+        continue;
+      }
+      const text = await file.text();
+      entries.push({ name: file.name, ext, content: text });
+    }
+    if (entries.length === 0) {
+      showAttachmentError('Unsupported file type.');
+      return;
+    }
+    const { attachments, errors } = await requestAttachmentValidation(
+      entries.map((entry) => ({
+        name: entry.name,
+        ext: entry.ext,
+        content: entry.content,
+      }))
+    );
+    if (errors.length > 0) {
+      showAttachmentError(errors[0].message);
+    }
+    const mapped = attachments.map((attachment) => ({
+      ...attachment,
+      content: attachment.content,
+    }));
+    const next = mergeFileAttachments(fileAttachmentsRef.current, mapped);
+    updateFileAttachments(next);
+  };
 
   const markCopied = (id: string) => {
     setCopiedItems((current) => ({ ...current, [id]: true }));
@@ -1555,6 +1718,7 @@ const Panel = () => {
 
   const clearEditor = () => {
     updateImageAttachments([]);
+    updateFileAttachments([]);
     const editor = editorRef.current;
     if (!editor) {
       setEditorEmpty(true);
@@ -1574,7 +1738,8 @@ const Panel = () => {
     const hasChip = !!editor.querySelector('[data-chip-id]');
     const text = (editor.textContent ?? '').replace(/\u200B/g, '').trim();
     const hasImages = imageAttachmentsRef.current.length > 0;
-    setEditorEmpty(!hasChip && text.length === 0 && !hasImages);
+    const hasFiles = fileAttachmentsRef.current.length > 0;
+    setEditorEmpty(!hasChip && text.length === 0 && !hasImages && !hasFiles);
   };
 
   const insertNodeAtCursor = (node: Node) => {
@@ -1698,7 +1863,6 @@ const Panel = () => {
     if (!hasFileTransfer(event.dataTransfer)) return;
     event.preventDefault();
     event.stopPropagation();
-    if (!hasImageTransfer(event.dataTransfer)) return;
     dropDepthRef.current += 1;
     setIsDropActive(true);
   };
@@ -1740,7 +1904,22 @@ const Panel = () => {
     setIsDropActive(false);
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) return;
-    void addImagesFromFiles(files, 'drop');
+    const list = Array.from(files);
+    const imageFiles = list.filter((file) => getImageMediaType(file));
+    const textFiles = list.filter((file) =>
+      FILE_ATTACHMENT_EXTENSIONS.includes(getFileExtension(file.name))
+    );
+    void (async () => {
+      if (imageFiles.length > 0) {
+        await addImagesFromFiles(imageFiles, 'drop');
+      }
+      if (textFiles.length > 0) {
+        await addDroppedTextFiles(textFiles);
+      }
+      if (imageFiles.length === 0 && textFiles.length === 0) {
+        showAttachmentError('Unsupported file type.');
+      }
+    })();
   };
 
   const removeAdjacentChip = (direction: 'backward' | 'forward') => {
@@ -1792,7 +1971,28 @@ const Panel = () => {
   };
 
   const renderMessageContent = (message: Message) => {
-    const attachments =
+    const fileAttachmentsBlock =
+      message.attachments && message.attachments.length > 0 ? (
+        <div class="ageaf-message__file-attachments">
+          {message.attachments.map((attachment) => (
+            <div
+              class="ageaf-message__file-chip"
+              key={attachment.id}
+              title={attachment.path ?? attachment.name}
+            >
+              <span class="ageaf-message__file-chip-name">
+                {truncateName(attachment.name, 28)}
+              </span>
+              <span class="ageaf-message__file-chip-meta">
+                {attachment.ext.replace('.', '').toUpperCase()} ·{' '}
+                {formatLineCount(attachment.lineCount)} lines
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null;
+
+    const imageAttachmentsBlock =
       message.images && message.images.length > 0 ? (
         <div class="ageaf-message__attachments">
           {message.images.map((image) => (
@@ -1819,7 +2019,8 @@ const Panel = () => {
 
     return (
       <>
-        {attachments}
+        {fileAttachmentsBlock}
+        {imageAttachmentsBlock}
         {hasMain ? (
           <div
             class="ageaf-message__content"
@@ -2537,13 +2738,18 @@ const Panel = () => {
     setIsSending(value);
   };
 
-  const enqueueMessage = (conversationId: string, text: string, images?: ImageAttachment[]) => {
+  const enqueueMessage = (
+    conversationId: string,
+    text: string,
+    images?: ImageAttachment[],
+    attachments?: FileAttachment[]
+  ) => {
     const sessionState = getSessionState(conversationId);
-    sessionState.queue.push({ text, images, timestamp: Date.now() });
+    sessionState.queue.push({ text, images, attachments, timestamp: Date.now() });
 
     // Update queue count for current session
     if (conversationId === chatConversationIdRef.current) {
-      queueRef.current.push({ text, images });
+      queueRef.current.push({ text, images, attachments });
       setQueueCount(sessionState.queue.length);
     }
   };
@@ -2587,7 +2793,11 @@ const Panel = () => {
     // NOTE: sendMessage will read current session refs, so only process queue if this IS the current session
     const next = dequeueMessage(conversationId);
     if (next && conversationId === chatConversationIdRef.current) {
-      void sendMessage(next.text, next.images ?? []);
+      void sendMessage(
+        next.text,
+        next.images ?? [],
+        next.attachments ?? []
+      );
     }
   };
 
@@ -2655,7 +2865,11 @@ const Panel = () => {
     interruptCurrentSession();
   }
 
-  const sendMessage = async (text: string, images: ImageAttachment[] = []) => {
+  const sendMessage = async (
+    text: string,
+    images: ImageAttachment[] = [],
+    attachments: FileAttachment[] = []
+  ) => {
     const bridge = window.ageafBridge;
     if (!bridge) return;
 
@@ -2681,6 +2895,7 @@ const Panel = () => {
     sessionState.abortController = abortController;
 
     const messageImages = images.length > 0 ? images : undefined;
+    const messageAttachments = attachments.length > 0 ? attachments : undefined;
     // Update UI for current session
     setMessages((prev) =>
       [
@@ -2689,6 +2904,7 @@ const Panel = () => {
           role: 'user',
           content: text,
           ...(messageImages ? { images: messageImages } : {}),
+          ...(messageAttachments ? { attachments: messageAttachments } : {}),
         }),
       ]
     );
@@ -2779,6 +2995,19 @@ const Panel = () => {
                       })),
                     }
                   : {}),
+                ...(messageAttachments
+                  ? {
+                      attachments: messageAttachments.map((attachment) => ({
+                        id: attachment.id,
+                        path: attachment.path,
+                        name: attachment.name,
+                        ext: attachment.ext,
+                        sizeBytes: attachment.sizeBytes,
+                        lineCount: attachment.lineCount,
+                        content: attachment.content,
+                      })),
+                    }
+                  : {}),
               },
               policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
               userSettings: {
@@ -2816,6 +3045,19 @@ const Panel = () => {
                   mediaType: image.mediaType,
                   data: image.data,
                   size: image.size,
+                })),
+              }
+            : {}),
+          ...(messageAttachments
+            ? {
+                attachments: messageAttachments.map((attachment) => ({
+                  id: attachment.id,
+                  path: attachment.path,
+                  name: attachment.name,
+                  ext: attachment.ext,
+                  sizeBytes: attachment.sizeBytes,
+                  lineCount: attachment.lineCount,
+                  content: attachment.content,
                 })),
               }
             : {}),
@@ -3010,23 +3252,26 @@ const Panel = () => {
   const onSend = () => {
     const bridge = window.ageafBridge;
     const { text, hasContent } = serializeEditorContent();
-    const attachments = imageAttachmentsRef.current;
-    const hasImages = attachments.length > 0;
-    if (!bridge || (!hasContent && !hasImages)) return;
+    const imageList = imageAttachmentsRef.current;
+    const fileList = fileAttachmentsRef.current;
+    const hasImages = imageList.length > 0;
+    const hasFiles = fileList.length > 0;
+    if (!bridge || (!hasContent && !hasImages && !hasFiles)) return;
 
     const conversationId = chatConversationIdRef.current;
     if (!conversationId) return;
 
     const sessionState = getSessionState(conversationId);
 
-    const messageImages = hasImages ? [...attachments] : [];
+    const messageImages = hasImages ? [...imageList] : [];
+    const messageFiles = hasFiles ? [...fileList] : [];
     clearEditor();
     scrollToBottom();
     if (sessionState.isSending) {
-      enqueueMessage(conversationId, text, messageImages);
+      enqueueMessage(conversationId, text, messageImages, messageFiles);
       return;
     }
-    void sendMessage(text, messageImages);
+    void sendMessage(text, messageImages, messageFiles);
   };
 
   const onInputKeyDown = (event: KeyboardEvent) => {
@@ -3273,7 +3518,11 @@ const Panel = () => {
     isSendingRef.current = sessionState.isSending;
     setIsSending(sessionState.isSending);
     setQueueCount(sessionState.queue.length);
-    queueRef.current = sessionState.queue.map((q) => ({ text: q.text, images: q.images }));
+    queueRef.current = sessionState.queue.map((q) => ({
+      text: q.text,
+      images: q.images,
+      attachments: q.attachments,
+    }));
 
     // Update streaming state
     streamingTextRef.current = sessionState.streamingText;
@@ -3827,6 +4076,15 @@ const Panel = () => {
               })}
             </div>
             <div class="ageaf-toolbar-actions">
+              <button
+                class="ageaf-toolbar-button"
+                type="button"
+                onClick={() => void onOpenFilePicker()}
+                aria-label="Attach files"
+                data-tooltip="Attach files"
+              >
+                📁
+              </button>
               <div class="ageaf-toolbar-menu">
                 <button
                   class="ageaf-toolbar-button"
@@ -3885,6 +4143,39 @@ const Panel = () => {
         </button>
             </div>
           </div>
+        {fileAttachments.length > 0 ? (
+          <div class="ageaf-panel__file-attachments" aria-label="Attached files">
+            {fileAttachments.map((attachment) => (
+              <div
+                class="ageaf-panel__file-chip"
+                key={attachment.id}
+                title={attachment.path ?? attachment.name}
+              >
+                <span class="ageaf-panel__file-chip-name">
+                  {truncateName(attachment.name)}
+                </span>
+                <span class="ageaf-panel__file-chip-meta">
+                  {attachment.ext.replace('.', '').toUpperCase()} ·{' '}
+                  {formatLineCount(attachment.lineCount)} lines
+                </span>
+                <button
+                  class="ageaf-panel__file-chip-remove"
+                  type="button"
+                  aria-label={`Remove ${attachment.name}`}
+                  onClick={() =>
+                    updateFileAttachments(
+                      fileAttachmentsRef.current.filter(
+                        (item) => item.id !== attachment.id
+                      )
+                    )
+                  }
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {imageAttachments.length > 0 ? (
           <div class="ageaf-panel__attachments" aria-label="Attached images">
             {imageAttachments.map((image) => (
@@ -3959,7 +4250,7 @@ const Panel = () => {
                 stroke-width="1.6"
               />
             </svg>
-            <div class="ageaf-panel__dropzone-label">Drop images to attach</div>
+            <div class="ageaf-panel__dropzone-label">Drop files to attach</div>
           </div>
         ) : null}
         {isSending || queueCount > 0 ? (

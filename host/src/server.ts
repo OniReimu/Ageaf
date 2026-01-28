@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 
+import { registerAttachments } from './routes/attachments.js';
 import { registerHealth } from './routes/health.js';
 import { registerHostTools } from './routes/hostTools.js';
 import { registerJobs } from './routes/jobs.js';
@@ -27,6 +28,7 @@ export function buildServer() {
   });
 
   registerHealth(server);
+  registerAttachments(server);
   registerHostTools(server);
   registerJobs(server);
   registerRuntime(server);

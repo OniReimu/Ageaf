@@ -48,6 +48,15 @@ type JobRequestPayload = {
       data: string;
       size: number;
     }>;
+    attachments?: Array<{
+      id?: string;
+      path?: string;
+      name?: string;
+      ext?: string;
+      sizeBytes?: number;
+      lineCount?: number;
+      content?: string;
+    }>;
   };
   runtime?: { claude?: ClaudeRuntimeConfig; codex?: CodexRuntimeConfig };
   userSettings?: {
