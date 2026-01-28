@@ -19,6 +19,14 @@ export type CodexRuntimeConfig = {
   threadId?: string;
 };
 
+type CodexImageAttachment = {
+  id: string;
+  name: string;
+  mediaType: string;
+  data: string;
+  size: number;
+};
+
 type CodexJobPayload = {
   action?: string;
   context?: unknown;
@@ -33,6 +41,68 @@ function getUserMessage(context: unknown): string | undefined {
   if (!context || typeof context !== 'object') return undefined;
   const value = (context as { message?: unknown }).message;
   return typeof value === 'string' ? value : undefined;
+}
+
+function getContextImages(context: unknown): CodexImageAttachment[] {
+  if (!context || typeof context !== 'object') return [];
+  const raw = (context as { images?: unknown }).images;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry: unknown) => {
+      if (!entry || typeof entry !== 'object') return null;
+      const candidate = entry as {
+        id?: unknown;
+        name?: unknown;
+        mediaType?: unknown;
+        data?: unknown;
+        size?: unknown;
+      };
+      const id = typeof candidate.id === 'string' ? candidate.id : '';
+      const name = typeof candidate.name === 'string' ? candidate.name : '';
+      const mediaType =
+        typeof candidate.mediaType === 'string' ? candidate.mediaType : '';
+      const data = typeof candidate.data === 'string' ? candidate.data : '';
+      const size = Number(candidate.size ?? NaN);
+      if (!id || !name || !mediaType || !data) return null;
+      if (!Number.isFinite(size) || size < 0) return null;
+      if (!mediaType.startsWith('image/')) return null;
+      return { id, name, mediaType, data, size };
+    })
+    .filter(
+      (entry: CodexImageAttachment | null): entry is CodexImageAttachment =>
+        Boolean(entry)
+    );
+}
+
+function getContextForPrompt(
+  context: unknown,
+  images: CodexImageAttachment[]
+): Record<string, unknown> | null {
+  const base: Record<string, unknown> = {};
+  if (context && typeof context === 'object') {
+    const raw = context as Record<string, unknown>;
+    const pickString = (key: string) => {
+      const value = raw[key];
+      if (typeof value === 'string' && value.trim()) {
+        base[key] = value;
+      }
+    };
+    pickString('message');
+    pickString('selection');
+    pickString('surroundingBefore');
+    pickString('surroundingAfter');
+    pickString('compileLog');
+  }
+
+  if (images.length > 0) {
+    base.images = images.map((image) => ({
+      name: image.name,
+      mediaType: image.mediaType,
+      size: image.size,
+    }));
+  }
+
+  return Object.keys(base).length > 0 ? base : null;
 }
 
 function ensureAgeafWorkspaceCwd(): string {
@@ -79,7 +149,7 @@ function normalizeApprovalPolicy(value: unknown): CodexApprovalPolicy {
   return 'on-request';
 }
 
-function buildPrompt(payload: CodexJobPayload) {
+function buildPrompt(payload: CodexJobPayload, contextForPrompt: Record<string, unknown> | null) {
   const action = payload.action ?? 'chat';
   const message = getUserMessage(payload.context) ?? '';
   const custom = payload.userSettings?.customSystemPrompt?.trim();
@@ -88,7 +158,7 @@ function buildPrompt(payload: CodexJobPayload) {
     'You are Ageaf, a concise Overleaf assistant.',
     'Respond in Markdown, keep it concise.',
     `Action: ${action}`,
-    payload.context ? `Context:\n${JSON.stringify(payload.context, null, 2)}` : '',
+    contextForPrompt ? `Context:\n${JSON.stringify(contextForPrompt, null, 2)}` : '',
   ].filter(Boolean);
 
   if (custom) {
@@ -114,6 +184,8 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
   }
 
   const runtime = payload.runtime?.codex ?? {};
+  const images = getContextImages(payload.context);
+  const contextForPrompt = getContextForPrompt(payload.context, images);
   let threadId = typeof runtime.threadId === 'string' ? runtime.threadId.trim() : '';
   const cwd = getCodexSessionCwd(threadId);
   const approvalPolicy = normalizeApprovalPolicy(runtime.approvalPolicy);
@@ -175,7 +247,7 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
     threadId = extracted;
   }
 
-  const prompt = buildPrompt(payload);
+  const prompt = buildPrompt(payload, contextForPrompt);
   let done = false;
   // Filled synchronously by the Promise executor below.
   // (Promise executors run immediately.)
@@ -273,9 +345,17 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
     });
   });
 
+  const input = [
+    ...images.map((image) => ({
+      type: 'image',
+      url: `data:${image.mediaType};base64,${image.data}`,
+    })),
+    { type: 'text', text: prompt },
+  ];
+
   const turnResponse = await appServer.request('turn/start', {
     threadId,
-    input: [{ type: 'text', text: prompt }],
+    input,
     cwd,
     approvalPolicy,
     sandboxPolicy: { type: 'readOnly' },

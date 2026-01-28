@@ -1,4 +1,4 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
 import type { JobEvent, Patch } from '../../types.js';
@@ -25,7 +25,7 @@ type StructuredPatchInput = {
 };
 
 type TextRunInput = {
-  prompt: string;
+  prompt: string | AsyncIterable<SDKUserMessage>;
   emitEvent: EmitEvent;
   runtime?: ClaudeRuntimeConfig;
   safety?: CommandBlocklistConfig;
@@ -49,7 +49,7 @@ const PatchSchema = z.object({
 });
 
 async function runQuery(
-  prompt: string,
+  prompt: string | AsyncIterable<SDKUserMessage>,
   emitEvent: EmitEvent,
   runtime: ClaudeRuntimeConfig,
   structuredOutput?: { schema: z.ZodSchema; name: string },

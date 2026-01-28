@@ -36,6 +36,13 @@ export type JobPayload = {
     surroundingAfter?: string;
     compileLog?: string;
     message?: string;
+    images?: Array<{
+      id: string;
+      name: string;
+      mediaType: string;
+      data: string;
+      size: number;
+    }>;
   };
   policy?: {
     requireApproval?: boolean;

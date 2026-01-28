@@ -174,10 +174,12 @@ type Message = {
   role: 'system' | 'assistant' | 'user';
   content: string;
   statusLine?: string;
+  images?: ImageAttachment[];
 };
 
 type QueuedMessage = {
   text: string;
+  images?: ImageAttachment[];
 };
 
 type Patch = {
@@ -208,6 +210,15 @@ type ChipPayload = {
   text: string;
   filename: string;
   lineCount: number;
+};
+
+type ImageAttachment = {
+  id: string;
+  name: string;
+  mediaType: string;
+  data: string;
+  size: number;
+  source?: 'paste' | 'drop';
 };
 
 type RuntimeModel = {
@@ -300,6 +311,12 @@ const Panel = () => {
   const [yoloMode, setYoloMode] = useState(true);
   const [autoCompactEnabled, setAutoCompactEnabled] = useState(false);
   const [copiedItems, setCopiedItems] = useState<Record<string, boolean>>({});
+  const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([]);
+  const imageAttachmentsRef = useRef<ImageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const attachmentErrorTimerRef = useRef<number | null>(null);
+  const [isDropActive, setIsDropActive] = useState(false);
+  const dropDepthRef = useRef(0);
   const [connectionHealth, setConnectionHealth] = useState<ConnectionHealth>({
     hostConnected: false,
     runtimeWorking: false,
@@ -321,7 +338,7 @@ const Panel = () => {
     interrupted: boolean;
 
     // Message queue
-    queue: Array<{ text: string; timestamp: number }>;
+    queue: Array<{ text: string; images?: ImageAttachment[]; timestamp: number }>;
 
     // Streaming state
     streamingText: string;
@@ -967,6 +984,7 @@ const Panel = () => {
       role: message.role,
       content: message.content,
       ...(message.statusLine ? { statusLine: message.statusLine } : {}),
+      ...(message.images && message.images.length > 0 ? { images: message.images } : {}),
     }));
 
   const flushChatSave = async () => {
@@ -1057,6 +1075,10 @@ const Panel = () => {
 
   useEffect(() => {
     return () => {
+      if (attachmentErrorTimerRef.current != null) {
+        window.clearTimeout(attachmentErrorTimerRef.current);
+        attachmentErrorTimerRef.current = null;
+      }
       const timers = copyResetTimersRef.current;
       for (const key of Object.keys(timers)) {
         window.clearTimeout(timers[key]);
@@ -1082,6 +1104,121 @@ const Panel = () => {
   }, [messages, chatProvider]);
 
   const ATTACHMENT_LABEL_REGEX = /^\[Attachment: .+ · \d+ lines\]$/;
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+  const updateImageAttachments = (next: ImageAttachment[]) => {
+    imageAttachmentsRef.current = next;
+    setImageAttachments(next);
+    syncEditorEmpty();
+  };
+
+  const showAttachmentError = (message: string) => {
+    setAttachmentError(message);
+    if (attachmentErrorTimerRef.current != null) {
+      window.clearTimeout(attachmentErrorTimerRef.current);
+    }
+    attachmentErrorTimerRef.current = window.setTimeout(() => {
+      setAttachmentError(null);
+      attachmentErrorTimerRef.current = null;
+    }, 3000);
+  };
+
+  const formatBytes = (bytes: number) => {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    const value = bytes / Math.pow(1024, index);
+    return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+  };
+
+  const truncateName = (name: string, max = 24) => {
+    if (name.length <= max) return name;
+    const extMatch = name.match(/\.[^/.]+$/);
+    const ext = extMatch ? extMatch[0] : '';
+    const base = name.slice(0, Math.max(0, max - ext.length - 1));
+    return `${base}…${ext}`;
+  };
+
+  const getImageMediaType = (file: File): string | null => {
+    const type = file.type?.toLowerCase();
+    if (type && ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(type)) {
+      return type;
+    }
+    const name = file.name.toLowerCase();
+    if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+    if (name.endsWith('.png')) return 'image/png';
+    if (name.endsWith('.gif')) return 'image/gif';
+    if (name.endsWith('.webp')) return 'image/webp';
+    return null;
+  };
+
+  const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+      reader.onload = () => {
+        const result = reader.result;
+        if (typeof result !== 'string') {
+          reject(new Error('Unexpected file reader result'));
+          return;
+        }
+        const commaIndex = result.indexOf(',');
+        resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+      };
+      reader.readAsDataURL(file);
+    });
+
+  const makeImageAttachmentId = () =>
+    `img-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const addImageFromFile = async (file: File, source: 'paste' | 'drop') => {
+    if (file.size > MAX_IMAGE_BYTES) {
+      showAttachmentError(`Image exceeds ${formatBytes(MAX_IMAGE_BYTES)} limit.`);
+      return;
+    }
+    const mediaType = getImageMediaType(file);
+    if (!mediaType) {
+      showAttachmentError('Unsupported image type. Use JPG, PNG, GIF, or WebP.');
+      return;
+    }
+
+    try {
+      const data = await fileToBase64(file);
+      const attachment: ImageAttachment = {
+        id: makeImageAttachmentId(),
+        name: file.name || 'image',
+        mediaType,
+        data,
+        size: file.size,
+        source,
+      };
+      updateImageAttachments([...imageAttachmentsRef.current, attachment]);
+    } catch (error) {
+      showAttachmentError('Failed to read image.');
+    }
+  };
+
+  const addImagesFromFiles = async (files: FileList | File[], source: 'paste' | 'drop') => {
+    const list = Array.from(files);
+    if (list.length === 0) return;
+    let added = false;
+    for (const file of list) {
+      if (!getImageMediaType(file)) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await addImageFromFile(file, source);
+      added = true;
+    }
+    if (!added) {
+      showAttachmentError('Only image files can be attached.');
+    }
+  };
+
+  const removeImageAttachment = (id: string) => {
+    updateImageAttachments(imageAttachmentsRef.current.filter((item) => item.id !== id));
+  };
+
+  const getImageDataUrl = (image: ImageAttachment) =>
+    `data:${image.mediaType};base64,${image.data}`;
 
   const markCopied = (id: string) => {
     setCopiedItems((current) => ({ ...current, [id]: true }));
@@ -1417,8 +1554,12 @@ const Panel = () => {
   };
 
   const clearEditor = () => {
+    updateImageAttachments([]);
     const editor = editorRef.current;
-    if (!editor) return;
+    if (!editor) {
+      setEditorEmpty(true);
+      return;
+    }
     editor.innerHTML = '';
     chipStoreRef.current = {};
     setEditorEmpty(true);
@@ -1432,7 +1573,8 @@ const Panel = () => {
     }
     const hasChip = !!editor.querySelector('[data-chip-id]');
     const text = (editor.textContent ?? '').replace(/\u200B/g, '').trim();
-    setEditorEmpty(!hasChip && text.length === 0);
+    const hasImages = imageAttachmentsRef.current.length > 0;
+    setEditorEmpty(!hasChip && text.length === 0 && !hasImages);
   };
 
   const insertNodeAtCursor = (node: Node) => {
@@ -1502,6 +1644,22 @@ const Panel = () => {
   };
 
   const handlePaste = (event: ClipboardEvent) => {
+    const items = event.clipboardData?.items;
+    if (items && items.length > 0) {
+      const files: File[] = [];
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i];
+        if (!item.type.startsWith('image/')) continue;
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+      if (files.length > 0) {
+        event.preventDefault();
+        void addImagesFromFiles(files, 'paste');
+        return;
+      }
+    }
+
     const text = event.clipboardData?.getData('text/plain');
     if (text == null) return;
     event.preventDefault();
@@ -1510,6 +1668,79 @@ const Panel = () => {
     } else {
       insertTextAtCursor(text);
     }
+  };
+
+  const hasImageTransfer = (transfer: DataTransfer | null) => {
+    if (!transfer) return false;
+    const items = transfer.items;
+    if (items && items.length > 0) {
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i];
+        if (item.kind === 'file' && item.type.startsWith('image/')) return true;
+      }
+    }
+    const files = transfer.files;
+    if (files && files.length > 0) {
+      for (let i = 0; i < files.length; i += 1) {
+        if (getImageMediaType(files[i])) return true;
+      }
+    }
+    return false;
+  };
+
+  const hasFileTransfer = (transfer: DataTransfer | null) => {
+    if (!transfer) return false;
+    if (transfer.types && Array.from(transfer.types).includes('Files')) return true;
+    return Boolean(transfer.files && transfer.files.length > 0);
+  };
+
+  const handleDragEnter = (event: DragEvent) => {
+    if (!hasFileTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!hasImageTransfer(event.dataTransfer)) return;
+    dropDepthRef.current += 1;
+    setIsDropActive(true);
+  };
+
+  const handleDragOver = (event: DragEvent) => {
+    if (!hasFileTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'copy';
+    }
+  };
+
+  const handleDragLeave = (event: DragEvent) => {
+    if (!isDropActive) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dropDepthRef.current = Math.max(0, dropDepthRef.current - 1);
+    const target = event.currentTarget as HTMLElement | null;
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    const { clientX, clientY } = event;
+    const outside =
+      clientX < rect.left ||
+      clientX > rect.right ||
+      clientY < rect.top ||
+      clientY > rect.bottom;
+    if (outside || dropDepthRef.current === 0) {
+      setIsDropActive(false);
+      dropDepthRef.current = 0;
+    }
+  };
+
+  const handleDrop = (event: DragEvent) => {
+    if (!hasFileTransfer(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dropDepthRef.current = 0;
+    setIsDropActive(false);
+    const files = event.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    void addImagesFromFiles(files, 'drop');
   };
 
   const removeAdjacentChip = (direction: 'backward' | 'forward') => {
@@ -1561,11 +1792,34 @@ const Panel = () => {
   };
 
   const renderMessageContent = (message: Message) => {
+    const attachments =
+      message.images && message.images.length > 0 ? (
+        <div class="ageaf-message__attachments">
+          {message.images.map((image) => (
+            <div class="ageaf-message__attachment" key={image.id}>
+              <img
+                class="ageaf-message__attachment-thumb"
+                src={getImageDataUrl(image)}
+                alt={image.name}
+                loading="lazy"
+              />
+              <div class="ageaf-message__attachment-meta">
+                <div class="ageaf-message__attachment-name">
+                  {truncateName(image.name, 28)}
+                </div>
+                <div class="ageaf-message__attachment-size">{formatBytes(image.size)}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null;
+
     const { mainHtml, quotes } = extractQuotesFromHtml(renderMarkdown(message.content));
     const hasMain = mainHtml.trim().length > 0;
 
     return (
       <>
+        {attachments}
         {hasMain ? (
           <div
             class="ageaf-message__content"
@@ -2283,13 +2537,13 @@ const Panel = () => {
     setIsSending(value);
   };
 
-  const enqueueMessage = (conversationId: string, text: string) => {
+  const enqueueMessage = (conversationId: string, text: string, images?: ImageAttachment[]) => {
     const sessionState = getSessionState(conversationId);
-    sessionState.queue.push({ text, timestamp: Date.now() });
+    sessionState.queue.push({ text, images, timestamp: Date.now() });
 
     // Update queue count for current session
     if (conversationId === chatConversationIdRef.current) {
-      queueRef.current.push({ text });
+      queueRef.current.push({ text, images });
       setQueueCount(sessionState.queue.length);
     }
   };
@@ -2333,7 +2587,7 @@ const Panel = () => {
     // NOTE: sendMessage will read current session refs, so only process queue if this IS the current session
     const next = dequeueMessage(conversationId);
     if (next && conversationId === chatConversationIdRef.current) {
-      void sendMessage(next.text);
+      void sendMessage(next.text, next.images ?? []);
     }
   };
 
@@ -2401,7 +2655,7 @@ const Panel = () => {
     interruptCurrentSession();
   }
 
-  const sendMessage = async (text: string) => {
+  const sendMessage = async (text: string, images: ImageAttachment[] = []) => {
     const bridge = window.ageafBridge;
     if (!bridge) return;
 
@@ -2426,9 +2680,22 @@ const Panel = () => {
     const abortController = new AbortController();
     sessionState.abortController = abortController;
 
+    const messageImages = images.length > 0 ? images : undefined;
     // Update UI for current session
-    scrollToBottom();
-    setMessages((prev) => [...prev, createMessage({ role: 'user', content: text })]);
+    setMessages((prev) =>
+      [
+        ...prev,
+        createMessage({
+          role: 'user',
+          content: text,
+          ...(messageImages ? { images: messageImages } : {}),
+        }),
+      ]
+    );
+    // Scroll to bottom after the message is added to the DOM
+    requestAnimationFrame(() => {
+      scrollToBottom();
+    });
     setSending(true);
     setPatch(null);
     setStreamingText('');
@@ -2501,6 +2768,17 @@ const Panel = () => {
                 selection: selection?.selection ?? '',
                 surroundingBefore: selection?.before ?? '',
                 surroundingAfter: selection?.after ?? '',
+                ...(messageImages
+                  ? {
+                      images: messageImages.map((image) => ({
+                        id: image.id,
+                        name: image.name,
+                        mediaType: image.mediaType,
+                        data: image.data,
+                        size: image.size,
+                      })),
+                    }
+                  : {}),
               },
               policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
               userSettings: {
@@ -2530,6 +2808,17 @@ const Panel = () => {
           selection: selection?.selection ?? '',
           surroundingBefore: selection?.before ?? '',
           surroundingAfter: selection?.after ?? '',
+          ...(messageImages
+            ? {
+                images: messageImages.map((image) => ({
+                  id: image.id,
+                  name: image.name,
+                  mediaType: image.mediaType,
+                  data: image.data,
+                  size: image.size,
+                })),
+              }
+            : {}),
         },
         policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
               userSettings: {
@@ -2721,20 +3010,23 @@ const Panel = () => {
   const onSend = () => {
     const bridge = window.ageafBridge;
     const { text, hasContent } = serializeEditorContent();
-    if (!bridge || !hasContent) return;
+    const attachments = imageAttachmentsRef.current;
+    const hasImages = attachments.length > 0;
+    if (!bridge || (!hasContent && !hasImages)) return;
 
     const conversationId = chatConversationIdRef.current;
     if (!conversationId) return;
 
     const sessionState = getSessionState(conversationId);
 
+    const messageImages = hasImages ? [...attachments] : [];
     clearEditor();
     scrollToBottom();
     if (sessionState.isSending) {
-      enqueueMessage(conversationId, text);
+      enqueueMessage(conversationId, text, messageImages);
       return;
     }
-    void sendMessage(text);
+    void sendMessage(text, messageImages);
   };
 
   const onInputKeyDown = (event: KeyboardEvent) => {
@@ -2981,7 +3273,7 @@ const Panel = () => {
     isSendingRef.current = sessionState.isSending;
     setIsSending(sessionState.isSending);
     setQueueCount(sessionState.queue.length);
-    queueRef.current = sessionState.queue.map(q => ({ text: q.text }));
+    queueRef.current = sessionState.queue.map((q) => ({ text: q.text, images: q.images }));
 
     // Update streaming state
     streamingTextRef.current = sessionState.streamingText;
@@ -3494,7 +3786,13 @@ const Panel = () => {
 	          </button>
         </div>
       </div>
-      <div class="ageaf-panel__input">
+      <div
+        class="ageaf-panel__input"
+        onDragEnter={(event) => handleDragEnter(event as DragEvent)}
+        onDragOver={(event) => handleDragOver(event as DragEvent)}
+        onDragLeave={(event) => handleDragLeave(event as DragEvent)}
+        onDrop={(event) => handleDrop(event as DragEvent)}
+      >
 	        <div class="ageaf-panel__toolbar">
             <div class="ageaf-session-tabs" role="tablist" aria-label="Sessions">
               {sessionIds.map((id, index) => {
@@ -3587,6 +3885,37 @@ const Panel = () => {
         </button>
             </div>
           </div>
+        {imageAttachments.length > 0 ? (
+          <div class="ageaf-panel__attachments" aria-label="Attached images">
+            {imageAttachments.map((image) => (
+              <div class="ageaf-panel__attachment" key={image.id}>
+                <img
+                  class="ageaf-panel__attachment-thumb"
+                  src={getImageDataUrl(image)}
+                  alt={image.name}
+                  loading="lazy"
+                />
+                <div class="ageaf-panel__attachment-meta">
+                  <div class="ageaf-panel__attachment-name">
+                    {truncateName(image.name)}
+                  </div>
+                  <div class="ageaf-panel__attachment-size">{formatBytes(image.size)}</div>
+                </div>
+                <button
+                  class="ageaf-panel__attachment-remove"
+                  type="button"
+                  aria-label={`Remove ${image.name}`}
+                  onClick={() => removeImageAttachment(image.id)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {attachmentError ? (
+          <div class="ageaf-panel__attachment-error">{attachmentError}</div>
+        ) : null}
         <div
           class={`ageaf-panel__editor ${editorEmpty ? 'is-empty' : ''}`}
           contentEditable="true"
@@ -3605,6 +3934,34 @@ const Panel = () => {
             isComposingRef.current = false;
           }}
         />
+        {isDropActive ? (
+          <div class="ageaf-panel__dropzone" aria-hidden="true">
+            <svg
+              class="ageaf-panel__dropzone-icon"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path
+                d="M12 16V7M8.5 10.5L12 7l3.5 3.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.6"
+              />
+              <path
+                d="M5 17.5c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.6"
+              />
+            </svg>
+            <div class="ageaf-panel__dropzone-label">Drop images to attach</div>
+          </div>
+        ) : null}
         {isSending || queueCount > 0 ? (
           <div class="ageaf-panel__queue">
             {isSending ? 'Sending…' : 'Queued'}

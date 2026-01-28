@@ -41,6 +41,13 @@ type JobRequestPayload = {
     surroundingAfter?: string;
     compileLog?: string;
     message?: string;
+    images?: Array<{
+      id: string;
+      name: string;
+      mediaType: string;
+      data: string;
+      size: number;
+    }>;
   };
   runtime?: { claude?: ClaudeRuntimeConfig; codex?: CodexRuntimeConfig };
   userSettings?: {
