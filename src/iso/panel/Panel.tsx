@@ -239,11 +239,11 @@ type FileAttachment = {
   content?: string;
 };
 
-type OverleafFile = {
+type OverleafEntry = {
   path: string;
   name: string;
   ext: string;
-  kind: 'tex' | 'bib' | 'img' | 'other';
+  kind: 'tex' | 'bib' | 'img' | 'other' | 'folder';
 };
 
 type RuntimeModel = {
@@ -340,10 +340,10 @@ const Panel = () => {
   const imageAttachmentsRef = useRef<ImageAttachment[]>([]);
   const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([]);
   const fileAttachmentsRef = useRef<FileAttachment[]>([]);
-  const [projectFiles, setProjectFiles] = useState<OverleafFile[]>([]);
-  const projectFilesRef = useRef<OverleafFile[]>([]);
+  const [projectFiles, setProjectFiles] = useState<OverleafEntry[]>([]);
+  const projectFilesRef = useRef<OverleafEntry[]>([]);
   const [mentionOpen, setMentionOpen] = useState(false);
-  const [mentionResults, setMentionResults] = useState<OverleafFile[]>([]);
+  const [mentionResults, setMentionResults] = useState<OverleafEntry[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -745,11 +745,11 @@ const Panel = () => {
       setContextUsageFromStored(getCachedStoredUsage(conversation, chatProvider));
 
 	      if (options.transport !== 'native' && !options.hostUrl) {
-	        setRuntimeModels([]);
-	        if (chatProvider === 'codex') {
-	          setThinkingModes(
-	            FALLBACK_THINKING_MODES.map((mode) => ({ ...mode, maxThinkingTokens: null }))
-	          );
+        setRuntimeModels([]);
+        if (chatProvider === 'codex') {
+          setThinkingModes(
+            FALLBACK_THINKING_MODES.map((mode) => ({ ...mode, maxThinkingTokens: null }))
+          );
           setCurrentThinkingMode('off');
           setCurrentThinkingTokens(null);
           setCurrentModel(null);
@@ -779,10 +779,10 @@ const Panel = () => {
           } else {
             // Fetch fresh metadata
             metadata = await fetchCodexRuntimeMetadata(options);
-            if (cancelled) return;
+          if (cancelled) return;
             models = (metadata.models ?? []).filter(
               (model: RuntimeModel) => !model.value.includes('gpt-5.1')
-            );
+          );
           }
 
           setRuntimeModels(models);
@@ -791,7 +791,7 @@ const Panel = () => {
           const resolvedModel = metadata
             ? (metadata.currentModel ??
                models.find((model: RuntimeModel) => model.isDefault)?.value ??
-               models[0]?.value ??
+            models[0]?.value ??
                null)
             : (models.find((model: RuntimeModel) => model.isDefault)?.value ??
                models[0]?.value ??
@@ -860,7 +860,7 @@ const Panel = () => {
         } else {
           // Fetch fresh metadata
           metadata = await fetchClaudeRuntimeMetadata(options);
-          if (cancelled) return;
+        if (cancelled) return;
           models = metadata.models ?? [];
           thinkingModes = metadata.thinkingModes ?? FALLBACK_THINKING_MODES;
 
@@ -1185,7 +1185,7 @@ const Panel = () => {
     syncEditorEmpty();
   };
 
-  const updateProjectFiles = (next: OverleafFile[]) => {
+  const updateProjectFiles = (next: OverleafEntry[]) => {
     projectFilesRef.current = next;
     setProjectFiles(next);
   };
@@ -1303,7 +1303,7 @@ const Panel = () => {
     return match ? match[0].toLowerCase() : '';
   };
 
-  const classifyOverleafFile = (name: string): OverleafFile['kind'] => {
+  const classifyOverleafFile = (name: string): OverleafEntry['kind'] => {
     const ext = getFileExtension(name);
     if (ext === '.tex') return 'tex';
     if (ext === '.bib') return 'bib';
@@ -1335,6 +1335,13 @@ const Panel = () => {
   const extractFilenamesFromText = (value: string): string[] => {
     const extPattern = MENTION_EXTENSIONS.map((ext) => ext.replace('.', '\\.')).join('|');
     const regex = new RegExp(`([A-Za-z0-9_.-]+(?:${extPattern}))`, 'gi');
+
+    const sanitizeLabel = (label: string) => {
+      const trimmed = label.trim();
+      if (!trimmed) return '';
+      const tokens = trimmed.split(/\s+/);
+      return tokens.join(' ').trim();
+    };
 
     const isAllowedFilename = (token: string) => {
       const ext = getFileExtension(token);
@@ -1372,7 +1379,7 @@ const Panel = () => {
         t = stripUiPrefixes(candidate);
       }
 
-      return t.trim();
+      return sanitizeLabel(t);
     };
 
     return Array.from(value.matchAll(regex))
@@ -1380,15 +1387,55 @@ const Panel = () => {
       .filter(Boolean);
   };
 
-  const detectProjectFilesHeuristic = (): OverleafFile[] => {
-    const byKey = new Map<string, OverleafFile>();
+  const detectProjectFilesHeuristic = (): OverleafEntry[] => {
+    const byKey = new Map<string, OverleafEntry>();
+
+    const sanitizeLabel = (label: string) => {
+      const trimmed = label.trim();
+      if (!trimmed) return '';
+      return trimmed.replace(/^description/i, '').replace(/more$/i, '').trim();
+    };
+
+    const isFolderNode = (node: HTMLElement) => {
+      if (node.getAttribute('aria-expanded') != null) return true;
+      if (node.getAttribute('data-type') === 'folder') return true;
+      const className = node.className ?? '';
+      return /\bfolder\b/i.test(className);
+    };
+
+    const getLabelText = (node: HTMLElement) =>
+      sanitizeLabel(
+        node.getAttribute('aria-label')?.trim() ||
+          node.getAttribute('title')?.trim() ||
+          node.textContent?.trim() ||
+          ''
+      );
+
+    const buildTreePath = (node: HTMLElement, name: string, kind: OverleafEntry['kind']) => {
+      const parts: string[] = [];
+      let current: HTMLElement | null = node;
+      while (current) {
+        if (current === node) {
+          current = current.parentElement;
+          continue;
+        }
+        if (current.getAttribute?.('role') === 'treeitem' && isFolderNode(current)) {
+          const label = getLabelText(current);
+          if (label) parts.unshift(label);
+        }
+        current = current.parentElement;
+      }
+      if (kind !== 'folder') parts.push(name);
+      const path = parts.length > 0 ? parts.join('/') : name;
+      return path;
+    };
 
     const addFromText = (text: string) => {
       for (const name of extractFilenamesFromText(text)) {
         const ext = getFileExtension(name);
         if (!ext) continue;
-        const key = name.toLowerCase();
-        const next: OverleafFile = { name, path: name, ext, kind: classifyOverleafFile(name) };
+        const key = `file:${name.toLowerCase()}`;
+        const next: OverleafEntry = { name, path: name, ext, kind: classifyOverleafFile(name) };
 
         const existing = byKey.get(key);
         if (!existing) {
@@ -1443,7 +1490,26 @@ const Panel = () => {
         node.getAttribute('title')?.trim() ||
         node.textContent?.trim();
       if (!text) continue;
-      addFromText(text);
+      const label = sanitizeLabel(text);
+      const isFolder = isFolderNode(node);
+      if (isFolder && label && !getFileExtension(label)) {
+        const path = buildTreePath(node, label, 'folder');
+        const key = `folder:${path.toLowerCase()}`;
+        if (!byKey.has(key)) {
+          byKey.set(key, { name: label, path, ext: '', kind: 'folder' });
+        }
+        continue;
+      }
+      const ext = getFileExtension(label);
+      if (ext) {
+        const path = buildTreePath(node, label, classifyOverleafFile(label));
+        const key = `file:${path.toLowerCase()}`;
+        if (!byKey.has(key)) {
+          byKey.set(key, { name: label, path, ext, kind: classifyOverleafFile(label) });
+        }
+        continue;
+      }
+      addFromText(label);
     }
     if (byKey.size > 0) return Array.from(byKey.values());
 
@@ -1499,15 +1565,16 @@ const Panel = () => {
     const scored = files
       .map((file) => {
         const name = file.name.toLowerCase();
+        const path = file.path.toLowerCase();
         let score = 3;
         if (q.length === 0) score = 1;
-        else if (name.startsWith(q)) score = 0;
-        else if (name.includes(q)) score = 2;
+        else if (name.startsWith(q) || path.startsWith(q)) score = 0;
+        else if (name.includes(q) || path.includes(q)) score = 2;
         return { file, score };
       })
       .filter((entry) => entry.score < 3)
       .sort((a, b) =>
-        a.score === b.score ? a.file.name.localeCompare(b.file.name) : a.score - b.score
+        a.score === b.score ? a.file.path.localeCompare(b.file.path) : a.score - b.score
       )
       .slice(0, 20)
       .map((entry) => entry.file);
@@ -1531,7 +1598,7 @@ const Panel = () => {
     setMentionOpen(true);
   };
 
-  const insertFileMention = (file: OverleafFile) => {
+  const insertMentionEntry = (entry: OverleafEntry) => {
     const editor = editorRef.current;
     if (!editor) return;
     const selection = window.getSelection();
@@ -1549,10 +1616,10 @@ const Panel = () => {
 
     const chip = document.createElement('span');
     chip.className = 'ageaf-panel__mention';
-    chip.dataset.mention = 'file';
-    chip.dataset.path = file.path;
+    chip.dataset.mention = entry.kind === 'folder' ? 'folder' : 'file';
+    chip.dataset.path = entry.path;
     chip.setAttribute('contenteditable', 'false');
-    chip.textContent = `@${file.name}`;
+    chip.textContent = `@${entry.name}`;
     insertNodeAtCursor(chip);
     insertTextAtCursor(' ');
     setMentionOpen(false);
@@ -2001,11 +2068,11 @@ const Panel = () => {
         return;
       }
       const mentionKind = element.dataset?.mention;
-      if (mentionKind === 'file') {
+      if (mentionKind === 'file' || mentionKind === 'folder') {
         const path = element.dataset?.path ?? '';
         if (path) {
           hasContent = true;
-          parts.push(`@[file:${path}]`);
+          parts.push(`@[${mentionKind}:${path}]`);
         }
         return;
       }
@@ -2052,7 +2119,7 @@ const Panel = () => {
       return;
     }
     const hasChip = !!editor.querySelector('[data-chip-id]');
-    const hasMention = !!editor.querySelector('[data-mention="file"]');
+    const hasMention = !!editor.querySelector('[data-mention]');
     const text = (editor.textContent ?? '').replace(/\u200B/g, '').trim();
     const hasImages = imageAttachmentsRef.current.length > 0;
     const hasFiles = fileAttachmentsRef.current.length > 0;
@@ -2329,20 +2396,14 @@ const Panel = () => {
       if (direction === 'backward' && offset > 0) return false;
       if (direction === 'forward' && offset < length) return false;
       const sibling = direction === 'backward' ? textNode.previousSibling : textNode.nextSibling;
-      if (
-        sibling instanceof HTMLElement &&
-        (sibling.dataset?.chipId || sibling.dataset?.mention === 'file')
-      ) {
+      if (sibling instanceof HTMLElement && (sibling.dataset?.chipId || sibling.dataset?.mention)) {
         target = sibling;
       }
     } else if (anchor.nodeType === Node.ELEMENT_NODE) {
       const element = anchor as HTMLElement;
       const index = direction === 'backward' ? selection.anchorOffset - 1 : selection.anchorOffset;
       const sibling = element.childNodes[index];
-      if (
-        sibling instanceof HTMLElement &&
-        (sibling.dataset?.chipId || sibling.dataset?.mention === 'file')
-      ) {
+      if (sibling instanceof HTMLElement && (sibling.dataset?.chipId || sibling.dataset?.mention)) {
         target = sibling;
       }
     }
@@ -2599,17 +2660,17 @@ const Panel = () => {
     }
   };
 
-	  const applyRuntimePreferences = async (payload: {
-	    model?: string | null;
-	    thinkingMode?: string | null;
-	  }) => {
-	    const options = settings ?? (await getOptions());
+  const applyRuntimePreferences = async (payload: {
+    model?: string | null;
+    thinkingMode?: string | null;
+  }) => {
+    const options = settings ?? (await getOptions());
 	    if (options.transport !== 'native' && !options.hostUrl) return;
 
-	    try {
-	      const response = await updateClaudeRuntimePreferences(options, payload);
-	      if (response.currentModel !== undefined) {
-	        setCurrentModel(response.currentModel);
+    try {
+      const response = await updateClaudeRuntimePreferences(options, payload);
+      if (response.currentModel !== undefined) {
+        setCurrentModel(response.currentModel);
       }
       if (response.currentThinkingMode) {
         setCurrentThinkingMode(response.currentThinkingMode);
@@ -2640,14 +2701,14 @@ const Panel = () => {
     }
 
     const throttleMs = getContextUsageThrottleMs(provider);
-	    if (!params?.force && cached && Date.now() - cached.updatedAt < throttleMs) {
-	      return;
-	    }
+    if (!params?.force && cached && Date.now() - cached.updatedAt < throttleMs) {
+      return;
+    }
 
-	    if (contextRefreshInFlightRef.current) return;
-	    const options = settings ?? (await getOptions());
+    if (contextRefreshInFlightRef.current) return;
+    const options = settings ?? (await getOptions());
 	    if (options.transport !== 'native' && !options.hostUrl) return;
-	    contextRefreshInFlightRef.current = true;
+    contextRefreshInFlightRef.current = true;
 
     try {
       if (provider === 'codex') {
@@ -2978,10 +3039,10 @@ const Panel = () => {
 
     // Only update UI if this is the current session
     if (conversationId === chatConversationIdRef.current) {
-      if (!thinkingEnabled) {
-        setStreamingState('Working · ESC to interrupt', true);
+    if (!thinkingEnabled) {
+      setStreamingState('Working · ESC to interrupt', true);
       } else {
-        setStreamingState('Thinking 0s · ESC to interrupt', true);
+    setStreamingState('Thinking 0s · ESC to interrupt', true);
       }
     }
 
@@ -3015,8 +3076,8 @@ const Panel = () => {
 
     // Only update UI if this is the current session
     if (conversationId === chatConversationIdRef.current) {
-      if (!thinkingEnabled) {
-        setStreamingStatus('Responding · ESC to interrupt');
+    if (!thinkingEnabled) {
+      setStreamingStatus('Responding · ESC to interrupt');
       } else {
         setStreamingStatus(`Thought for ${thinkingSeconds}s · ESC to interrupt`);
       }
@@ -3060,15 +3121,15 @@ const Panel = () => {
       if (conversation) {
         let updatedMessages = [...conversation.messages];
 
-        if (pending.status === 'ok' && finalText) {
+    if (pending.status === 'ok' && finalText) {
           updatedMessages.push({
             role: 'assistant' as const,
-            content: finalText,
-            ...(statusLine ? { statusLine } : {}),
+          content: finalText,
+          ...(statusLine ? { statusLine } : {}),
           });
-        }
-        if (pending.status !== 'ok') {
-          const message = pending.message ?? 'Job failed';
+    }
+    if (pending.status !== 'ok') {
+      const message = pending.message ?? 'Job failed';
           updatedMessages.push({
             role: 'system' as const,
             content: message,
@@ -3086,14 +3147,14 @@ const Panel = () => {
         // Only update UI if this is the current session
         if (conversationId === chatConversationIdRef.current) {
           setMessages(updatedMessages.map(m => createMessage(m)));
-          setStreamingText('');
-          streamingTextRef.current = '';
+    setStreamingText('');
+    streamingTextRef.current = '';
           stopStreamTimer(conversationId);
-          setStreamingState(null, false);
+    setStreamingState(null, false);
 
           if (provider === 'claude') {
-            void refreshContextUsage();
-          }
+      void refreshContextUsage();
+    }
         }
       }
     }
@@ -3179,14 +3240,14 @@ const Panel = () => {
 
     // Update UI if this is the current session
     if (conversationId === chatConversationIdRef.current) {
-      abortControllerRef.current = null;
-      activeJobIdRef.current = null;
-      interruptedRef.current = false;
-      thinkingCompleteRef.current = false;
-      setToolRequests([]);
-      setToolRequestInputs({});
-      setToolRequestBusy(false);
-      setSending(false);
+    abortControllerRef.current = null;
+    activeJobIdRef.current = null;
+    interruptedRef.current = false;
+    thinkingCompleteRef.current = false;
+    setToolRequests([]);
+    setToolRequestInputs({});
+    setToolRequestBusy(false);
+    setSending(false);
     }
 
     // Process next queued message for this session
@@ -3325,13 +3386,18 @@ const Panel = () => {
     startThinkingTimer(sessionConversationId);
 
     const resolveMentionFiles = async (rawText: string) => {
-      const mentionRegex = /@\[file:([^\]]+)\]/g;
-      const refs = Array.from(rawText.matchAll(mentionRegex))
+      const fileRegex = /@\[file:([^\]]+)\]/g;
+      const folderRegex = /@\[folder:([^\]]+)\]/g;
+      const fileRefs = Array.from(rawText.matchAll(fileRegex))
         .map((m) => String(m[1] ?? '').trim())
         .filter(Boolean);
-      if (refs.length === 0) return rawText;
+      const folderRefs = Array.from(rawText.matchAll(folderRegex))
+        .map((m) => String(m[1] ?? '').trim())
+        .filter(Boolean);
+      if (fileRefs.length === 0 && folderRefs.length === 0) return rawText;
 
       const MAX_CHARS = 200_000;
+      const MAX_FILES_PER_FOLDER = 5;
       const langForExt = (name: string) => {
         const ext = getFileExtension(name);
         if (ext === '.tex') return 'tex';
@@ -3344,9 +3410,10 @@ const Panel = () => {
         return 'text';
       };
 
-      let nextText = rawText;
-      for (const ref of refs) {
-        if (!bridge.requestFileContent) continue;
+      const resolveFile = async (ref: string) => {
+        if (!bridge.requestFileContent) {
+          return `\n\n[Overleaf file: ${ref}]\n(Unable to read file content from Overleaf editor.)\n`;
+        }
         // eslint-disable-next-line no-await-in-loop
         const resp = await bridge.requestFileContent(ref).catch((err: unknown) => ({
           ok: false,
@@ -3372,8 +3439,45 @@ const Panel = () => {
             })()
           : `\n\n[Overleaf file: ${requested}]\n(Unable to read file content from Overleaf editor.)\n`;
 
+        return injection;
+      };
+
+      let nextText = rawText;
+      for (const ref of fileRefs) {
+        // eslint-disable-next-line no-await-in-loop
+        const injection = await resolveFile(ref);
         const token = `@[file:${ref}]`;
         nextText = nextText.split(token).join(injection);
+      }
+
+      for (const folder of folderRefs) {
+        const folderKey = folder.toLowerCase();
+        const candidates = projectFilesRef.current
+          .filter((entry) => entry.kind !== 'folder')
+          .filter((entry) => {
+            const path = entry.path.toLowerCase();
+            if (path.startsWith(`${folderKey}/`)) return true;
+            if (path.startsWith(folderKey) && path.includes('/')) return true;
+            return false;
+          })
+          .slice(0, MAX_FILES_PER_FOLDER);
+
+        let folderBlock = `\n\n[Overleaf folder: ${folder}]\n`;
+        if (candidates.length === 0) {
+          folderBlock += '(No files found under this folder from the current project list.)\n';
+        } else {
+          folderBlock += `Files (${candidates.length}):\n`;
+          for (const entry of candidates) {
+            folderBlock += `- ${entry.path}\n`;
+          }
+          for (const entry of candidates) {
+            // eslint-disable-next-line no-await-in-loop
+            const injection = await resolveFile(entry.path || entry.name);
+            folderBlock += injection;
+          }
+        }
+        const token = `@[folder:${folder}]`;
+        nextText = nextText.split(token).join(folderBlock);
       }
       return nextText;
     };
@@ -3596,21 +3700,21 @@ const Panel = () => {
           const contextWindow = Number(event.data?.contextWindow ?? 0) || null;
           const normalized = normalizeContextUsage({ usedTokens, contextWindow });
           setContextUsage(normalized);
-          const state = chatStateRef.current;
-          if (state) {
-            const nextUsage: StoredContextUsage = {
-              usedTokens: normalized.usedTokens,
-              contextWindow: normalized.contextWindow,
+            const state = chatStateRef.current;
+            if (state) {
+              const nextUsage: StoredContextUsage = {
+                usedTokens: normalized.usedTokens,
+                contextWindow: normalized.contextWindow,
               percentage: normalized.percentage ?? null,
-              updatedAt: Date.now(),
-            };
-            chatStateRef.current = setConversationContextUsage(
-              state,
-              provider,
+                updatedAt: Date.now(),
+              };
+              chatStateRef.current = setConversationContextUsage(
+                state,
+                provider,
               sessionConversationId,
-              nextUsage
-            );
-            scheduleChatSave();
+                nextUsage
+              );
+              scheduleChatSave();
           }
           return;
         }
@@ -3619,7 +3723,7 @@ const Panel = () => {
           markThinkingComplete(sessionConversationId);
           // Only update UI if this is the current session
           if (sessionConversationId === chatConversationIdRef.current) {
-            setPatch(event.data as Patch);
+          setPatch(event.data as Patch);
           }
         }
 
@@ -3661,16 +3765,16 @@ const Panel = () => {
 
         // Update UI if current session
         if (sessionConversationId === chatConversationIdRef.current) {
-          setStreamingState(null, false);
-          activityStartRef.current = null;
-          pendingDoneRef.current = null;
-          streamTokensRef.current = [];
-          setStreamingText('');
-          streamingTextRef.current = '';
+        setStreamingState(null, false);
+        activityStartRef.current = null;
+        pendingDoneRef.current = null;
+        streamTokensRef.current = [];
+            setStreamingText('');
+            streamingTextRef.current = '';
         }
         finishSessionJob(sessionConversationId);
-        return;
-      }
+            return;
+          }
 
       // Handle non-abort errors
       const message = error instanceof Error ? error.message : 'Request failed';
@@ -3685,13 +3789,13 @@ const Panel = () => {
 
       // Update UI if current session
       if (sessionConversationId === chatConversationIdRef.current) {
-        setMessages((prev) => [...prev, createMessage({ role: 'system', content: message })]);
-        setStreamingState(null, false);
-        activityStartRef.current = null;
-        pendingDoneRef.current = null;
-        streamTokensRef.current = [];
-        setStreamingText('');
-        streamingTextRef.current = '';
+      setMessages((prev) => [...prev, createMessage({ role: 'system', content: message })]);
+      setStreamingState(null, false);
+      activityStartRef.current = null;
+      pendingDoneRef.current = null;
+      streamTokensRef.current = [];
+      setStreamingText('');
+      streamingTextRef.current = '';
       }
       finishSessionJob(sessionConversationId);
     } finally {
@@ -3745,7 +3849,7 @@ const Panel = () => {
         const selected = mentionResults[mentionIndex];
         if (selected) {
           event.preventDefault();
-          insertFileMention(selected);
+          insertMentionEntry(selected);
           return;
         }
       }
@@ -4203,43 +4307,43 @@ const Panel = () => {
       </div>
       <div class="ageaf-panel__inner" id="ageaf-panel-inner">
       <header class="ageaf-panel__header">
-        <img
-          src={
-            (() => {
-              try {
-                if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
-                  const url = chrome.runtime.getURL('icons/icon_128.png');
-                  const version = chrome.runtime.getManifest?.()?.version ?? 'dev';
-                  return `${url}?v=${version}`;
+          <img
+            src={
+              (() => {
+                try {
+                  if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
+                    const url = chrome.runtime.getURL('icons/icon_128.png');
+                    const version = chrome.runtime.getManifest?.()?.version ?? 'dev';
+                    return `${url}?v=${version}`;
+                  }
+                } catch {
+                  // Extension context invalidated - fall back to relative path
                 }
-              } catch {
-                // Extension context invalidated - fall back to relative path
-              }
-              return 'icons/icon_128.png';
-            })()
-          }
-          class="ageaf-panel__logo"
-          alt="Ageaf Logo"
-        />
-        <div class="ageaf-panel__name">Ageaf</div>
-        <div
-          class={`ageaf-provider ${providerIndicatorClass} ${
-            !connectionHealth.hostConnected || !connectionHealth.runtimeWorking
-              ? 'ageaf-provider--disconnected'
-              : ''
-          } ${
-            !connectionHealth.hostConnected
-              ? 'ageaf-provider--host-disconnected'
-              : !connectionHealth.runtimeWorking
-                ? 'ageaf-provider--runtime-disconnected'
-                : ''
-          }`}
-          aria-label={`Provider: ${providerDisplay.label}`}
-          data-tooltip={getConnectionHealthTooltip()}
-        >
-          <span class="ageaf-provider__dot" aria-hidden="true" />
-          <span class="ageaf-provider__label">{providerDisplay.label}</span>
-        </div>
+                return 'icons/icon_128.png';
+              })()
+            }
+            class="ageaf-panel__logo"
+            alt="Ageaf Logo"
+          />
+            <div class="ageaf-panel__name">Ageaf</div>
+	          <div
+	            class={`ageaf-provider ${providerIndicatorClass} ${
+	              !connectionHealth.hostConnected || !connectionHealth.runtimeWorking
+	                ? 'ageaf-provider--disconnected'
+	                : ''
+	            } ${
+	              !connectionHealth.hostConnected
+	                ? 'ageaf-provider--host-disconnected'
+	                : !connectionHealth.runtimeWorking
+	                  ? 'ageaf-provider--runtime-disconnected'
+	                  : ''
+	            }`}
+	            aria-label={`Provider: ${providerDisplay.label}`}
+	            data-tooltip={getConnectionHealthTooltip()}
+	          >
+	            <span class="ageaf-provider__dot" aria-hidden="true" />
+	            <span class="ageaf-provider__label">{providerDisplay.label}</span>
+	          </div>
       </header>
       <div class="ageaf-panel__body">
           <div class="ageaf-panel__chat" ref={chatRef}>
@@ -4714,6 +4818,13 @@ const Panel = () => {
           <div
             class="ageaf-mention"
             onWheel={(event) => {
+              // Ensure the dropdown itself scrolls (trackpad wheel often scrolls the chat instead).
+              // We scroll manually to be robust across browsers' passive wheel defaults.
+              const el = event.currentTarget as HTMLElement | null;
+              if (!el) return;
+              if (el.scrollHeight <= el.clientHeight) return;
+              el.scrollTop += (event as unknown as WheelEvent).deltaY;
+              event.preventDefault();
               event.stopPropagation();
             }}
           >
@@ -4725,12 +4836,14 @@ const Panel = () => {
                   class={`ageaf-mention__option ${index === mentionIndex ? 'is-active' : ''}`}
                   onMouseDown={(event) => {
                     event.preventDefault();
-                    insertFileMention(file);
+                    insertMentionEntry(file);
                   }}
                   title={file.path}
                 >
                   <span class={`ageaf-mention__icon is-${file.kind}`}>
-                    {file.kind === 'tex'
+                    {file.kind === 'folder'
+                      ? 'Dir'
+                      : file.kind === 'tex'
                       ? 'TeX'
                       : file.kind === 'bib'
                         ? 'Bib'
