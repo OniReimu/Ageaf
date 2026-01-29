@@ -68,6 +68,53 @@ function insertAtCursor(text: string) {
   window.dispatchEvent(new CustomEvent(EDITOR_INSERT_EVENT, { detail: { text } }));
 }
 
+function ensureKatexFontFaces() {
+  const STYLE_ID = 'ageaf-katex-fonts';
+  if (document.getElementById(STYLE_ID)) return;
+  if (!('chrome' in globalThis) || !chrome?.runtime?.getURL) return;
+
+  // Content-script injected CSS resolves relative url(...) against the page origin
+  // (e.g. https://www.overleaf.com/project/...), which causes 404s for KaTeX fonts.
+  // We override KaTeX @font-face rules with absolute chrome-extension:// URLs.
+  const fontUrl = (name: string) => chrome.runtime.getURL(`fonts/${name}`);
+  const faces: Array<{ family: string; weight: number; style: string; fileBase: string }> = [
+    { family: 'KaTeX_AMS', weight: 400, style: 'normal', fileBase: 'KaTeX_AMS-Regular' },
+    { family: 'KaTeX_Caligraphic', weight: 700, style: 'normal', fileBase: 'KaTeX_Caligraphic-Bold' },
+    { family: 'KaTeX_Caligraphic', weight: 400, style: 'normal', fileBase: 'KaTeX_Caligraphic-Regular' },
+    { family: 'KaTeX_Fraktur', weight: 700, style: 'normal', fileBase: 'KaTeX_Fraktur-Bold' },
+    { family: 'KaTeX_Fraktur', weight: 400, style: 'normal', fileBase: 'KaTeX_Fraktur-Regular' },
+    { family: 'KaTeX_Main', weight: 700, style: 'normal', fileBase: 'KaTeX_Main-Bold' },
+    { family: 'KaTeX_Main', weight: 700, style: 'italic', fileBase: 'KaTeX_Main-BoldItalic' },
+    { family: 'KaTeX_Main', weight: 400, style: 'italic', fileBase: 'KaTeX_Main-Italic' },
+    { family: 'KaTeX_Main', weight: 400, style: 'normal', fileBase: 'KaTeX_Main-Regular' },
+    { family: 'KaTeX_Math', weight: 700, style: 'italic', fileBase: 'KaTeX_Math-BoldItalic' },
+    { family: 'KaTeX_Math', weight: 400, style: 'italic', fileBase: 'KaTeX_Math-Italic' },
+    { family: 'KaTeX_SansSerif', weight: 700, style: 'normal', fileBase: 'KaTeX_SansSerif-Bold' },
+    { family: 'KaTeX_SansSerif', weight: 400, style: 'italic', fileBase: 'KaTeX_SansSerif-Italic' },
+    { family: 'KaTeX_SansSerif', weight: 400, style: 'normal', fileBase: 'KaTeX_SansSerif-Regular' },
+    { family: 'KaTeX_Script', weight: 400, style: 'normal', fileBase: 'KaTeX_Script-Regular' },
+    { family: 'KaTeX_Size1', weight: 400, style: 'normal', fileBase: 'KaTeX_Size1-Regular' },
+    { family: 'KaTeX_Size2', weight: 400, style: 'normal', fileBase: 'KaTeX_Size2-Regular' },
+    { family: 'KaTeX_Size3', weight: 400, style: 'normal', fileBase: 'KaTeX_Size3-Regular' },
+    { family: 'KaTeX_Size4', weight: 400, style: 'normal', fileBase: 'KaTeX_Size4-Regular' },
+    { family: 'KaTeX_Typewriter', weight: 400, style: 'normal', fileBase: 'KaTeX_Typewriter-Regular' },
+  ];
+
+  const css = faces
+    .map((face) => {
+      const woff2 = fontUrl(`${face.fileBase}.woff2`);
+      const woff = fontUrl(`${face.fileBase}.woff`);
+      const ttf = fontUrl(`${face.fileBase}.ttf`);
+      return `@font-face{font-display:block;font-family:${face.family};font-style:${face.style};font-weight:${face.weight};src:url(${woff2}) format("woff2"),url(${woff}) format("woff"),url(${ttf}) format("truetype")}`;
+    })
+    .join('\n');
+
+  const style = document.createElement('style');
+  style.id = STYLE_ID;
+  style.textContent = css;
+  document.head.appendChild(style);
+}
+
 function findLayoutHost(): HTMLElement | null {
   const selectors = [
     '#ide-root',
@@ -195,6 +242,7 @@ try {
 }
 
 updatePanelMount();
+ensureKatexFontFaces();
 
 const originalPushState = history.pushState;
 history.pushState = function (...args) {
