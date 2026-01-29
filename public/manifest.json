@@ -7,8 +7,7 @@
     "16": "icons/icon_16.png",
     "32": "icons/icon_32.png",
     "48": "icons/icon_48.png",
-    "128": "icons/icon_128.png",
-    "256": "icons/icon_256.png"
+    "128": "icons/icon_128.png"
   },
   "web_accessible_resources": [
     {
@@ -17,9 +16,7 @@
         "icons/icon_16.png",
         "icons/icon_32.png",
         "icons/icon_48.png",
-        "icons/icon_128.png",
-        "icons/icon_256.png",
-        "fonts/*"
+        "icons/icon_128.png"
       ],
       "matches": [
         "https://www.overleaf.com/*"
@@ -35,8 +32,7 @@
       "16": "icons/icon_16.png",
       "32": "icons/icon_32.png",
       "48": "icons/icon_48.png",
-      "128": "icons/icon_128.png",
-      "256": "icons/icon_256.png"
+      "128": "icons/icon_128.png"
     }
   },
   "permissions": [
