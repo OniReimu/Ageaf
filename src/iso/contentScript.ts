@@ -220,7 +220,7 @@ window.addEventListener(
   (event) => {
     if (!(event.metaKey || event.ctrlKey)) return;
     if (event.shiftKey || event.altKey) return;
-    if (event.key.toLowerCase() !== 'k') return;
+    if (event.key.toLowerCase() !== 'l') return;
     if (isPanelTarget(event.target)) return;
     if (!isEditorTarget(event.target)) return;
     if (!hasVisibleSelection()) return;

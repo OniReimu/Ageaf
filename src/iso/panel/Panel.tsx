@@ -3884,7 +3884,7 @@ const Panel = () => {
       }
     }
 
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') {
       event.preventDefault();
       void insertChipFromSelection();
       return;
