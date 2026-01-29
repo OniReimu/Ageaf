@@ -16,7 +16,8 @@
         "icons/icon_16.png",
         "icons/icon_32.png",
         "icons/icon_48.png",
-        "icons/icon_128.png"
+        "icons/icon_128.png",
+        "fonts/*"
       ],
       "matches": [
         "https://www.overleaf.com/*"
