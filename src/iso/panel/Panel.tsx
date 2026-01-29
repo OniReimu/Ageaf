@@ -239,6 +239,13 @@ type FileAttachment = {
   content?: string;
 };
 
+type OverleafFile = {
+  path: string;
+  name: string;
+  ext: string;
+  kind: 'tex' | 'bib' | 'img' | 'other';
+};
+
 type RuntimeModel = {
   value: string;
   displayName: string;
@@ -333,6 +340,12 @@ const Panel = () => {
   const imageAttachmentsRef = useRef<ImageAttachment[]>([]);
   const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([]);
   const fileAttachmentsRef = useRef<FileAttachment[]>([]);
+  const [projectFiles, setProjectFiles] = useState<OverleafFile[]>([]);
+  const projectFilesRef = useRef<OverleafFile[]>([]);
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionResults, setMentionResults] = useState<OverleafFile[]>([]);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const attachmentErrorTimerRef = useRef<number | null>(null);
   const [isDropActive, setIsDropActive] = useState(false);
@@ -1172,6 +1185,11 @@ const Panel = () => {
     syncEditorEmpty();
   };
 
+  const updateProjectFiles = (next: OverleafFile[]) => {
+    projectFilesRef.current = next;
+    setProjectFiles(next);
+  };
+
   const showAttachmentError = (message: string) => {
     setAttachmentError(message);
     if (attachmentErrorTimerRef.current != null) {
@@ -1283,6 +1301,264 @@ const Panel = () => {
   const getFileExtension = (name: string) => {
     const match = name.match(/\.[a-z0-9]+$/i);
     return match ? match[0].toLowerCase() : '';
+  };
+
+  const classifyOverleafFile = (name: string): OverleafFile['kind'] => {
+    const ext = getFileExtension(name);
+    if (ext === '.tex') return 'tex';
+    if (ext === '.bib') return 'bib';
+    if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.pdf'].includes(ext)) {
+      return 'img';
+    }
+    return 'other';
+  };
+
+  const MENTION_EXTENSIONS = [
+    '.tex',
+    '.bib',
+    '.sty',
+    '.cls',
+    '.md',
+    '.json',
+    '.yaml',
+    '.yml',
+    '.csv',
+    '.xml',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.svg',
+    '.pdf',
+  ];
+
+  const extractFilenamesFromText = (value: string): string[] => {
+    const extPattern = MENTION_EXTENSIONS.map((ext) => ext.replace('.', '\\.')).join('|');
+    const regex = new RegExp(`([A-Za-z0-9_.-]+(?:${extPattern}))`, 'gi');
+
+    const isAllowedFilename = (token: string) => {
+      const ext = getFileExtension(token);
+      return !!ext && MENTION_EXTENSIONS.includes(ext);
+    };
+
+    const stripUiPrefixes = (token: string) => {
+      let t = token.trim();
+      // Overleaf often concatenates accessibility labels into the same token.
+      // Examples we've seen:
+      // - "description1.Introduction.texmore"
+      // - "imagedraft-clean.pdf"
+      t = t.replace(/^description/i, '').replace(/more$/i, '');
+
+      // Strip common UI prefixes *only if* the remainder still looks like a valid filename.
+      const prefixes = ['image', 'file', 'document', 'attachment'];
+      for (const prefix of prefixes) {
+        if (t.toLowerCase().startsWith(prefix)) {
+          const remainder = t.slice(prefix.length);
+          if (isAllowedFilename(remainder)) {
+            t = remainder;
+          }
+        }
+      }
+      return t.trim();
+    };
+
+    const sanitizeToken = (token: string) => {
+      let t = stripUiPrefixes(token);
+
+      // If it's still contaminated, pick the best-looking filename-like substring.
+      const inner = Array.from(t.matchAll(regex)).map((m) => String(m[0] ?? ''));
+      if (inner.length > 0) {
+        const candidate = inner[inner.length - 1]!;
+        t = stripUiPrefixes(candidate);
+      }
+
+      return t.trim();
+    };
+
+    return Array.from(value.matchAll(regex))
+      .map((match) => sanitizeToken(String(match[0] ?? '')))
+      .filter(Boolean);
+  };
+
+  const detectProjectFilesHeuristic = (): OverleafFile[] => {
+    const byKey = new Map<string, OverleafFile>();
+
+    const addFromText = (text: string) => {
+      for (const name of extractFilenamesFromText(text)) {
+        const ext = getFileExtension(name);
+        if (!ext) continue;
+        const key = name.toLowerCase();
+        const next: OverleafFile = { name, path: name, ext, kind: classifyOverleafFile(name) };
+
+        const existing = byKey.get(key);
+        if (!existing) {
+          byKey.set(key, next);
+          continue;
+        }
+
+        // Prefer the cleanest/shortest token (avoids duplicates like "imagedraft-clean.pdf")
+        const existingStartsDirty = /^(description|image|file|document|attachment)/i.test(existing.name);
+        const nextStartsDirty = /^(description|image|file|document|attachment)/i.test(next.name);
+
+        const better =
+          (existingStartsDirty && !nextStartsDirty) ||
+          (existingStartsDirty === nextStartsDirty && next.name.length < existing.name.length);
+
+        if (better) byKey.set(key, next);
+      }
+    };
+
+    // 1) Tabs (most reliable)
+    const tabNodes = Array.from(document.querySelectorAll('[role="tab"], .cm-tab, .cm-tab-label'));
+    for (const node of tabNodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.closest('#ageaf-panel-root')) continue;
+      const text =
+        node.getAttribute('aria-label')?.trim() ||
+        node.getAttribute('title')?.trim() ||
+        node.textContent?.trim();
+      if (!text) continue;
+      addFromText(text);
+    }
+    if (byKey.size > 0) return Array.from(byKey.values());
+
+    // 2) Common file tree labels
+    const treeNodes = Array.from(
+      document.querySelectorAll(
+        [
+          '[data-testid="file-name"]',
+          '[role="treeitem"]',
+          '.file-tree-item-name',
+          '.file-name',
+          '.entity-name',
+          '.file-label',
+        ].join(', ')
+      )
+    );
+    for (const node of treeNodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.closest('#ageaf-panel-root')) continue;
+      const text =
+        node.getAttribute('aria-label')?.trim() ||
+        node.getAttribute('title')?.trim() ||
+        node.textContent?.trim();
+      if (!text) continue;
+      addFromText(text);
+    }
+    if (byKey.size > 0) return Array.from(byKey.values());
+
+    // 3) Last resort: scan text nodes (capped)
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let scanned = 0;
+    while (scanned < 8000) {
+      const node = walker.nextNode() as Text | null;
+      if (!node) break;
+      scanned += 1;
+      const parent = node.parentElement;
+      if (!parent) continue;
+      if (parent.closest('#ageaf-panel-root')) continue;
+      const text = (node.textContent ?? '').trim();
+      if (text.length < 4 || text.length > 200) continue;
+      if (!/[.](tex|bib|sty|cls|md|json|ya?ml|csv|xml|png|jpe?g|gif|svg|pdf)\b/i.test(text)) {
+        continue;
+      }
+      addFromText(text);
+      if (byKey.size >= 200) break;
+    }
+
+    return Array.from(byKey.values());
+  };
+
+  const refreshProjectFiles = () => {
+    const next = detectProjectFilesHeuristic();
+    if (next.length > 0) updateProjectFiles(next);
+  };
+
+  const getMentionQuery = () => {
+    const editor = editorRef.current;
+    if (!editor) return null;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.startContainer)) return null;
+    const node = range.endContainer;
+    if (node.nodeType !== Node.TEXT_NODE) return null;
+    const textNode = node as Text;
+    const anchorOffset = range.endOffset;
+    const before = textNode.data.slice(0, anchorOffset);
+    const match = before.match(/(^|[\s\(\[\{])@([A-Za-z0-9._/-]*)$/);
+    if (!match) return null;
+    const query = match[2] ?? '';
+    const start = anchorOffset - (query.length + 1);
+    return { query, node: textNode, start, end: anchorOffset };
+  };
+
+  const filterMentionResults = (query: string) => {
+    const q = query.toLowerCase();
+    const files = projectFilesRef.current;
+    const scored = files
+      .map((file) => {
+        const name = file.name.toLowerCase();
+        let score = 3;
+        if (q.length === 0) score = 1;
+        else if (name.startsWith(q)) score = 0;
+        else if (name.includes(q)) score = 2;
+        return { file, score };
+      })
+      .filter((entry) => entry.score < 3)
+      .sort((a, b) =>
+        a.score === b.score ? a.file.name.localeCompare(b.file.name) : a.score - b.score
+      )
+      .slice(0, 20)
+      .map((entry) => entry.file);
+    return scored;
+  };
+
+  const updateMentionState = () => {
+    if (isComposingRef.current) return;
+    const match = getMentionQuery();
+    if (!match) {
+      setMentionOpen(false);
+      setMentionResults([]);
+      mentionRangeRef.current = null;
+      return;
+    }
+    if (projectFilesRef.current.length === 0) refreshProjectFiles();
+    const results = filterMentionResults(match.query);
+    mentionRangeRef.current = { node: match.node, start: match.start, end: match.end };
+    setMentionResults(results);
+    setMentionIndex(0);
+    setMentionOpen(true);
+  };
+
+  const insertFileMention = (file: OverleafFile) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const selection = window.getSelection();
+    if (!selection) return;
+    const rangeInfo = mentionRangeRef.current;
+    if (rangeInfo) {
+      const { node, start, end } = rangeInfo;
+      node.data = node.data.slice(0, start) + node.data.slice(end);
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    const chip = document.createElement('span');
+    chip.className = 'ageaf-panel__mention';
+    chip.dataset.mention = 'file';
+    chip.dataset.path = file.path;
+    chip.setAttribute('contenteditable', 'false');
+    chip.textContent = `@${file.name}`;
+    insertNodeAtCursor(chip);
+    insertTextAtCursor(' ');
+    setMentionOpen(false);
+    setMentionResults([]);
+    mentionRangeRef.current = null;
+    syncEditorEmpty();
   };
 
   const formatLineCount = (value: number) => {
@@ -1724,6 +2000,15 @@ const Panel = () => {
         }
         return;
       }
+      const mentionKind = element.dataset?.mention;
+      if (mentionKind === 'file') {
+        const path = element.dataset?.path ?? '';
+        if (path) {
+          hasContent = true;
+          parts.push(`@[file:${path}]`);
+        }
+        return;
+      }
 
       if (element.tagName === 'BR') {
         parts.push('\n');
@@ -1767,10 +2052,11 @@ const Panel = () => {
       return;
     }
     const hasChip = !!editor.querySelector('[data-chip-id]');
+    const hasMention = !!editor.querySelector('[data-mention="file"]');
     const text = (editor.textContent ?? '').replace(/\u200B/g, '').trim();
     const hasImages = imageAttachmentsRef.current.length > 0;
     const hasFiles = fileAttachmentsRef.current.length > 0;
-    setEditorEmpty(!hasChip && text.length === 0 && !hasImages && !hasFiles);
+    setEditorEmpty(!hasChip && !hasMention && text.length === 0 && !hasImages && !hasFiles);
   };
 
   const insertNodeAtCursor = (node: Node) => {
@@ -2043,14 +2329,20 @@ const Panel = () => {
       if (direction === 'backward' && offset > 0) return false;
       if (direction === 'forward' && offset < length) return false;
       const sibling = direction === 'backward' ? textNode.previousSibling : textNode.nextSibling;
-      if (sibling instanceof HTMLElement && sibling.dataset?.chipId) {
+      if (
+        sibling instanceof HTMLElement &&
+        (sibling.dataset?.chipId || sibling.dataset?.mention === 'file')
+      ) {
         target = sibling;
       }
     } else if (anchor.nodeType === Node.ELEMENT_NODE) {
       const element = anchor as HTMLElement;
       const index = direction === 'backward' ? selection.anchorOffset - 1 : selection.anchorOffset;
       const sibling = element.childNodes[index];
-      if (sibling instanceof HTMLElement && sibling.dataset?.chipId) {
+      if (
+        sibling instanceof HTMLElement &&
+        (sibling.dataset?.chipId || sibling.dataset?.mention === 'file')
+      ) {
         target = sibling;
       }
     }
@@ -3032,8 +3324,63 @@ const Panel = () => {
 
     startThinkingTimer(sessionConversationId);
 
+    const resolveMentionFiles = async (rawText: string) => {
+      const mentionRegex = /@\[file:([^\]]+)\]/g;
+      const refs = Array.from(rawText.matchAll(mentionRegex))
+        .map((m) => String(m[1] ?? '').trim())
+        .filter(Boolean);
+      if (refs.length === 0) return rawText;
+
+      const MAX_CHARS = 200_000;
+      const langForExt = (name: string) => {
+        const ext = getFileExtension(name);
+        if (ext === '.tex') return 'tex';
+        if (ext === '.bib') return 'bibtex';
+        if (ext === '.md') return 'markdown';
+        if (ext === '.json') return 'json';
+        if (ext === '.yaml' || ext === '.yml') return 'yaml';
+        if (ext === '.csv') return 'csv';
+        if (ext === '.xml') return 'xml';
+        return 'text';
+      };
+
+      let nextText = rawText;
+      for (const ref of refs) {
+        if (!bridge.requestFileContent) continue;
+        // eslint-disable-next-line no-await-in-loop
+        const resp = await bridge.requestFileContent(ref).catch((err: unknown) => ({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+          content: '',
+          activeName: null,
+          name: ref,
+        }));
+        const content = typeof resp?.content === 'string' ? resp.content : '';
+        const ok = !!resp?.ok && content.length > 0;
+        const requested = typeof resp?.name === 'string' ? resp.name : ref;
+
+        const injection = ok
+          ? (() => {
+              let body = content;
+              if (body.length > MAX_CHARS) {
+                const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
+                const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
+                body = `${head}\n\n… [truncated ${body.length - (head.length + tail.length)} chars] …\n\n${tail}`;
+              }
+              const lang = langForExt(requested);
+              return `\n\n[Overleaf file: ${requested}]\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
+            })()
+          : `\n\n[Overleaf file: ${requested}]\n(Unable to read file content from Overleaf editor.)\n`;
+
+        const token = `@[file:${ref}]`;
+        nextText = nextText.split(token).join(injection);
+      }
+      return nextText;
+    };
+
     try {
       const selection = await bridge.requestSelection();
+      const resolvedMessageText = await resolveMentionFiles(text);
       const options = await getOptions();
       const runtimeModel =
         currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
@@ -3088,7 +3435,7 @@ const Panel = () => {
 	              },
 	              overleaf: { url: window.location.href },
 	              context: {
-                message: text,
+                message: resolvedMessageText,
                 selection: selection?.selection ?? '',
                 surroundingBefore: selection?.before ?? '',
                 surroundingAfter: selection?.after ?? '',
@@ -3141,7 +3488,7 @@ const Panel = () => {
         },
         overleaf: { url: window.location.href },
         context: {
-          message: text,
+                message: resolvedMessageText,
           selection: selection?.selection ?? '',
           surroundingBefore: selection?.before ?? '',
           surroundingAfter: selection?.after ?? '',
@@ -3383,6 +3730,32 @@ const Panel = () => {
   };
 
   const onInputKeyDown = (event: KeyboardEvent) => {
+    if (mentionOpen) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setMentionIndex((prev) => Math.min(prev + 1, Math.max(0, mentionResults.length - 1)));
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setMentionIndex((prev) => Math.max(prev - 1, 0));
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        const selected = mentionResults[mentionIndex];
+        if (selected) {
+          event.preventDefault();
+          insertFileMention(selected);
+          return;
+        }
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMentionOpen(false);
+        return;
+      }
+    }
+
     // Local undo/redo for the editor to avoid Overleaf intercepting Cmd/Ctrl+Z/Y.
     if (event.metaKey || event.ctrlKey) {
       const key = event.key.toLowerCase();
@@ -4323,7 +4696,10 @@ const Panel = () => {
           aria-label="Message input"
           data-placeholder="Tell Ageaf what to do…"
           ref={editorRef}
-          onInput={() => syncEditorEmpty()}
+          onInput={() => {
+            syncEditorEmpty();
+            updateMentionState();
+          }}
           onPaste={(event) => handlePaste(event as ClipboardEvent)}
           onKeyDown={(event) => onInputKeyDown(event as KeyboardEvent)}
           onCompositionStart={() => {
@@ -4331,8 +4707,45 @@ const Panel = () => {
           }}
           onCompositionEnd={() => {
             isComposingRef.current = false;
+            updateMentionState();
           }}
         />
+        {mentionOpen ? (
+          <div
+            class="ageaf-mention"
+            onWheel={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            {mentionResults.length > 0 ? (
+              mentionResults.map((file, index) => (
+                <button
+                  key={file.path}
+                  type="button"
+                  class={`ageaf-mention__option ${index === mentionIndex ? 'is-active' : ''}`}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    insertFileMention(file);
+                  }}
+                  title={file.path}
+                >
+                  <span class={`ageaf-mention__icon is-${file.kind}`}>
+                    {file.kind === 'tex'
+                      ? 'TeX'
+                      : file.kind === 'bib'
+                        ? 'Bib'
+                        : file.kind === 'img'
+                          ? 'Img'
+                          : 'File'}
+                  </span>
+                  <span class="ageaf-mention__name">{file.name}</span>
+                </button>
+              ))
+            ) : (
+              <div class="ageaf-mention__empty">No project files found.</div>
+            )}
+          </div>
+        ) : null}
         {isDropActive ? (
           <div class="ageaf-panel__dropzone" aria-hidden="true">
             <svg

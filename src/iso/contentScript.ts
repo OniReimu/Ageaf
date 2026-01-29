@@ -7,13 +7,17 @@ const EDITOR_REQUEST_EVENT = 'ageaf:editor:request';
 const EDITOR_RESPONSE_EVENT = 'ageaf:editor:response';
 const EDITOR_REPLACE_EVENT = 'ageaf:editor:replace';
 const EDITOR_INSERT_EVENT = 'ageaf:editor:insert';
+const EDITOR_FILE_REQUEST_EVENT = 'ageaf:editor:file-content:request';
+const EDITOR_FILE_RESPONSE_EVENT = 'ageaf:editor:file-content:response';
 const PANEL_INSERT_SELECTION_EVENT = 'ageaf:panel:insert-selection';
 const selectionRequests = new Map<string, (payload: any) => void>();
+const fileRequests = new Map<string, (payload: any) => void>();
 
 declare global {
   interface Window {
     ageafBridge?: {
       requestSelection: () => Promise<any>;
+      requestFileContent: (name: string) => Promise<any>;
       replaceSelection: (text: string) => void;
       insertAtCursor: (text: string) => void;
     };
@@ -29,11 +33,30 @@ function onSelectionResponse(event: Event) {
   handler(detail);
 }
 
+function onFileContentResponse(event: Event) {
+  const detail = (event as CustomEvent<any>).detail;
+  if (!detail?.requestId) return;
+  const handler = fileRequests.get(detail.requestId);
+  if (!handler) return;
+  fileRequests.delete(detail.requestId);
+  handler(detail);
+}
+
 function requestSelection() {
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return new Promise((resolve) => {
     selectionRequests.set(requestId, resolve);
     window.dispatchEvent(new CustomEvent(EDITOR_REQUEST_EVENT, { detail: { requestId } }));
+  });
+}
+
+function requestFileContent(name: string) {
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise((resolve) => {
+    fileRequests.set(requestId, resolve);
+    window.dispatchEvent(
+      new CustomEvent(EDITOR_FILE_REQUEST_EVENT, { detail: { requestId, name } })
+    );
   });
 }
 
@@ -119,8 +142,10 @@ function updatePanelMount() {
 }
 
 window.addEventListener(EDITOR_RESPONSE_EVENT, onSelectionResponse as EventListener);
+window.addEventListener(EDITOR_FILE_RESPONSE_EVENT, onFileContentResponse as EventListener);
 window.ageafBridge = {
   requestSelection,
+  requestFileContent,
   replaceSelection,
   insertAtCursor,
 };
