@@ -220,12 +220,13 @@ export function registerJobs(server: FastifyInstance) {
         }
 
         if (provider === 'codex') {
-          if (payload.action && payload.action !== 'chat') {
+          const action = payload.action ?? 'chat';
+          if (action !== 'chat' && action !== 'rewrite' && action !== 'fix_error') {
             emitEvent({
               event: 'done',
               data: {
                 status: 'error',
-                message: `Unsupported action for OpenAI provider: ${payload.action}`,
+                message: `Unsupported action for OpenAI provider: ${action}`,
               },
             });
             return;

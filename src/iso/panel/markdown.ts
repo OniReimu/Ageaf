@@ -40,6 +40,10 @@ const languageAliases: Record<string, string> = {
   'shell': 'bash',
   'yml': 'yaml',
   'tex': 'latex',
+  // Allow forcing raw LaTeX code blocks while still getting LaTeX highlighting.
+  // The fence renderer checks the *raw* info string for `latex-raw` to disable KaTeX.
+  'latex-raw': 'latex',
+  'tex-raw': 'latex',
   'cs': 'csharp',
   'c++': 'cpp',
 };

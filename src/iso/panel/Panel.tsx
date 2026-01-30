@@ -1828,6 +1828,7 @@ const Panel = () => {
   };
 
   const ATTACHMENT_LABEL_INLINE_REGEX = /\[Attachment:\s+(.+?)\s+·\s+(\d+)\s+lines\]/g;
+  const MENTION_INLINE_REGEX = /@\[(file|folder):([^\]]+)\]/g;
 
   const createAttachmentChip = (filename: string, lineCount: string) => {
     const iconMetaForFilename = (name: string) => {
@@ -1882,6 +1883,19 @@ const Panel = () => {
     return chip;
   };
 
+  const createMentionChip = (kind: 'file' | 'folder', path: string) => {
+    const chip = document.createElement('span');
+    chip.className = 'ageaf-panel__mention';
+    chip.setAttribute('contenteditable', 'false');
+    chip.dataset.mention = kind;
+    chip.dataset.path = path;
+    chip.title = path;
+
+    const name = path.split('/').filter(Boolean).pop() ?? path;
+    chip.textContent = `@${name}`;
+    return chip;
+  };
+
   const decorateAttachmentLabelsHtml = (html: string) => {
     if (typeof document === 'undefined') return html;
     const container = document.createElement('div');
@@ -1912,6 +1926,48 @@ const Panel = () => {
         const filename = String(m[1] ?? '').trim() || 'snippet.tex';
         const lineCount = String(m[2] ?? '').trim();
         frag.appendChild(createAttachmentChip(filename, lineCount));
+        lastIndex = idx + m[0].length;
+      }
+      const after = raw.slice(lastIndex);
+      if (after) frag.appendChild(document.createTextNode(after));
+      node.replaceWith(frag);
+    }
+
+    return container.innerHTML;
+  };
+
+  const decorateMentionsHtml = (html: string) => {
+    if (typeof document === 'undefined') return html;
+    const container = document.createElement('div');
+    container.innerHTML = html;
+
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    let current: Node | null = walker.nextNode();
+    while (current) {
+      if (current.nodeType === Node.TEXT_NODE) textNodes.push(current as Text);
+      current = walker.nextNode();
+    }
+
+    for (const node of textNodes) {
+      const parentEl = node.parentElement;
+      if (parentEl && parentEl.closest('pre, code')) continue;
+      const raw = node.nodeValue ?? '';
+      if (!raw.includes('@[')) continue;
+      MENTION_INLINE_REGEX.lastIndex = 0;
+      const matches = Array.from(raw.matchAll(MENTION_INLINE_REGEX));
+      if (matches.length === 0) continue;
+
+      const frag = document.createDocumentFragment();
+      let lastIndex = 0;
+      for (const m of matches) {
+        const idx = m.index ?? -1;
+        if (idx < 0) continue;
+        const before = raw.slice(lastIndex, idx);
+        if (before) frag.appendChild(document.createTextNode(before));
+        const kind = (m[1] === 'folder' ? 'folder' : 'file') as 'file' | 'folder';
+        const path = String(m[2] ?? '').trim();
+        frag.appendChild(createMentionChip(kind, path));
         lastIndex = idx + m[0].length;
       }
       const after = raw.slice(lastIndex);
@@ -2693,9 +2749,25 @@ const Panel = () => {
                   {copiedItems[`${message.id}-patch-proposal`] ? <CheckIcon /> : <CopyIcon />}
                 </button>
                 <div class="ageaf-message__quote-content">
-                  <pre class="ageaf-code-block">
-                    <code>{patchReview.text}</code>
-                  </pre>
+                  <div
+                    dangerouslySetInnerHTML={{
+                      __html: (() => {
+                        const file =
+                          patchReview.kind === 'replaceRangeInFile'
+                            ? patchReview.filePath
+                            : patchReview.kind === 'replaceSelection'
+                              ? patchReview.fileName ?? 'selection.tex'
+                              : 'snippet.tex';
+                        const ext = (file.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
+                        const fenceLang =
+                          ext === 'tex' ? 'latex-raw' : ext ? ext : 'text';
+                        const normalizedText = patchReview.text.replace(/\r\n/g, '\n');
+                        return renderMarkdown(
+                          `\`\`\`${fenceLang}\n${normalizedText}\n\`\`\``
+                        );
+                      })(),
+                    }}
+                  />
                 </div>
               </div>
             </div>
@@ -2767,7 +2839,7 @@ const Panel = () => {
         .replace(/\n{3,}/g, '\n\n');
 
     const { mainHtml: rawMainHtml, quotes } = extractQuotesFromHtml(renderMarkdown(message.content));
-    const mainHtml = decorateAttachmentLabelsHtml(rawMainHtml);
+    const mainHtml = decorateMentionsHtml(decorateAttachmentLabelsHtml(rawMainHtml));
     const hasMain = mainHtml.trim().length > 0;
 
     const filteredQuotes =
@@ -3656,17 +3728,6 @@ const Panel = () => {
     const provider = chatProvider;
     const sessionState = getSessionState(sessionConversationId);
 
-    if (provider === 'codex' && action !== 'chat') {
-      setMessages((prev) => [
-        ...prev,
-        createMessage({
-          role: 'system',
-          content: 'Rewrite selection is only available with the Anthropic provider.',
-        }),
-      ]);
-      return;
-    }
-
     // Update session state
     sessionState.isSending = true;
     sessionState.interrupted = false;
@@ -3991,6 +4052,10 @@ const Panel = () => {
             // progress or accidental free-form text. Don't mix them into the chat transcript.
             // Instead, surface lightweight progress in the status line.
             if (action !== 'chat') {
+              if (provider === 'codex') {
+                enqueueStreamTokens(sessionConversationId, provider, deltaText);
+                return;
+              }
               const trimmed = String(deltaText).trim();
               if (trimmed && /preparing/i.test(trimmed)) {
                 // Only update UI if this is the current session
@@ -4255,17 +4320,6 @@ const Panel = () => {
 
     const conversationId = chatConversationIdRef.current;
     if (!conversationId) return;
-
-    if (chatProvider !== 'claude') {
-      setMessages((prev) => [
-        ...prev,
-        createMessage({
-          role: 'system',
-          content: 'Rewrite selection is only available with the Anthropic provider.',
-        }),
-      ]);
-      return;
-    }
 
     if (!editorEmpty) {
       setMessages((prev) => [
