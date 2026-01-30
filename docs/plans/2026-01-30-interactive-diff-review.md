@@ -1,267 +1,151 @@
-# Interactive Diff Review (Cursor-like AI Edits) Implementation Plan
+# Interactive AI Diff Proposals (Cursor-like) Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task.
 
-**Goal:** Deliver a Cursor-like “AI edit review” flow in Overleaf: AI proposes LaTeX edits → user reviews a diff → user Accepts/Rejects → changes are applied back into the editor safely.
+**Goal:** When the agent proposes edits to an Overleaf project file (e.g., `main.tex`), the Ageaf panel renders those edits as an interactive diff block in the conversation and lets the user **Accept** (apply) or **Reject** (dismiss) safely.
 
-**Architecture:** Implement entirely in the Chrome extension overlay. Render diffs inside the existing Ageaf right panel using `@pierre/diffs` (vanilla JS `FileDiff`), and apply accepted changes via the existing CodeMirror bridge (granular `changes[]`, not full replacement).
+**Architecture:** MV3 Chrome extension overlay only (no Overleaf source changes). The host emits a structured **patch event** (SSE) separate from explanatory text. The panel renders a diff (via `@pierre/diffs`) and, on Accept, applies the change back into Overleaf via the MAIN‑world CodeMirror bridge using **range‑targeted + expected‑text validation** (`applyReplaceRange`).
 
-**Tech Stack:** Manifest V3, TypeScript, Preact (panel UI), Overleaf CodeMirror 6 (via MAIN-world bridge), local host (HTTP + SSE), `@pierre/diffs` (Shiki-based diff renderer).
-
----
-
-## 0) Step-by-step Scope (what we build first)
-
-**Step 1 (ship first):**
-- Handle `patch.kind === "replaceSelection"` only.
-- Show diff + **Accept** / **Reject** (whole change only).
-- Apply is **range-targeted + validated** (does not rely on whatever selection is active at click time).
-
-**Step 2 (after step 1 is stable):**
-- Optional polish: “Copy proposed text”, better empty-states, theme tweaks, perf knobs.
-
-**Step 3 (v1+):**
-- Hunk-level accept/reject (optional).
-- Active-file diff (optional).
+**Tech Stack:** Manifest V3, TypeScript, Preact (panel UI), Overleaf CodeMirror 6 via MAIN‑world bridge, local host (HTTP + SSE), `@pierre/diffs` (diff UI), existing typed apply bridge.
 
 ---
 
-## 1) Current Ageaf Integration Points (reality check)
+## 0) Scope (step-by-step, keep v1 shippable)
 
-- **Patch UI:** `src/iso/panel/Panel.tsx` shows `Patch ready` + `Apply`, then calls `ageafBridge.replaceSelection(...)`.
-- **Bridge contract (ISO → MAIN):** `src/iso/contentScript.ts` exposes `window.ageafBridge`, MAIN listens in `src/main/editorBridge/bridge.ts`.
-- **Applying text “as a patch”:** `src/main/eventHandlers.ts` computes `diffChars` (fallback `diffWordsWithSpace`) and dispatches CodeMirror `changes[]`.
+**V1 (ship first):**
+- Single proposal at a time.
+- Proposal kind: **replace a range in a specific file** (`replaceRangeInFile`) even when the user did not explicitly select it.
+- (Still supported) `replaceSelection` for quick “rewrite what I highlighted”.
+- UI: diff block + file header + **Accept / Reject** controls.
+- Accept applies safely by (a) requiring the target file be active in Overleaf, then (b) validating `expectedOldText` at the target location before writing (or failing with an instructional error).
 
-**Problem:** current Apply relies on the current selection at click time and can silently do nothing (or apply to the wrong place) if focus/selection moved.
+**V2 (next):**
+- Improve targeting robustness:
+  - allow `from/to` to be optional and compute it by unique-match search (or by context anchors)
+  - better “Open file” UX when activation fails
+- UI polish: “Copy proposed text”, “Regenerate”, clearer mismatch warnings.
 
----
-
-## 2) Why `@pierre/diffs` Fits (and what to validate early)
-
-**Pros**
-- Accepts arbitrary old/new strings (perfect for “selection before vs selection after”).
-- Vanilla JS `FileDiff` (no React requirement; Ageaf is Preact).
-- Shadow DOM styling helps avoid Overleaf CSS collisions.
-
-**Risks to validate in the first milestone**
-- **MV3/CSP:** does it render without CSP errors on Overleaf?
-- **Bundle size/perf:** does diff rendering feel OK for medium selections?
-- **TS/webpack + ESM:** `@pierre/diffs` is ESM-only; confirm our webpack+ts-loader setup can bundle it.
+**V3 (optional):**
+- Multiple hunks + per‑hunk selection.
+- Multi‑file proposals.
 
 ---
 
-## 3) UX Definition (Step 1)
+## 1) Constraints & risks (what shapes the design)
 
-When the host emits `patch: { kind: "replaceSelection", text: "..." }`, the panel shows a **Patch Review card**:
-
-- Title: “Review changes”
-- Actions: **Accept**, **Reject**, (optional) **Copy**
-- Body: diff rendering of `oldText` (selection snapshot at send time) → `newText` (patch text)
-
-**Accept behavior (safety first):**
-- Apply only if the current doc slice at the stored range still equals the stored `oldText`.
-- If mismatch: show a blocking warning + allow only safe actions (Copy, Regenerate).
+- **Overleaf is closed‑source** → everything must be injected via extension; DOM/editor hooks can change.
+- **Real‑time collaboration** → must never blindly overwrite; always validate expected old text.
+- **MV3 + CSP + ESM** → diff libraries often rely on async chunks/workers; plan must include “renders on Overleaf” validation early and a fallback UI when diff renderer fails.
+- **Performance** → full‑file diffs can be expensive; v1 stays selection‑scoped.
 
 ---
 
-## 4) Data Model (minimal)
+## 2) UX definition (Cursor-like “Proposed Change” block)
 
-Store *per jobId*:
+When a patch proposal exists, the conversation shows a card (system bubble is OK) with:
+- Header: filename + `+N -M` counts, dismiss (×)
+- Body: diff (split or unified)
+- Actions: **Accept** (✓) and **Reject** (✕)
+- Optional: “Copy proposed text” on failure
+
+**Reject:** hides the proposal, no editor changes.  
+**Accept:** applies change back into Overleaf at the intended location, or fails safely with a clear warning.
+
+---
+
+## 3) Data contracts (minimal, then extend)
+
+### 3.1 Host → Panel (SSE `patch` event)
+
+V1 shapes:
+```ts
+type Patch =
+  | {
+      kind: 'replaceRangeInFile';
+      filePath: string;
+      expectedOldText: string;
+      text: string;
+      // Optional location hint (when available).
+      from?: number;
+      to?: number;
+    }
+  | { kind: 'replaceSelection'; text: string }
+  | { kind: 'insertAtCursor'; text: string };
+```
+
+**Note:** `from/to` are optional because counting characters inside a prompt is error-prone. If omitted, the apply path must locate a unique match of `expectedOldText` (or fail safely).
+
+### 3.2 Panel snapshot (captured at send time)
 
 ```ts
 type SelectionSnapshot = {
+  filePath?: string;
   selection: string;
   from: number;
   to: number;
   lineFrom?: number;
   lineTo?: number;
 };
-
-type PatchReviewState = {
-  jobId: string;
-  oldText: string;
-  newText: string;
-  from: number;
-  to: number;
-};
 ```
 
-We derive `PatchReviewState` when the `patch` SSE event arrives.
+**V1:** `filePath` is “best effort” (fallback to `selection.tex`).  
+**V2:** `filePath` must be set and must match the patch target.
+
+---
+
+## 4) Diff rendering approach (recommended)
+
+Use `@pierre/diffs/ssr` to generate HTML and inject it into a ShadowRoot. This avoids web‑component initialization issues and isolates styles from Overleaf.
+
+**Important MV3/CSP note:** `@pierre/diffs/ssr` can still trigger async chunk loads (themes/langs). Ensure:
+- webpack public path is the extension base URL at runtime
+- async chunk JS matches the `vendors-*.js` pattern declared in `public/manifest.json` (`output.chunkFilename = 'vendors-[id].js'`)
+
+Also add a **fallback renderer** (simple “old vs new” blocks) if diff rendering fails, so proposals never appear blank.
 
 ---
 
 ## 5) Implementation Plan (TDD, small steps)
 
-### Milestone A: Prove `@pierre/diffs` renders in the Ageaf panel
+### Milestone A: “Diff block never renders blank”
 
-**Outcome:** “Diff renders in Overleaf via extension, no CSP errors.”
-
-### Task A1: Add dependency + build proof
+**Outcome:** If the diff renderer fails for any reason, the card still shows a readable fallback (old/new) and a debug hint.
 
 **Files:**
-- Modify: `package.json`
-- Modify: `package-lock.json`
-
-**Step 1: Install**
-
-Run: `npm i @pierre/diffs`
-
-Expected: install succeeds.
-
-**Step 2: Run tests**
-
-Run: `npm test`
-
-Expected: PASS.
-
-**Step 3: Build**
-
-Run: `npm run build`
-
-Expected: PASS (no bundling errors about ESM).
-
-If build fails due to ESM import issues:
-- Try a plain `import { FileDiff } from '@pierre/diffs'` first (no dynamic import/code splitting).
-- If still failing, revisit TypeScript module output (possible fix: set `tsconfig.json` `compilerOptions.module` to `esnext` and confirm webpack handles it).
-
-### Task A2: Render-only `DiffReview` component (static sample behind a dev flag)
-
-**Files:**
-- Create: `src/iso/panel/DiffReview.tsx`
-- Modify: `src/iso/panel/Panel.tsx`
+- Modify: `src/iso/panel/DiffReview.tsx`
 - Modify: `src/iso/panel/panel.css`
-- Test: `test/panel-diff-review-ui.test.cjs`
-
-**Step 1: Write failing test**
-
-Create `test/panel-diff-review-ui.test.cjs`:
-
-```js
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
-
-test('Panel has diff review hook', () => {
-  const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
-  const contents = fs.readFileSync(panelPath, 'utf8');
-  assert.match(contents, /DiffReview/);
-  assert.match(contents, /ageaf-diff-review/);
-});
-```
-
-**Step 2: Run test (expect FAIL)**
-
-Run: `node --test test/panel-diff-review-ui.test.cjs`
-
-Expected: FAIL.
-
-**Step 3: Implement `DiffReview`**
-
-Create `src/iso/panel/DiffReview.tsx` (keep it tiny):
-
-```tsx
-import { useEffect, useRef } from 'preact/hooks';
-import { FileDiff } from '@pierre/diffs';
-
-type Props = { oldText: string; newText: string; fileName?: string };
-
-export function DiffReview({ oldText, newText, fileName = 'selection.tex' }: Props) {
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const instanceRef = useRef<FileDiff | null>(null);
-
-  useEffect(() => {
-    if (!wrapperRef.current) return;
-    instanceRef.current?.cleanUp();
-
-    const fileDiff = new FileDiff({ theme: 'pierre-dark', diffStyle: 'split', overflow: 'scroll' });
-    instanceRef.current = fileDiff;
-    fileDiff.render({
-      containerWrapper: wrapperRef.current,
-      oldFile: { name: fileName, contents: oldText, lang: 'tex' },
-      newFile: { name: fileName, contents: newText, lang: 'tex' },
-    });
-
-    return () => {
-      fileDiff.cleanUp();
-      if (instanceRef.current === fileDiff) instanceRef.current = null;
-    };
-  }, [oldText, newText, fileName]);
-
-  return <div class="ageaf-diff-review" ref={wrapperRef} />;
-}
-```
-
-**Step 4: Wire behind a temporary flag**
-
-In `src/iso/panel/Panel.tsx` add a temporary constant like:
-
-```ts
-const DEBUG_DIFF = false;
-```
-
-and render `<DiffReview ...>` only when `DEBUG_DIFF` is true.
-
-**Step 5: Add minimal CSS**
-
-In `src/iso/panel/panel.css`:
-- add `.ageaf-diff-review { max-height: 280px; overflow: auto; border: 1px solid var(--ageaf-panel-border); border-radius: 10px; }`
-
-**Step 6: Run test (expect PASS)**
-
-Run: `node --test test/panel-diff-review-ui.test.cjs`
-
-Expected: PASS.
-
-**Step 7: Manual verification**
-
-Run: `npm run watch`
-
-Manual:
-1) Load unpacked from `build/`
-2) Open Overleaf project
-3) Flip `DEBUG_DIFF = true`
-4) Confirm diff renders and console has no CSP errors
-
----
-
-### Milestone B: Show diff review for real patches (still no apply)
-
-**Outcome:** When a patch event arrives, user sees a diff instead of “Patch ready”.
-
-### Task B1: Store per-job selection snapshots
-
-**Files:**
-- Modify: `src/iso/panel/Panel.tsx`
 - Test: `test/panel-diff-review-ui.test.cjs` (extend)
 
 **Step 1: Write failing test**
 
 Extend `test/panel-diff-review-ui.test.cjs`:
-
 ```js
-assert.match(contents, /SelectionSnapshot/);
-assert.match(contents, /Map<.*jobId/i);
+assert.match(diffContents, /fallback/i);
+assert.match(diffContents, /try\\s*\\{/);
 ```
 
 **Step 2: Run test (expect FAIL)**
 
-Run: `node --test test/panel-diff-review-ui.test.cjs`
-
+Run: `node --test test/panel-diff-review-ui.test.cjs`  
 Expected: FAIL.
 
-**Step 3: Implement snapshot storage**
+**Step 3: Implement fallback UI**
 
-In `Panel.tsx`, right where `bridge.requestSelection()` is called for a job:
-- store `{ selection, from, to, lineFrom, lineTo }` in a `useRef(new Map())` keyed by the `jobId` that comes back from `/v1/jobs`.
+In `DiffReview.tsx`:
+- Wrap the async import / render in `try/catch`
+- If it throws (or returns empty HTML), render:
+  - a small header “Diff unavailable”
+  - two `<pre>` blocks (old/new) with minimal styling
 
 **Step 4: Run test (expect PASS)**
 
 Run: `node --test test/panel-diff-review-ui.test.cjs`
 
-Expected: PASS.
+---
 
-### Task B2: Render a Patch Review card when `patch.kind === "replaceSelection"`
+### Milestone B: “Proposed Change” card matches UX spec
+
+**Outcome:** Conversation shows a Cursor-like proposal block with file context + Accept/Reject.
 
 **Files:**
 - Modify: `src/iso/panel/Panel.tsx`
@@ -271,197 +155,82 @@ Expected: PASS.
 **Step 1: Write failing test**
 
 Add assertions:
-
 ```js
-assert.match(contents, /Review changes/);
-assert.match(contents, /patch\\.kind\\s*===\\s*['"]replaceSelection['"]/);
-assert.match(contents, /<DiffReview/);
+assert.match(contents, /Proposed|Review changes/);
+assert.match(contents, /Accept/);
+assert.match(contents, /Reject/);
 ```
 
 **Step 2: Run test (expect FAIL)**
 
 Run: `node --test test/panel-diff-review-ui.test.cjs`
 
-Expected: FAIL.
+**Step 3: Implement header polish**
 
-**Step 3: Implement UI switch**
-
-Replace the “Patch ready” row with a new card:
-- Header: “Review changes”
-- Buttons: Accept (disabled for now), Reject (clears patch)
-- Body: `<DiffReview oldText={snapshot.selection} newText={patch.text} />`
+- Show `filePath ?? 'selection.tex'` in the header (counts come from `@pierre/diffs`)
+- Keep Accept/Reject in header
 
 **Step 4: Run tests**
 
-Run: `npm test`
-
+Run: `npm test`  
 Expected: PASS.
 
 ---
 
-### Milestone C: Safe apply (Accept/Reject all)
+### Milestone C: V1 “edit a file/range” proposals (scoped + safe)
 
-**Outcome:** Accept applies to the correct region even if focus moved, and fails safely if the document changed.
-
-### Task C1: Add apply request/response to the bridge (range + expected old text)
+**Outcome:** Patch proposals can target an explicit file + range, and Accept applies only if the file/range still matches expected old text.
 
 **Files:**
-- Modify: `src/main/editorBridge/bridge.ts`
-- Modify: `src/iso/contentScript.ts`
-- Modify: `src/main/eventHandlers.ts`
-- Test: `test/editor-bridge-apply.test.cjs` (new)
+- Modify: `host/src/runtimes/claude/agent.ts` (structured output schema)
+- Modify: `src/iso/panel/Panel.tsx` (handle new patch kind)
+- Modify: `src/iso/contentScript.ts` and/or MAIN bridge as needed
+- Test: `host/test/*` + `test/panel-*.test.cjs`
 
-**Bridge contract**
+**Step 1: Write failing tests**
 
-Request event: `ageaf:editor:apply:request`  
-Response event: `ageaf:editor:apply:response`
+Host: add a test asserting the structured schema allows `replaceRangeInFile`.  
+Panel: add a test asserting `replaceRangeInFile` is recognized and rendered.
 
-Request payload:
-```ts
-{
-  requestId: string;
-  kind: 'replaceRange';
-  from: number;
-  to: number;
-  expectedOldText: string;
-  text: string;
-}
-```
+**Step 2: Implement host schema + event**
 
-Response payload:
-```ts
-{ requestId: string; ok: boolean; error?: string }
-```
+- Expand patch output schema with `filePath/expectedOldText/text` (+ optional `from/to`)
+- Emit patch event with the new shape
 
-**Step 1: Write failing test**
+**Step 3: Implement panel handling**
 
-Create `test/editor-bridge-apply.test.cjs`:
+- Render diff using:
+  - `oldText = expectedOldText` (from patch)
+  - `newText = text` (from patch)
+- Accept applies using the MAIN bridge:
+  - require the requested file be the active Overleaf editor tab (V1)
+  - validate `expectedOldText` either at `from/to` (if provided) or via unique-match search
+  - if activation fails or match is ambiguous/missing: show “Open `<filePath>` in Overleaf and retry” (and keep “Copy proposed text”)
 
-```js
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
+**Step 4: Manual QA**
 
-test('Main editor bridge supports apply request/response', () => {
-  const bridgePath = path.join(__dirname, '..', 'src', 'main', 'editorBridge', 'bridge.ts');
-  const contents = fs.readFileSync(bridgePath, 'utf8');
-  assert.match(contents, /ageaf:editor:apply:request/);
-  assert.match(contents, /ageaf:editor:apply:response/);
-});
-```
-
-**Step 2: Run test (expect FAIL)**
-
-Run: `node --test test/editor-bridge-apply.test.cjs`
-
-Expected: FAIL.
-
-**Step 3: Refactor apply logic in `src/main/eventHandlers.ts`**
-
-Goal: allow applying at an explicit `{from,to}` without checking “current selection”.
-
-Refactor pattern:
-- Extract the core algorithm to `applyReplacementAtRange(view, from, to, nextContent)`.
-- Keep `onReplaceContent` as a tiny wrapper that calls the helper.
-
-**Step 4: Implement MAIN-world apply handler**
-
-In `src/main/editorBridge/bridge.ts`:
-- listen for `ageaf:editor:apply:request`
-- read `current = view.state.sliceDoc(from, to)`
-- if `current !== expectedOldText`: respond `{ ok:false, error:'Selection changed' }`
-- else: call `applyReplacementAtRange(view, from, to, text)` and respond `{ ok:true }`
-
-**Step 5: Implement ISO-side promise wrapper**
-
-In `src/iso/contentScript.ts`:
-- add a `Map<requestId, resolve>` like existing selection/file request maps
-- add listener for `ageaf:editor:apply:response`
-- add `window.ageafBridge.applyReplaceRange(...) => Promise<{ok:boolean;error?:string}>`
-
-**Step 6: Run tests**
-
-Run: `npm test`
-
-Expected: PASS.
-
-### Task C2: Wire Accept/Reject buttons to safe apply
-
-**Files:**
-- Modify: `src/iso/panel/Panel.tsx`
-- Test: `test/panel-diff-review-apply-ui.test.cjs` (new)
-
-**Step 1: Write failing test**
-
-Create `test/panel-diff-review-apply-ui.test.cjs`:
-
-```js
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
-
-test('Panel uses applyReplaceRange for patch review accept', () => {
-  const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
-  const contents = fs.readFileSync(panelPath, 'utf8');
-  assert.match(contents, /applyReplaceRange|applyReplaceRange\\(/);
-});
-```
-
-**Step 2: Run test (expect FAIL)**
-
-Run: `node --test test/panel-diff-review-apply-ui.test.cjs`
-
-Expected: FAIL.
-
-**Step 3: Implement Accept/Reject**
-
-In `Panel.tsx`:
-- Reject: clear patch review state
-- Accept:
-  - call `await ageafBridge.applyReplaceRange({ from,to, expectedOldText: oldText, text: newText })`
-  - if `ok:false`, show a warning and offer a “Copy proposed text” button
-
-**Step 4: Run tests**
-
-Run: `npm test`
-
-Expected: PASS.
+Verify on Overleaf:
+- Accept applies to correct location
+- If the doc changes, Accept fails safely
 
 ---
 
-### Milestone D (optional): perf + polish
+## 6) Manual QA checklist (v1)
 
-- If rendering is slow, try:
-  - `diffStyle: 'unified'` (less DOM)
-  - setting `lang: 'text'` for LaTeX if tokenization is heavy
-  - avoid code splitting in content scripts (dynamic import chunks can be blocked by page CSP)
-
----
-
-### Milestone E (optional): hunk-level accept/reject
-
-Only after Milestones A–C are stable:
-- Maintain `FileDiffMetadata` state and use `diffAcceptRejectHunk(...)`.
-- “Apply selected” materializes a merged `newText`, then reuses the same safe `applyReplaceRange` request.
-
----
-
-## 6) Manual QA Checklist (Step 1)
-
-1) Start host: `cd host && npm run dev`  
-2) Start extension build: `npm run watch`  
-3) Reload extension from `build/` and refresh Overleaf  
-4) Select text in the editor and ask for a rewrite  
+1) Start host: `cd host && npm run dev`
+2) Start extension build: `npm run watch`
+3) Reload extension from `build/` and refresh Overleaf
+4) Select text in the editor and click “Rewrite selection”
 5) Verify:
-   - diff renders
+   - proposal card appears
+   - diff is visible (or fallback shows old/new)
    - Reject closes without changes
-   - Accept applies only if doc region unchanged
-   - if you edit the selection before Accept, it fails with a safe warning (no partial apply)
+   - Accept applies the change
+   - editing the selection before Accept causes a safe failure (no partial apply)
 
----
-
-## 7) Decision (confirmed)
-
-**Step 1 includes immediate apply:** clicking **Accept** applies the change right away via Milestone C’s safe `applyReplaceRange` bridge (range-targeted + validated).
+6) Chat-driven proposals (V1 / optional):
+   - In a normal chat message (no rewrite button), ask for a concrete edit and ensure the assistant includes a fenced patch block:
+     ```ageaf-patch
+     { ... }
+     ```
+   - Verify the host emits a `patch` event and the panel shows the review card even for chat replies.

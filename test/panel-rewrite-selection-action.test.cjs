@@ -3,10 +3,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-test('Panel sends chat action with user message', () => {
+test('Panel exposes rewrite selection action', () => {
   const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
   const contents = fs.readFileSync(panelPath, 'utf8');
 
-  assert.match(contents, /action:\s*'chat'/);
-  assert.match(contents, /message:\s*resolvedMessageText/);
+  assert.match(contents, /Rewrite selection/);
+  assert.match(contents, /sendMessage\([^\n]*'Rewrite selection'[^\n]*'rewrite'[^\n]*\)/);
 });

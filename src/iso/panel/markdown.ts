@@ -477,10 +477,50 @@ function normalizeTaskLists(content: string) {
   return unchecked.replace(/^(\s*[-*]\s+)\[(x|X)\]\s+/gm, '$1☑ ');
 }
 
+function extractPatchText(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed) as { kind?: unknown; text?: unknown } | null;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const kind = parsed.kind;
+    if (
+      kind !== 'replaceSelection' &&
+      kind !== 'insertAtCursor' &&
+      kind !== 'replaceRangeInFile'
+    ) {
+      return null;
+    }
+    if (typeof parsed.text !== 'string') return null;
+    return parsed.text;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeAssistantOutput(content: string) {
+  let next = content;
+
+  next = next.replace(/```\s*done\.?[^\n]*\n([\s\S]*?)```/gi, '$1');
+
+  next = next.replace(/```(?:ageaf[-_]?patch)[^\n]*\n[\s\S]*?```/gi, '');
+
+  next = next.replace(/```(?:json)?\s*\n([\s\S]*?)```/gi, (match, body) => {
+    const patchText = extractPatchText(body);
+    return patchText ?? match;
+  });
+
+  const inlinePatchText = extractPatchText(next);
+  if (inlinePatchText) return inlinePatchText;
+
+  return next;
+}
+
 export function renderMarkdown(content: string) {
-  return renderer.render(normalizeTaskLists(content));
+  return renderer.render(normalizeTaskLists(normalizeAssistantOutput(content)));
 }
 
 export function parseMarkdown(content: string) {
-  return renderer.parse(normalizeTaskLists(content), {});
+  return renderer.parse(normalizeTaskLists(normalizeAssistantOutput(content)), {});
 }

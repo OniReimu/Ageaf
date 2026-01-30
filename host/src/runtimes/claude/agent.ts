@@ -1,4 +1,4 @@
-import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type OutputFormat, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 
 import type { JobEvent, Patch } from '../../types.js';
@@ -12,6 +12,7 @@ import {
   parseBlockedCommandPatterns,
 } from './safety.js';
 import { loadHostSettings } from '../../hostSettings.js';
+import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -43,10 +44,102 @@ export type ClaudeRuntimeConfig = {
   conversationId?: string;
 };
 
-const PatchSchema = z.object({
-  kind: z.enum(['replaceSelection', 'insertAtCursor']),
-  text: z.string(),
-});
+const PatchSchema = z.union([
+  z.object({
+    kind: z.literal('replaceSelection'),
+    text: z.string(),
+  }),
+  z.object({
+    kind: z.literal('insertAtCursor'),
+    text: z.string(),
+  }),
+  z
+    .object({
+      kind: z.literal('replaceRangeInFile'),
+      filePath: z.string(),
+      expectedOldText: z.string(),
+      text: z.string(),
+      from: z.number().int().nonnegative().optional(),
+      to: z.number().int().nonnegative().optional(),
+    })
+    .refine(
+      (value) =>
+        (typeof value.from !== 'number' && typeof value.to !== 'number') ||
+        (typeof value.from === 'number' &&
+          typeof value.to === 'number' &&
+          value.to >= value.from),
+      { message: 'from/to must both be provided when used' }
+    ),
+]);
+
+const PATCH_OUTPUT_FORMAT: OutputFormat = {
+  type: 'json_schema',
+  schema: {
+    oneOf: [
+      {
+        type: 'object',
+        properties: {
+          kind: { const: 'replaceSelection' },
+          text: { type: 'string' },
+        },
+        required: ['kind', 'text'],
+        additionalProperties: false,
+      },
+      {
+        type: 'object',
+        properties: {
+          kind: { const: 'insertAtCursor' },
+          text: { type: 'string' },
+        },
+        required: ['kind', 'text'],
+        additionalProperties: false,
+      },
+      {
+        type: 'object',
+        properties: {
+          kind: { const: 'replaceRangeInFile' },
+          filePath: { type: 'string' },
+          expectedOldText: { type: 'string' },
+          text: { type: 'string' },
+          from: { type: 'number' },
+          to: { type: 'number' },
+        },
+        required: ['kind', 'filePath', 'expectedOldText', 'text'],
+        additionalProperties: false,
+      },
+    ],
+  },
+};
+
+export function getStructuredOutputFormat(name?: string): OutputFormat | null {
+  if (name === 'patch') return PATCH_OUTPUT_FORMAT;
+  return null;
+}
+
+function stripJsonCodeFences(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('```')) return trimmed;
+  // ```json\n{...}\n``` or ```\n{...}\n```
+  return trimmed.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?```$/, '').trim();
+}
+
+function extractJsonObject(value: string): unknown {
+  const text = stripJsonCodeFences(value);
+  // Fast path: the whole string is JSON
+  try {
+    return JSON.parse(text);
+  } catch {
+    // continue
+  }
+  // Best-effort: parse the first {...} block (handles extra prose around JSON)
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return value;
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    return value;
+  }
+}
 
 async function runQuery(
   prompt: string | AsyncIterable<SDKUserMessage>,
@@ -55,7 +148,7 @@ async function runQuery(
   structuredOutput?: { schema: z.ZodSchema; name: string },
   safety?: CommandBlocklistConfig,
   enableTools?: boolean
-) {
+): Promise<string | null> {
   const customEnv = parseEnvironmentVariables(runtime.envVars ?? '');
   const resolvedCliPath = resolveClaudeCliPath(runtime.cliPath, customEnv.PATH);
   const combinedEnv = {
@@ -78,7 +171,7 @@ async function runQuery(
         message: 'Claude Code is not configured. Open a terminal, log in, then retry.',
       },
     });
-    return;
+    return null;
   }
 
   const configuredModel =
@@ -101,6 +194,9 @@ async function runQuery(
         )
       : [];
 
+  const outputFormat = structuredOutput
+    ? getStructuredOutputFormat(structuredOutput.name)
+    : null;
   const response = query({
     prompt,
     options: {
@@ -143,6 +239,7 @@ async function runQuery(
       },
       settingSources: runtime.loadUserSettings ? ['user', 'project'] : ['project'],
       env: combinedEnv,
+      ...(outputFormat ? { outputFormat } : {}),
     },
   });
 
@@ -221,17 +318,24 @@ async function runQuery(
         resultText = resultMessage.result ?? '';
         emitUsage(resultMessage as { modelUsage?: Record<string, unknown> });
         if (structuredOutput) {
-          let candidate: unknown = resultMessage.structured_output ?? resultText;
-          if (typeof candidate === 'string') {
-            try {
-              candidate = JSON.parse(candidate);
-            } catch {
-              // keep as string
+          const candidates: unknown[] = [resultMessage.structured_output, resultText].filter(
+            (value) => value !== undefined && value !== null
+          );
+          let parsedPatch: z.SafeParseReturnType<unknown, unknown> | null = null;
+          for (const raw of candidates) {
+            let candidate: unknown = raw;
+            if (typeof candidate === 'string') {
+              candidate = extractJsonObject(candidate);
+            }
+            const parsed = structuredOutput.schema.safeParse(candidate);
+            if (parsed.success) {
+              parsedPatch = parsed;
+              break;
             }
           }
-          const parsed = structuredOutput.schema.safeParse(candidate);
-          if (parsed.success) {
-            emitEvent({ event: 'patch', data: parsed.data });
+
+          if (parsedPatch?.success) {
+            emitEvent({ event: 'patch', data: parsedPatch.data });
           } else {
             emitEvent({
               event: 'done',
@@ -239,6 +343,15 @@ async function runQuery(
             });
             doneEmitted = true;
             break;
+          }
+        } else {
+          const patchFence = extractAgeafPatchFence(resultText);
+          if (patchFence) {
+            const candidate = extractJsonObject(patchFence);
+            const parsed = PatchSchema.safeParse(candidate);
+            if (parsed.success) {
+              emitEvent({ event: 'patch', data: parsed.data });
+            }
           }
         }
         if (resultMessage.subtype && resultMessage.subtype !== 'success') {
@@ -258,6 +371,8 @@ async function runQuery(
   if (!doneEmitted) {
     emitEvent({ event: 'done', data: { status: 'ok' } });
   }
+
+  return resultText;
 }
 
 export async function runClaudeStructuredPatch(input: StructuredPatchInput) {
@@ -269,20 +384,45 @@ export async function runClaudeStructuredPatch(input: StructuredPatchInput) {
     return;
   }
 
+  let doneEmitted = false;
+  let patched = false;
+  const wrappedEmit: EmitEvent = (event) => {
+    if (doneEmitted) return;
+    if (event.event === 'patch') {
+      patched = true;
+      input.emitEvent(event);
+      return;
+    }
+    if (
+      event.event === 'done' &&
+      (event as { data?: any }).data?.status === 'error' &&
+      (event as { data?: any }).data?.message === 'Invalid structured output'
+    ) {
+      // Graceful fallback: keep the selection unchanged instead of failing the UX.
+      if (!patched && input.fallbackPatch) {
+        input.emitEvent({ event: 'patch', data: input.fallbackPatch });
+      }
+      input.emitEvent({ event: 'done', data: { status: 'ok' } });
+      doneEmitted = true;
+      return;
+    }
+    if (event.event === 'done') {
+      doneEmitted = true;
+    }
+    input.emitEvent(event);
+  };
+
   await runQuery(
     input.prompt,
-    input.emitEvent,
+    wrappedEmit,
     input.runtime ?? {},
-    {
-      schema: PatchSchema,
-      name: 'patch',
-    },
+    { schema: PatchSchema, name: 'patch' },
     input.safety,
     input.enableTools
   );
 }
 
-export async function runClaudeText(input: TextRunInput) {
+export async function runClaudeText(input: TextRunInput): Promise<string | null> {
   if (process.env.AGEAF_CLAUDE_MOCK === 'true') {
     input.emitEvent({ event: 'delta', data: { text: 'Mock response.' } });
     input.emitEvent({
@@ -294,10 +434,10 @@ export async function runClaudeText(input: TextRunInput) {
       },
     });
     input.emitEvent({ event: 'done', data: { status: 'ok' } });
-    return;
+    return 'Mock response.';
   }
 
-  await runQuery(
+  return await runQuery(
     input.prompt,
     input.emitEvent,
     input.runtime ?? {},

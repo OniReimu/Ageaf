@@ -17,7 +17,8 @@
         "icons/icon_32.png",
         "icons/icon_48.png",
         "icons/icon_128.png",
-        "fonts/*"
+        "fonts/*",
+        "vendors-*.js"
       ],
       "matches": [
         "https://www.overleaf.com/*"

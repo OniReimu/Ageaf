@@ -24,11 +24,13 @@ import { getOptions } from '../../utils/helper';
 import { LOCAL_STORAGE_KEY_OPTIONS } from '../../constants';
 import { Options } from '../../types';
 import { parseMarkdown, renderMarkdown } from './markdown';
+import { DiffReview } from './DiffReview';
 import {
   ProviderId,
   StoredConversation,
   StoredContextUsage,
   StoredMessage,
+  StoredPatchReview,
   StoredProjectChat,
   deleteConversation,
   ensureActiveConversation,
@@ -51,6 +53,7 @@ const MAX_WIDTH = 560;
 const DEFAULT_MODEL_VALUE = 'sonnet';
 const DEFAULT_MODEL_LABEL = 'Sonnet';
 const INTERRUPTED_BY_USER_MARKER = 'INTERRUPTED BY USER';
+const DEBUG_DIFF = false;
 
 const CopyIcon = () => (
   <svg
@@ -179,6 +182,7 @@ type Message = {
   statusLine?: string;
   images?: ImageAttachment[];
   attachments?: FileAttachment[];
+  patchReview?: StoredPatchReview;
 };
 
 type QueuedMessage = {
@@ -187,9 +191,26 @@ type QueuedMessage = {
   attachments?: FileAttachment[];
 };
 
-type Patch = {
-  kind: 'replaceSelection' | 'insertAtCursor';
-  text: string;
+type JobAction = 'chat' | 'rewrite' | 'fix_error';
+
+type Patch =
+  | { kind: 'replaceSelection'; text: string }
+  | { kind: 'insertAtCursor'; text: string }
+  | {
+      kind: 'replaceRangeInFile';
+      filePath: string;
+      expectedOldText: string;
+      text: string;
+      from?: number;
+      to?: number;
+    };
+
+type SelectionSnapshot = {
+  selection: string;
+  from: number;
+  to: number;
+  lineFrom?: number;
+  lineTo?: number;
 };
 
 type ToolRequest = {
@@ -307,7 +328,8 @@ const Panel = () => {
   const [sessionIds, setSessionIds] = useState<string[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [streamingText, setStreamingText] = useState('');
-  const [patch, setPatch] = useState<Patch | null>(null);
+  const [patchActionBusyId, setPatchActionBusyId] = useState<string | null>(null);
+  const [patchActionErrors, setPatchActionErrors] = useState<Record<string, string>>({});
   const [toolRequests, setToolRequests] = useState<ToolRequest[]>([]);
   const [toolRequestInputs, setToolRequestInputs] = useState<Record<string, string>>({});
   const [toolRequestBusy, setToolRequestBusy] = useState(false);
@@ -342,6 +364,7 @@ const Panel = () => {
   const fileAttachmentsRef = useRef<FileAttachment[]>([]);
   const [projectFiles, setProjectFiles] = useState<OverleafEntry[]>([]);
   const projectFilesRef = useRef<OverleafEntry[]>([]);
+  const selectionSnapshotsRef = useRef<Map<string, SelectionSnapshot>>(new Map()); // jobId -> snapshot
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionResults, setMentionResults] = useState<OverleafEntry[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -972,7 +995,7 @@ const Panel = () => {
   useEffect(() => {
     if (!chatRef.current || !isAtBottomRef.current) return;
     chatRef.current.scrollTop = chatRef.current.scrollHeight;
-  }, [messages, streamingText, patch]);
+  }, [messages, streamingText]);
 
   const onResizeStart = (event: MouseEvent) => {
     if (event.button !== 0) return;
@@ -1029,6 +1052,7 @@ const Panel = () => {
       ...(message.attachments && message.attachments.length > 0
         ? { attachments: message.attachments }
         : {}),
+      ...(message.patchReview ? { patchReview: message.patchReview } : {}),
     }));
 
   const flushChatSave = async () => {
@@ -1061,7 +1085,6 @@ const Panel = () => {
     setSessionIds(getOrderedSessionIds(ensured));
     setActiveSessionId(conversation.id);
 
-    setPatch(null);
     setStreamingState(null, false);
     setStreamingText('');
     streamingTextRef.current = '';
@@ -1804,6 +1827,101 @@ const Panel = () => {
     languageLabel?: string;
   };
 
+  const ATTACHMENT_LABEL_INLINE_REGEX = /\[Attachment:\s+(.+?)\s+·\s+(\d+)\s+lines\]/g;
+
+  const createAttachmentChip = (filename: string, lineCount: string) => {
+    const iconMetaForFilename = (name: string) => {
+      const extMatch = name.match(/\.[a-z0-9]+$/i);
+      const ext = extMatch ? extMatch[0].toLowerCase() : '';
+      switch (ext) {
+        case '.tex':
+          return { label: 'TeX', className: 'tex' };
+        case '.md':
+          return { label: 'MD', className: 'md' };
+        case '.json':
+          return { label: '{}', className: 'json' };
+        case '.yaml':
+        case '.yml':
+          return { label: 'YAML', className: 'yaml' };
+        case '.csv':
+          return { label: 'CSV', className: 'csv' };
+        case '.xml':
+          return { label: 'XML', className: 'xml' };
+        case '.toml':
+          return { label: 'TOML', className: 'toml' };
+        case '.ini':
+          return { label: 'INI', className: 'ini' };
+        case '.log':
+          return { label: 'LOG', className: 'log' };
+        case '.txt':
+          return { label: 'TXT', className: 'txt' };
+        default:
+          return { label: 'FILE', className: 'file' };
+      }
+    };
+
+    const iconMeta = iconMetaForFilename(filename);
+    const chip = document.createElement('span');
+    chip.className = 'ageaf-panel__chip ageaf-message__attachment-chip';
+    chip.setAttribute('contenteditable', 'false');
+    chip.setAttribute('aria-label', `${filename} ${lineCount || ''}`.trim());
+
+    const icon = document.createElement('span');
+    icon.className = `ageaf-panel__chip-icon ageaf-panel__chip-icon--${iconMeta.className}`;
+    icon.textContent = iconMeta.label;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'ageaf-panel__chip-name';
+    nameSpan.textContent = filename;
+
+    const rangeSpan = document.createElement('span');
+    rangeSpan.className = 'ageaf-panel__chip-range';
+    rangeSpan.textContent = lineCount || '';
+
+    chip.append(icon, nameSpan, rangeSpan);
+    return chip;
+  };
+
+  const decorateAttachmentLabelsHtml = (html: string) => {
+    if (typeof document === 'undefined') return html;
+    const container = document.createElement('div');
+    container.innerHTML = html;
+
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    let current: Node | null = walker.nextNode();
+    while (current) {
+      if (current.nodeType === Node.TEXT_NODE) textNodes.push(current as Text);
+      current = walker.nextNode();
+    }
+
+    for (const node of textNodes) {
+      const raw = node.nodeValue ?? '';
+      if (!raw.includes('[Attachment:')) continue;
+      ATTACHMENT_LABEL_INLINE_REGEX.lastIndex = 0;
+      const matches = Array.from(raw.matchAll(ATTACHMENT_LABEL_INLINE_REGEX));
+      if (matches.length === 0) continue;
+
+      const frag = document.createDocumentFragment();
+      let lastIndex = 0;
+      for (const m of matches) {
+        const idx = m.index ?? -1;
+        if (idx < 0) continue;
+        const before = raw.slice(lastIndex, idx);
+        if (before) frag.appendChild(document.createTextNode(before));
+        const filename = String(m[1] ?? '').trim() || 'snippet.tex';
+        const lineCount = String(m[2] ?? '').trim();
+        frag.appendChild(createAttachmentChip(filename, lineCount));
+        lastIndex = idx + m[0].length;
+      }
+      const after = raw.slice(lastIndex);
+      if (after) frag.appendChild(document.createTextNode(after));
+      node.replaceWith(frag);
+    }
+
+    return container.innerHTML;
+  };
+
   const extractQuotesFromHtml = (html: string) => {
     if (typeof document === 'undefined') {
       return { mainHtml: html, quotes: [] as QuoteData[] };
@@ -1856,13 +1974,14 @@ const Panel = () => {
           if (text === INTERRUPTED_BY_USER_MARKER) {
             element.classList.add('ageaf-message__interrupt');
           }
-          if (ATTACHMENT_LABEL_REGEX.test(text)) {
+          if (text.includes('[Attachment:') && /\[Attachment:\s+.+?\s+·\s+\d+\s+lines\]/.test(text)) {
             const nextIndex = findNextElementIndex(i + 1);
             if (nextIndex !== -1) {
               const nextNode = nodes[nextIndex] as HTMLElement;
               if (nextNode.tagName === 'PRE') {
+                // Hide the following code block in the transcript UI, but keep the label paragraph.
+                // (The raw text still lives in the message content and is sent to the runtime.)
                 i = nextIndex;
-                continue;
               }
             }
           }
@@ -2036,11 +2155,29 @@ const Panel = () => {
     return ext;
   };
 
+  const getSafeMarkdownFence = (content: string) => {
+    // If the content includes ``` already (e.g. copying a quote/codeblock), we need a longer fence.
+    // We scan for the longest run of backticks and add 1, with a minimum of 3.
+    let maxRun = 0;
+    let current = 0;
+    for (let i = 0; i < content.length; i += 1) {
+      if (content[i] === '`') {
+        current += 1;
+        if (current > maxRun) maxRun = current;
+      } else {
+        current = 0;
+      }
+    }
+    const fenceLen = Math.max(3, maxRun + 1);
+    return '`'.repeat(fenceLen);
+  };
+
   const serializeChipPayload = (payload: ChipPayload) => {
     const label = `[Attachment: ${payload.filename} · ${payload.lineCount} lines]`;
     const language = getFenceLanguage(payload.filename);
-    const fence = language ? `\`\`\`${language}` : '```';
-    return `\n${label}\n${fence}\n${payload.text}\n\`\`\`\n`;
+    const fence = getSafeMarkdownFence(payload.text);
+    const fenceStart = language ? `${fence}${language}` : fence;
+    return `\n${label}\n${fenceStart}\n${payload.text}\n${fence}\n`;
   };
 
   const serializeEditorContent = () => {
@@ -2435,6 +2572,138 @@ const Panel = () => {
   };
 
   const renderMessageContent = (message: Message) => {
+    if (message.patchReview) {
+      const patchReview = message.patchReview;
+      const status = (patchReview as any).status ?? 'pending';
+      const error = patchActionErrors[message.id] ?? null;
+      const busy = patchActionBusyId === message.id;
+      const canAct = status === 'pending' && !busy;
+      const copyId = `${message.id}-patch-proposal`;
+
+      const fileLabel =
+        patchReview.kind === 'replaceRangeInFile'
+          ? patchReview.filePath
+          : patchReview.kind === 'replaceSelection'
+            ? patchReview.fileName ?? 'selection.tex'
+            : null;
+
+      const title =
+        status === 'accepted'
+          ? 'Review changes · Accepted'
+          : status === 'rejected'
+            ? 'Review changes · Rejected'
+            : 'Review changes';
+
+      return (
+        <div class="ageaf-patch-review">
+          <div class="ageaf-patch-review__header">
+            <div class="ageaf-patch-review__title">
+              {title}
+              {fileLabel ? <span> · {fileLabel}</span> : null}
+            </div>
+            <div class="ageaf-patch-review__actions">
+              {status === 'pending' ? (
+                <>
+                  <button
+                    class="ageaf-panel__apply"
+                    type="button"
+                    disabled={!canAct || Boolean(error)}
+                    onClick={() => void onAcceptPatchReviewMessage(message.id)}
+                  >
+                    Accept
+                  </button>
+                  <button
+                    class="ageaf-panel__apply is-secondary"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onRejectPatchReviewMessage(message.id)}
+                  >
+                    Reject
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+
+          {error ? (
+            <div class="ageaf-patch-review__warning">
+              <span>{error}</span>
+              <button
+                class="ageaf-panel__apply is-secondary"
+                type="button"
+                onClick={() => {
+                  void (async () => {
+                    const didCopy = await copyToClipboard(
+                      'text' in patchReview ? patchReview.text : ''
+                    );
+                    if (didCopy) markCopied(copyId);
+                  })();
+                }}
+              >
+                {copiedItems[copyId] ? <CheckIcon /> : <CopyIcon />}
+                <span>Copy proposed text</span>
+              </button>
+            </div>
+          ) : null}
+
+          {patchReview.kind === 'replaceRangeInFile' ? (
+            <DiffReview
+              oldText={patchReview.expectedOldText}
+              newText={patchReview.text}
+              fileName={patchReview.filePath}
+            />
+          ) : patchReview.kind === 'replaceSelection' ? (
+            <DiffReview
+              oldText={patchReview.selection}
+              newText={patchReview.text}
+              fileName={patchReview.fileName ?? undefined}
+            />
+          ) : null}
+
+          {'text' in patchReview ? (
+            <div class="ageaf-patch-review__proposal">
+              <div class="ageaf-patch-review__proposal-title">Proposed text</div>
+              <div class="ageaf-message__quote-block ageaf-patch-review__proposal-quote">
+                <div class="ageaf-message__quote-lang">
+                  {(() => {
+                    const file =
+                      patchReview.kind === 'replaceRangeInFile'
+                        ? patchReview.filePath
+                        : patchReview.kind === 'replaceSelection'
+                          ? patchReview.fileName ?? 'selection.tex'
+                          : 'snippet.tex';
+                    const ext = (file.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
+                    if (ext === 'tex') return 'LATEX';
+                    return ext ? ext.toUpperCase() : 'TEXT';
+                  })()}
+                </div>
+                <button
+                  class="ageaf-message__copy"
+                  type="button"
+                  aria-label="Copy proposed text"
+                  title="Copy proposed text"
+                  onClick={() => {
+                    const copyId = `${message.id}-patch-proposal`;
+                    void (async () => {
+                      const success = await copyToClipboard(patchReview.text);
+                      if (success) markCopied(copyId);
+                    })();
+                  }}
+                >
+                  {copiedItems[`${message.id}-patch-proposal`] ? <CheckIcon /> : <CopyIcon />}
+                </button>
+                <div class="ageaf-message__quote-content">
+                  <pre class="ageaf-code-block">
+                    <code>{patchReview.text}</code>
+                  </pre>
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      );
+    }
+
     const fileAttachmentsBlock =
       message.attachments && message.attachments.length > 0 ? (
         <div class="ageaf-message__file-attachments">
@@ -2478,8 +2747,49 @@ const Panel = () => {
         </div>
       ) : null;
 
-    const { mainHtml, quotes } = extractQuotesFromHtml(renderMarkdown(message.content));
+    const latestPatchText = (() => {
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const patchReview = messages[i]?.patchReview;
+        if (!patchReview) continue;
+        if ('text' in patchReview && typeof patchReview.text === 'string') {
+          return patchReview.text;
+        }
+      }
+      return null;
+    })();
+
+    const normalizeForCompare = (value: string) =>
+      value
+        .replace(/\r\n/g, '\n')
+        .trim()
+        // make comparison robust to wrapping differences
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n');
+
+    const { mainHtml: rawMainHtml, quotes } = extractQuotesFromHtml(renderMarkdown(message.content));
+    const mainHtml = decorateAttachmentLabelsHtml(rawMainHtml);
     const hasMain = mainHtml.trim().length > 0;
+
+    const filteredQuotes =
+      latestPatchText && message.role === 'assistant'
+        ? quotes.filter((quote) => {
+            const copyText = extractCopyTextFromQuoteHtml(quote.html);
+            if (!copyText) return true;
+            return normalizeForCompare(copyText) !== normalizeForCompare(latestPatchText);
+          })
+        : quotes;
+
+    // If the assistant message is just the proposed patch text (as a LaTeX/code fence),
+    // it's redundant with the review card, so skip rendering the message entirely.
+    const isRedundantPatchOnlyAssistantMessage =
+      message.role === 'assistant' &&
+      latestPatchText != null &&
+      !hasMain &&
+      quotes.length > 0 &&
+      filteredQuotes.length === 0 &&
+      !fileAttachmentsBlock &&
+      !imageAttachmentsBlock;
+    if (isRedundantPatchOnlyAssistantMessage) return null;
 
     return (
       <>
@@ -2526,10 +2836,10 @@ const Panel = () => {
             }}
           />
         ) : null}
-        {quotes.length > 0 ? (
+        {filteredQuotes.length > 0 ? (
           <div class="ageaf-message__quote">
             <div class="ageaf-message__quote-body">
-              {quotes.map((quote, index) => {
+              {filteredQuotes.map((quote, index) => {
                 const copyId = `${message.id}-quote-${index}`;
                 const copyText = extractCopyTextFromQuoteHtml(quote.html);
                 const copyDisabled = !copyText;
@@ -3296,7 +3606,7 @@ const Panel = () => {
     setSending(false);
     streamTokensRef.current = [];
     pendingDoneRef.current = null;
-    setPatch(null);
+    clearPatchActionState();
     setToolRequests([]);
     setToolRequestInputs({});
     setToolRequestBusy(false);
@@ -3332,7 +3642,8 @@ const Panel = () => {
   const sendMessage = async (
     text: string,
     images: ImageAttachment[] = [],
-    attachments: FileAttachment[] = []
+    attachments: FileAttachment[] = [],
+    action: JobAction = 'chat'
   ) => {
     const bridge = window.ageafBridge;
     if (!bridge) return;
@@ -3344,6 +3655,17 @@ const Panel = () => {
     const sessionConversationId: string = conversationId;
     const provider = chatProvider;
     const sessionState = getSessionState(sessionConversationId);
+
+    if (provider === 'codex' && action !== 'chat') {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Rewrite selection is only available with the Anthropic provider.',
+        }),
+      ]);
+      return;
+    }
 
     // Update session state
     sessionState.isSending = true;
@@ -3377,7 +3699,7 @@ const Panel = () => {
       scrollToBottom();
     });
     setSending(true);
-    setPatch(null);
+    clearPatchActionState();
     setStreamingText('');
     streamingTextRef.current = '';
     streamTokensRef.current = [];
@@ -3529,7 +3851,7 @@ const Panel = () => {
 	        provider === 'codex'
 	          ? {
 	              provider: 'codex' as const,
-	              action: 'chat',
+	              action,
 	              runtime: {
 	                codex: {
 	                  cliPath: options.openaiCodexCliPath,
@@ -3580,7 +3902,7 @@ const Panel = () => {
             }
           : {
         provider: 'claude' as const,
-        action: 'chat',
+        action,
         runtime: {
           claude: {
             cliPath: options.claudeCliPath,
@@ -3636,6 +3958,14 @@ const Panel = () => {
             };
 
       const { jobId } = await createJob(options, payload, { signal: abortController.signal });
+      const selectionSnapshot: SelectionSnapshot = {
+        selection: typeof selection?.selection === 'string' ? selection.selection : '',
+        from: typeof selection?.from === 'number' ? selection.from : 0,
+        to: typeof selection?.to === 'number' ? selection.to : 0,
+        lineFrom: typeof selection?.lineFrom === 'number' ? selection.lineFrom : undefined,
+        lineTo: typeof selection?.lineTo === 'number' ? selection.lineTo : undefined,
+      };
+      selectionSnapshotsRef.current.set(jobId, selectionSnapshot);
       // A successful job creation proves the host is reachable and the runtime is usable.
       // Keep the indicator stable even if periodic health checks briefly fail.
       const okNow = Date.now();
@@ -3657,6 +3987,20 @@ const Panel = () => {
           const deltaText = event.data?.text ?? '';
           if (deltaText) {
             markThinkingComplete(sessionConversationId);
+            // For non-chat actions (rewrite selection / fix error), deltas are typically
+            // progress or accidental free-form text. Don't mix them into the chat transcript.
+            // Instead, surface lightweight progress in the status line.
+            if (action !== 'chat') {
+              const trimmed = String(deltaText).trim();
+              if (trimmed && /preparing/i.test(trimmed)) {
+                // Only update UI if this is the current session
+                if (sessionConversationId === chatConversationIdRef.current) {
+                  setStreamingState(trimmed, true);
+                }
+              }
+              return;
+            }
+
             enqueueStreamTokens(sessionConversationId, provider, deltaText);
           }
         }
@@ -3724,9 +4068,78 @@ const Panel = () => {
 
         if (event.event === 'patch') {
           markThinkingComplete(sessionConversationId);
+          const patch = event.data as Patch;
+          const state = chatStateRef.current;
+          if (!state) return;
+          const conversation = findConversation(state, sessionConversationId);
+          if (!conversation) return;
+
+          let storedPatchReviewMessage: StoredMessage | null = null;
+          if (patch.kind === 'replaceSelection') {
+            const snapshot = selectionSnapshotsRef.current.get(jobId) ?? null;
+            selectionSnapshotsRef.current.delete(jobId);
+            if (snapshot) {
+              storedPatchReviewMessage = {
+                role: 'system',
+                content: '',
+                patchReview: {
+                  kind: 'replaceSelection',
+                  selection: snapshot.selection,
+                  from: snapshot.from,
+                  to: snapshot.to,
+                  ...(typeof snapshot.lineFrom === 'number' ? { lineFrom: snapshot.lineFrom } : {}),
+                  ...(typeof snapshot.lineTo === 'number' ? { lineTo: snapshot.lineTo } : {}),
+                  text: patch.text,
+                  status: 'pending',
+                  fileName: 'selection.tex',
+                },
+              };
+            } else {
+              storedPatchReviewMessage = {
+                role: 'system',
+                content:
+                  'Rewrite selection proposal (missing selection snapshot; cannot apply automatically).',
+              };
+            }
+          } else if (patch.kind === 'replaceRangeInFile') {
+            storedPatchReviewMessage = {
+              role: 'system',
+              content: '',
+              patchReview: {
+                kind: 'replaceRangeInFile',
+                filePath: patch.filePath,
+                expectedOldText: patch.expectedOldText,
+                text: patch.text,
+                ...(typeof patch.from === 'number' ? { from: patch.from } : {}),
+                ...(typeof patch.to === 'number' ? { to: patch.to } : {}),
+                status: 'pending',
+              },
+            };
+          } else if (patch.kind === 'insertAtCursor') {
+            storedPatchReviewMessage = {
+              role: 'system',
+              content: '',
+              patchReview: {
+                kind: 'insertAtCursor',
+                text: patch.text,
+                status: 'pending',
+              },
+            };
+          }
+
+          if (!storedPatchReviewMessage) return;
+          const updatedMessages = [...conversation.messages, storedPatchReviewMessage];
+          chatStateRef.current = setConversationMessages(
+            state,
+            conversation.provider,
+            sessionConversationId,
+            updatedMessages
+          );
+          scheduleChatSave();
+
           // Only update UI if this is the current session
           if (sessionConversationId === chatConversationIdRef.current) {
-          setPatch(event.data as Patch);
+            setMessages(updatedMessages.map((m) => createMessage(m)));
           }
         }
 
@@ -3836,6 +4249,80 @@ const Panel = () => {
     void sendMessage(text, messageImages, messageFiles);
   };
 
+  const onRewriteSelection = async () => {
+    const bridge = window.ageafBridge;
+    if (!bridge) return;
+
+    const conversationId = chatConversationIdRef.current;
+    if (!conversationId) return;
+
+    if (chatProvider !== 'claude') {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Rewrite selection is only available with the Anthropic provider.',
+        }),
+      ]);
+      return;
+    }
+
+    if (!editorEmpty) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Clear the message input before rewriting a selection.',
+        }),
+      ]);
+      return;
+    }
+
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.isSending) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Please wait for the current response to finish.',
+        }),
+      ]);
+      return;
+    }
+
+    let selection: Awaited<ReturnType<NonNullable<typeof bridge.requestSelection>>> | null = null;
+    try {
+      selection = await bridge.requestSelection();
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content:
+            error instanceof Error
+              ? error.message
+              : 'Unable to read the current selection.',
+        }),
+      ]);
+      return;
+    }
+
+    const selectedText =
+      typeof selection?.selection === 'string' ? selection.selection.trim() : '';
+    if (!selectedText) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Select some LaTeX in Overleaf before using Rewrite selection.',
+        }),
+      ]);
+      return;
+    }
+
+    void sendMessage('Rewrite selection', [], [], 'rewrite');
+  };
+
   const onInputKeyDown = (event: KeyboardEvent) => {
     if (mentionOpen) {
       if (event.key === 'ArrowDown') {
@@ -3917,14 +4404,113 @@ const Panel = () => {
     void onSend();
   };
 
-  const onApplyPatch = () => {
-    if (!patch || !window.ageafBridge) return;
-    if (patch.kind === 'replaceSelection') {
-      window.ageafBridge.replaceSelection(patch.text);
-    } else {
-      window.ageafBridge.insertAtCursor(patch.text);
+  const clearPatchActionState = () => {
+    setPatchActionBusyId(null);
+    setPatchActionErrors({});
+  };
+
+  const updatePatchReviewMessage = (
+    messageId: string,
+    updater: (patchReview: StoredPatchReview) => StoredPatchReview
+  ) => {
+    setMessages((prev) =>
+      prev.map((msg) => {
+        if (msg.id !== messageId) return msg;
+        if (!msg.patchReview) return msg;
+        return { ...msg, patchReview: updater(msg.patchReview) };
+      })
+    );
+  };
+
+  const setPatchReviewStatus = (
+    messageId: string,
+    status: 'pending' | 'accepted' | 'rejected'
+  ) => {
+    updatePatchReviewMessage(messageId, (patchReview) => ({ ...patchReview, status } as any));
+  };
+
+  const onRejectPatchReviewMessage = (messageId: string) => {
+    setPatchReviewStatus(messageId, 'rejected');
+    setPatchActionErrors((prev) => {
+      const { [messageId]: _removed, ...rest } = prev;
+      return rest;
+    });
+  };
+
+  const onAcceptPatchReviewMessage = async (messageId: string) => {
+    if (patchActionBusyId) return;
+    const msg = messages.find((m) => m.id === messageId);
+    const patchReview = msg?.patchReview;
+    if (!patchReview) return;
+    const status = (patchReview as any).status ?? 'pending';
+    if (status !== 'pending') return;
+
+    setPatchActionBusyId(messageId);
+    setPatchActionErrors((prev) => {
+      const { [messageId]: _removed, ...rest } = prev;
+      return rest;
+    });
+
+    try {
+      if (patchReview.kind === 'replaceSelection') {
+        if (!window.ageafBridge?.applyReplaceRange) {
+          setPatchActionErrors((prev) => ({ ...prev, [messageId]: 'Apply bridge unavailable' }));
+          return;
+        }
+        const result = await window.ageafBridge.applyReplaceRange({
+          from: patchReview.from,
+          to: patchReview.to,
+          expectedOldText: patchReview.selection,
+          text: patchReview.text,
+        });
+        if (!result?.ok) {
+          setPatchActionErrors((prev) => ({
+            ...prev,
+            [messageId]: result?.error ?? 'Selection changed',
+          }));
+          return;
+        }
+        setPatchReviewStatus(messageId, 'accepted');
+        return;
+      }
+
+      if (patchReview.kind === 'replaceRangeInFile') {
+        if (!window.ageafBridge?.applyReplaceInFile) {
+          setPatchActionErrors((prev) => ({ ...prev, [messageId]: 'Apply bridge unavailable' }));
+          return;
+        }
+        const result = await window.ageafBridge.applyReplaceInFile({
+          filePath: patchReview.filePath,
+          expectedOldText: patchReview.expectedOldText,
+          text: patchReview.text,
+          ...(typeof patchReview.from === 'number' ? { from: patchReview.from } : {}),
+          ...(typeof patchReview.to === 'number' ? { to: patchReview.to } : {}),
+        });
+        if (!result?.ok) {
+          setPatchActionErrors((prev) => ({
+            ...prev,
+            [messageId]: result?.error ?? 'Unable to apply patch',
+          }));
+          return;
+        }
+        setPatchReviewStatus(messageId, 'accepted');
+        return;
+      }
+
+      if (patchReview.kind === 'insertAtCursor') {
+        if (!window.ageafBridge) return;
+        window.ageafBridge.insertAtCursor(patchReview.text);
+        setPatchReviewStatus(messageId, 'accepted');
+        return;
+      }
+
+      setPatchActionErrors((prev) => ({ ...prev, [messageId]: 'Unsupported patch kind' }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to apply patch';
+      setPatchActionErrors((prev) => ({ ...prev, [messageId]: message }));
+    } finally {
+      setPatchActionBusyId(null);
     }
-    setPatch(null);
   };
 
   const dismissToolRequest = () => {
@@ -4136,7 +4722,7 @@ const Panel = () => {
     }
 
     // Reset tool UI state (these are not per-session)
-    setPatch(null);
+    clearPatchActionState();
     setToolRequests([]);
     setToolRequestInputs({});
     setToolRequestBusy(false);
@@ -4227,7 +4813,7 @@ const Panel = () => {
     setContextUsageFromStored(getCachedStoredUsage(nextConversation, nextProvider));
     void refreshContextUsage({ provider: nextProvider, conversationId: nextActiveId });
 
-    setPatch(null);
+    clearPatchActionState();
     setToolRequests([]);
     setToolRequestInputs({});
     setToolRequestBusy(false);
@@ -4328,7 +4914,12 @@ const Panel = () => {
             class="ageaf-panel__logo"
             alt="Ageaf Logo"
           />
+          <div class="ageaf-panel__title">
             <div class="ageaf-panel__name">Ageaf</div>
+            <div class="ageaf-panel__intro">
+              Ask me to rewrite, explain, or fix LaTeX errors.
+            </div>
+          </div>
 	          <div
 	            class={`ageaf-provider ${providerIndicatorClass} ${
 	              !connectionHealth.hostConnected || !connectionHealth.runtimeWorking
@@ -4350,37 +4941,38 @@ const Panel = () => {
       </header>
       <div class="ageaf-panel__body">
           <div class="ageaf-panel__chat" ref={chatRef}>
-          {messages.map((message) => (
-            <div
-              class={`ageaf-message ageaf-message--${message.role}`}
-              key={message.id}
-            >
-              {message.role === 'assistant' && message.statusLine ? (
-                <div class="ageaf-message__status">{message.statusLine}</div>
-              ) : null}
-              {renderMessageContent(message)}
-              {message.role === 'assistant' ? (
-                <div class="ageaf-message__response-actions">
-                  <button
-                    class="ageaf-message__copy-response"
-                    type="button"
-                    aria-label="Copy response"
-                    title="Copy response"
-                    onClick={() => {
-                      const copyId = `${message.id}-response`;
-                      void (async () => {
-                        const success = await copyToClipboard(message.content);
-                        if (success) markCopied(copyId);
-                      })();
-                    }}
-                  >
-                    {copiedItems[`${message.id}-response`] ? <CheckIcon /> : <CopyIcon />}
-                    <span>Copy response</span>
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          ))}
+          {messages.map((message) => {
+            const content = renderMessageContent(message);
+            if (!content) return null;
+            return (
+              <div class={`ageaf-message ageaf-message--${message.role}`} key={message.id}>
+                {message.role === 'assistant' && message.statusLine ? (
+                  <div class="ageaf-message__status">{message.statusLine}</div>
+                ) : null}
+                {content}
+                {message.role === 'assistant' ? (
+                  <div class="ageaf-message__response-actions">
+                    <button
+                      class="ageaf-message__copy-response"
+                      type="button"
+                      aria-label="Copy response"
+                      title="Copy response"
+                      onClick={() => {
+                        const copyId = `${message.id}-response`;
+                        void (async () => {
+                          const success = await copyToClipboard(message.content);
+                          if (success) markCopied(copyId);
+                        })();
+                      }}
+                    >
+                      {copiedItems[`${message.id}-response`] ? <CheckIcon /> : <CopyIcon />}
+                      <span>Copy response</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
           {streamingStatus ? (
             <div class="ageaf-message ageaf-message--assistant">
               <div class={`ageaf-message__status ${isStreamingActive ? 'is-active' : ''}`}>
@@ -4394,12 +4986,12 @@ const Panel = () => {
               ) : null}
             </div>
           ) : null}
-          {patch ? (
+          {DEBUG_DIFF ? (
             <div class="ageaf-message ageaf-message--system">
-              Patch ready ({patch.kind}).
-              <button class="ageaf-panel__apply" type="button" onClick={onApplyPatch}>
-                Apply
-              </button>
+              <DiffReview
+                oldText={'\\section{Intro}\\nWe write the paper here.'}
+                newText={'\\section{Introduction}\\nWe write the paper here.'}
+              />
             </div>
           ) : null}
           {activeToolRequest ? (
@@ -4664,6 +5256,15 @@ const Panel = () => {
               })}
             </div>
             <div class="ageaf-toolbar-actions">
+              <button
+                class="ageaf-toolbar-button"
+                type="button"
+                onClick={() => void onRewriteSelection()}
+                aria-label="Rewrite selection"
+                data-tooltip="Rewrite selection"
+              >
+                ✍
+              </button>
               <button
                 class="ageaf-toolbar-button"
                 type="button"

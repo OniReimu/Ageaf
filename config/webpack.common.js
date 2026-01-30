@@ -18,6 +18,9 @@ const common = {
     path: PATHS.build,
     // the filename template for entry chunks
     filename: '[name].js',
+    // Async chunks must be web-accessible for content scripts on Overleaf.
+    // Keep them on the `vendors-*.js` pattern allowed by `public/manifest.json`.
+    chunkFilename: 'vendors-[id].js',
     // ensure removed files in `public/` don't linger in `build/`
     clean: true,
   },
