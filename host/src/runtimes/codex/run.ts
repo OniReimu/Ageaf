@@ -4,6 +4,8 @@ import path from 'node:path';
 
 import type { JobEvent } from '../../types.js';
 import { buildAttachmentBlock, getAttachmentLimits } from '../../attachments/textAttachments.js';
+import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
+import { validatePatch } from '../../validate.js';
 import { getCodexAppServer } from './appServer.js';
 import { parseCodexTokenUsage } from './tokenUsage.js';
 
@@ -168,11 +170,29 @@ function buildPrompt(
   const message = contextMessage ?? getUserMessage(payload.context) ?? '';
   const custom = payload.userSettings?.customSystemPrompt?.trim();
 
+  const rewriteInstructions = [
+    'You are rewriting a selected LaTeX region from Overleaf.',
+    'Preserve LaTeX commands, citations (\\cite{}), labels (\\label{}), refs (\\ref{}), and math.',
+    '',
+    'User-visible output:',
+    '- First: a short bullet list of change notes (NOT in a code block).',
+    '- Do NOT include the full rewritten text in the visible response.',
+    '',
+    'Machine-readable output (REQUIRED):',
+    '- Append ONLY the rewritten selection between these markers at the VERY END of your message:',
+    '<<<AGEAF_REWRITE>>>',
+    '... rewritten selection here ...',
+    '<<<AGEAF_REWRITE_END>>>',
+    '- The markers MUST be the last thing you output (no text after).',
+    '- Do NOT wrap the markers in Markdown code fences.',
+  ].join('\n');
+
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     'Respond in Markdown, keep it concise.',
     `Action: ${action}`,
     contextForPrompt ? `Context:\n${JSON.stringify(contextForPrompt, null, 2)}` : '',
+    action === 'rewrite' ? rewriteInstructions : '',
   ].filter(Boolean);
 
   if (custom) {
@@ -276,6 +296,18 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
 
   const prompt = buildPrompt(payload, contextForPrompt);
   let done = false;
+  const action = payload.action ?? 'chat';
+  const shouldHidePatchPayload = action === 'rewrite' || action === 'fix_error';
+  const REWRITE_START = '<<<AGEAF_REWRITE>>>';
+  const REWRITE_END = '<<<AGEAF_REWRITE_END>>>';
+  const rewriteStartRe = /<<<\s*AGEAF_REWRITE\s*>>>/i;
+  const rewriteEndRe = /<<<\s*AGEAF_REWRITE_END\s*>>>/i;
+  let fullText = '';
+  let visibleBuffer = '';
+  let patchPayloadStarted = false;
+  let patchEmitted = false;
+  const patchPayloadStartRe = /```(?:ageaf[-_]?patch)|<<<\s*AGEAF_REWRITE\s*>>>/i;
+  const HOLD_BACK_CHARS = 32;
   // Filled synchronously by the Promise executor below.
   // (Promise executors run immediately.)
   let resolveDone!: () => void;
@@ -326,7 +358,36 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
       if (method === 'item/agentMessage/delta') {
         const delta = String(params?.delta ?? '');
         if (delta) {
-          emitEvent({ event: 'delta', data: { text: delta } });
+          fullText += delta;
+
+          if (!shouldHidePatchPayload) {
+            emitEvent({ event: 'delta', data: { text: delta } });
+            return;
+          }
+
+          if (patchPayloadStarted) {
+            return;
+          }
+
+          visibleBuffer += delta;
+          const matchIndex = visibleBuffer.search(patchPayloadStartRe);
+          if (matchIndex >= 0) {
+            const beforeFence = visibleBuffer.slice(0, matchIndex);
+            if (beforeFence) {
+              emitEvent({ event: 'delta', data: { text: beforeFence } });
+            }
+            patchPayloadStarted = true;
+            visibleBuffer = '';
+            return;
+          }
+
+          if (visibleBuffer.length > HOLD_BACK_CHARS) {
+            const flush = visibleBuffer.slice(0, visibleBuffer.length - HOLD_BACK_CHARS);
+            visibleBuffer = visibleBuffer.slice(-HOLD_BACK_CHARS);
+            if (flush) {
+              emitEvent({ event: 'delta', data: { text: flush } });
+            }
+          }
         }
         return;
       }
@@ -349,6 +410,41 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
       if (method === 'turn/completed') {
         if (!done) {
           done = true;
+          if (shouldHidePatchPayload && !patchPayloadStarted && visibleBuffer) {
+            emitEvent({ event: 'delta', data: { text: visibleBuffer } });
+            visibleBuffer = '';
+          }
+
+          if (!patchEmitted) {
+            const fence = extractAgeafPatchFence(fullText);
+            if (fence) {
+              try {
+                const patch = validatePatch(JSON.parse(fence));
+                emitEvent({ event: 'patch', data: patch });
+                patchEmitted = true;
+              } catch {
+                // Ignore patch parse failures; user can still read the raw response.
+              }
+            }
+          }
+
+          if (!patchEmitted && action === 'rewrite') {
+            const startMatch = rewriteStartRe.exec(fullText);
+            if (startMatch) {
+              const endMatch = rewriteEndRe.exec(
+                fullText.slice(startMatch.index + startMatch[0].length)
+              );
+              if (endMatch) {
+                const startIndex = startMatch.index + startMatch[0].length;
+                const endIndex = startIndex + endMatch.index;
+                const rewritten = fullText.slice(startIndex, endIndex).trim();
+                if (rewritten) {
+                  emitEvent({ event: 'patch', data: { kind: 'replaceSelection', text: rewritten } });
+                  patchEmitted = true;
+                }
+              }
+            }
+          }
           emitEvent({ event: 'done', data: { status: 'ok', threadId } });
         }
         unsubscribe();

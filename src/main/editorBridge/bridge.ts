@@ -226,9 +226,9 @@ function onSelectionRequest(event: Event) {
   window.dispatchEvent(new CustomEvent(RESPONSE_EVENT, { detail: response }));
 }
 
-function onApplyRequest(event: Event) {
+async function onApplyRequest(event: Event) {
   const detail = (event as CustomEvent<ApplyRequest>).detail;
-  const view = getCmView();
+  let view = getCmView();
   let ok = true;
   let error: string | undefined;
 
@@ -252,48 +252,105 @@ function onApplyRequest(event: Event) {
       return;
     }
 
-    if (!matchesActiveFile(getActiveTabName(), detail.filePath)) {
-      ok = false;
-      error = `Open ${normalizeFileName(detail.filePath)} in Overleaf and retry.`;
-    } else if (!detail.expectedOldText) {
+    const activateTargetFile = async () => {
+      const beforeText = view.state.sliceDoc(0, view.state.doc.length);
+      const beforeHash = `${beforeText.length}:${beforeText.slice(0, 64)}:${beforeText.slice(-64)}`;
+      const candidates = Array.from(
+        new Set([detail.filePath.trim(), normalizeFileName(detail.filePath)])
+      ).filter(Boolean);
+
+      for (const candidate of candidates) {
+        // eslint-disable-next-line no-await-in-loop
+        const activated = await tryActivateFileByName(candidate);
+        if (activated) {
+          // eslint-disable-next-line no-await-in-loop
+          await waitForDocChange(beforeHash, 2500);
+          view = getCmView();
+          break;
+        }
+      }
+    };
+
+    const resolveReplacementRange = () => {
+      const rangeFrom =
+        typeof detail.from === 'number' && Number.isFinite(detail.from) ? detail.from : null;
+      const rangeTo =
+        typeof detail.to === 'number' && Number.isFinite(detail.to) ? detail.to : null;
+
+      if (typeof rangeFrom === 'number' && typeof rangeTo === 'number' && rangeTo >= rangeFrom) {
+        return { ok: true as const, from: rangeFrom, to: rangeTo };
+      }
+
+      const full = view.state.sliceDoc(0, view.state.doc.length);
+      const first = full.indexOf(detail.expectedOldText);
+      if (first === -1) {
+        return { ok: false as const, error: 'Expected text not found', retryable: true as const };
+      }
+      const second = full.indexOf(detail.expectedOldText, first + detail.expectedOldText.length);
+      if (second !== -1) {
+        return { ok: false as const, error: 'Expected text appears multiple times', retryable: false as const };
+      }
+      return { ok: true as const, from: first, to: first + detail.expectedOldText.length };
+    };
+
+    if (!detail.expectedOldText) {
       ok = false;
       error = 'Expected text missing';
     } else {
-      let from: number | null = null;
-      let to: number | null = null;
-      const rangeFrom =
-        typeof detail.from === 'number' && Number.isFinite(detail.from) ? detail.from : null;
-      const rangeTo = typeof detail.to === 'number' && Number.isFinite(detail.to) ? detail.to : null;
+      let activated = false;
+      let resolved = resolveReplacementRange();
 
-      if (typeof rangeFrom === 'number' && typeof rangeTo === 'number' && rangeTo >= rangeFrom) {
-        from = rangeFrom;
-        to = rangeTo;
-      } else {
-        const full = view.state.sliceDoc(0, view.state.doc.length);
-        const first = full.indexOf(detail.expectedOldText);
-        if (first === -1) {
+      if (!resolved.ok && resolved.retryable) {
+        try {
+          await activateTargetFile();
+          activated = true;
+          resolved = resolveReplacementRange();
+        } catch (err) {
           ok = false;
-          error = 'Expected text not found';
-        } else {
-          const second = full.indexOf(detail.expectedOldText, first + detail.expectedOldText.length);
-          if (second !== -1) {
-            ok = false;
-            error = 'Expected text appears multiple times';
-          } else {
-            from = first;
-            to = first + detail.expectedOldText.length;
-          }
+          error = err instanceof Error ? err.message : String(err);
         }
       }
 
-      if (ok && typeof from === 'number' && typeof to === 'number') {
-        const current = view.state.sliceDoc(from, to);
+      if (ok && resolved.ok) {
+        const current = view.state.sliceDoc(resolved.from, resolved.to);
         if (current !== detail.expectedOldText) {
-          ok = false;
-          error = 'Selection changed';
+          if (!activated) {
+            try {
+              await activateTargetFile();
+              activated = true;
+            } catch (err) {
+              ok = false;
+              error = err instanceof Error ? err.message : String(err);
+            }
+          }
+
+          if (ok) {
+            const refreshed = resolveReplacementRange();
+            if (refreshed.ok) {
+              const refreshedCurrent = view.state.sliceDoc(refreshed.from, refreshed.to);
+              if (refreshedCurrent !== detail.expectedOldText) {
+                ok = false;
+                error = 'Selection changed';
+              } else {
+                applyReplacementAtRange(view, refreshed.from, refreshed.to, detail.text);
+              }
+            } else if (refreshed.error === 'Expected text not found') {
+              ok = false;
+              error = `Open ${normalizeFileName(detail.filePath)} in Overleaf and retry.`;
+            } else {
+              ok = false;
+              error = refreshed.error;
+            }
+          }
         } else {
-          applyReplacementAtRange(view, from, to, detail.text);
+          applyReplacementAtRange(view, resolved.from, resolved.to, detail.text);
         }
+      } else if (ok && !resolved.ok) {
+        ok = false;
+        error =
+          resolved.error === 'Expected text not found'
+            ? `Open ${normalizeFileName(detail.filePath)} in Overleaf and retry.`
+            : resolved.error;
       }
     }
   }
