@@ -990,7 +990,10 @@ const Panel = () => {
   const scrollToBottom = () => {
     const chat = chatRef.current;
     if (!chat) return;
-    chat.scrollTop = chat.scrollHeight;
+    chat.scrollTo({
+      top: chat.scrollHeight,
+      behavior: 'smooth',
+    });
     isAtBottomRef.current = true;
     setIsAtBottom(true);
   };
