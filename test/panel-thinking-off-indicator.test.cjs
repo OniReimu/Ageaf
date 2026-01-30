@@ -9,5 +9,5 @@ test('Thinking indicator respects thinking mode off', () => {
 
   assert.ok(contents.includes("currentThinkingMode !== 'off'"));
   assert.ok(contents.includes('Working') && contents.includes('ESC to interrupt'));
-  assert.ok(contents.includes('Thought for ${duration}s'));
+  assert.match(contents, /Thought for \$\{[A-Za-z_]+\}s/);
 });

@@ -1,4 +1,12 @@
 export type Patch =
+  | {
+      kind: 'replaceRangeInFile';
+      filePath: string;
+      expectedOldText: string;
+      text: string;
+      from?: number;
+      to?: number;
+    }
   | { kind: 'replaceSelection'; text: string }
   | { kind: 'insertAtCursor'; text: string };
 

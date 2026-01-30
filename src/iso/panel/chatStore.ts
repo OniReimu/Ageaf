@@ -18,12 +18,42 @@ export type StoredFileAttachment = {
   mime?: string;
 };
 
+export type StoredPatchReviewStatus = 'pending' | 'accepted' | 'rejected';
+
+export type StoredPatchReview =
+  | {
+      kind: 'replaceSelection';
+      selection: string;
+      from: number;
+      to: number;
+      lineFrom?: number;
+      lineTo?: number;
+      text: string;
+      status?: StoredPatchReviewStatus;
+      fileName?: string;
+    }
+  | {
+      kind: 'insertAtCursor';
+      text: string;
+      status?: StoredPatchReviewStatus;
+    }
+  | {
+      kind: 'replaceRangeInFile';
+      filePath: string;
+      expectedOldText: string;
+      text: string;
+      from?: number;
+      to?: number;
+      status?: StoredPatchReviewStatus;
+    };
+
 export type StoredMessage = {
   role: 'system' | 'assistant' | 'user';
   content: string;
   statusLine?: string;
   images?: StoredImageAttachment[];
   attachments?: StoredFileAttachment[];
+  patchReview?: StoredPatchReview;
 };
 
 export type StoredContextUsage = {
@@ -168,13 +198,99 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
       (entry: StoredFileAttachment | null): entry is StoredFileAttachment =>
         Boolean(entry)
     );
+
+  const patchReview = normalizeStoredPatchReview(raw.patchReview ?? raw.patch_review);
   return {
     role,
     content,
     ...(statusLine ? { statusLine } : {}),
     ...(images.length > 0 ? { images } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
+    ...(patchReview ? { patchReview } : {}),
   };
+}
+
+function normalizePatchReviewStatus(raw: any): StoredPatchReviewStatus | undefined {
+  if (raw === 'pending' || raw === 'accepted' || raw === 'rejected') return raw;
+  return undefined;
+}
+
+function normalizeStoredPatchReview(raw: any): StoredPatchReview | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const kind = raw.kind;
+  const status = normalizePatchReviewStatus(raw.status);
+
+  if (kind === 'replaceSelection') {
+    const selection = typeof raw.selection === 'string' ? raw.selection : null;
+    const from = Number(raw.from ?? NaN);
+    const to = Number(raw.to ?? NaN);
+    const text = typeof raw.text === 'string' ? raw.text : null;
+    const lineFromRaw = raw.lineFrom ?? raw.line_from;
+    const lineToRaw = raw.lineTo ?? raw.line_to;
+    const lineFrom =
+      lineFromRaw === undefined ? undefined : Number.isFinite(Number(lineFromRaw)) ? Number(lineFromRaw) : undefined;
+    const lineTo =
+      lineToRaw === undefined ? undefined : Number.isFinite(Number(lineToRaw)) ? Number(lineToRaw) : undefined;
+    const fileName = typeof raw.fileName === 'string' ? raw.fileName : typeof raw.file_name === 'string' ? raw.file_name : undefined;
+
+    if (!selection || !Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to < 0 || !text) {
+      return null;
+    }
+    return {
+      kind,
+      selection,
+      from,
+      to,
+      ...(typeof lineFrom === 'number' ? { lineFrom } : {}),
+      ...(typeof lineTo === 'number' ? { lineTo } : {}),
+      text,
+      ...(status ? { status } : {}),
+      ...(fileName ? { fileName } : {}),
+    };
+  }
+
+  if (kind === 'insertAtCursor') {
+    const text = typeof raw.text === 'string' ? raw.text : null;
+    if (!text) return null;
+    return {
+      kind,
+      text,
+      ...(status ? { status } : {}),
+    };
+  }
+
+  if (kind === 'replaceRangeInFile') {
+    const filePath = typeof raw.filePath === 'string' ? raw.filePath : typeof raw.file_path === 'string' ? raw.file_path : null;
+    const expectedOldText =
+      typeof raw.expectedOldText === 'string'
+        ? raw.expectedOldText
+        : typeof raw.expected_old_text === 'string'
+          ? raw.expected_old_text
+          : null;
+    const text = typeof raw.text === 'string' ? raw.text : null;
+    const fromRaw = raw.from;
+    const toRaw = raw.to;
+    const from = fromRaw === undefined ? undefined : Number(fromRaw);
+    const to = toRaw === undefined ? undefined : Number(toRaw);
+    if (!filePath || expectedOldText == null || text == null) return null;
+    if (
+      (from !== undefined && (!Number.isFinite(from) || from < 0)) ||
+      (to !== undefined && (!Number.isFinite(to) || to < 0))
+    ) {
+      return null;
+    }
+    return {
+      kind,
+      filePath,
+      expectedOldText,
+      text,
+      ...(typeof from === 'number' ? { from } : {}),
+      ...(typeof to === 'number' ? { to } : {}),
+      ...(status ? { status } : {}),
+    };
+  }
+
+  return null;
 }
 
 function normalizeStoredContextUsage(raw: any): StoredContextUsage | null {

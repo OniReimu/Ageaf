@@ -191,6 +191,15 @@ If asked about the model/runtime, use this note and do not guess.`;
     '- Keep responses concise and avoid long project summaries unless asked.',
     '- Keep formatting minimal and readable; brief bullets and task checkboxes are OK.',
   ].join('\n');
+  const patchGuidance = [
+    'Patch proposals (optional):',
+    '- If you want the user to apply edits in Overleaf, include exactly one fenced code block labeled `ageaf-patch` containing ONLY a JSON object matching one of:',
+    '- { "kind":"replaceSelection", "text":"..." }',
+    '- { "kind":"replaceRangeInFile", "filePath":"main.tex", "expectedOldText":"...", "text":"...", "from":123, "to":456 } (from/to optional but if used must both be provided)',
+    '- { "kind":"insertAtCursor", "text":"..." }',
+    '- Put all explanation/change notes outside the `ageaf-patch` code block.',
+    '- Also show the proposed new text to the user separately (e.g., in a ` ```latex ` code block).',
+  ].join('\n');
   const greetingGuidance = [
     'Greeting behavior:',
     '- If the user message is a short greeting or acknowledgement, reply with a brief greeting (1 sentence).',
@@ -203,6 +212,7 @@ If asked about the model/runtime, use this note and do not guess.`;
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     responseGuidance,
+    patchGuidance,
     greetingMode ? greetingGuidance : 'If the user message is not a greeting, respond normally but stay concise.',
   ];
   

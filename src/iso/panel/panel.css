@@ -252,6 +252,186 @@
   margin-right: auto;
 }
 
+.ageaf-panel__title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-right: auto;
+  gap: 2px;
+}
+
+.ageaf-panel__intro {
+  font-size: 11px;
+  color: var(--ageaf-panel-muted);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ageaf-diff-review {
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--ageaf-panel-border);
+  border-radius: 10px;
+}
+
+.ageaf-diff-review__host {
+  display: block;
+}
+
+.ageaf-diff-review__fallback {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--ageaf-panel-muted);
+}
+
+.ageaf-diff-review__fallback-title {
+  font-weight: 600;
+  color: var(--ageaf-panel-text);
+}
+
+.ageaf-diff-review__fallback-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ageaf-diff-review__fallback-diff {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(9, 14, 11, 0.92);
+  color: rgba(233, 242, 236, 0.92);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  word-break: break-word;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.ageaf-diff-review__fallback-diff-line {
+  white-space: pre;
+}
+
+.ageaf-diff-review__fallback-diff-line.is-added {
+  color: rgba(188, 255, 228, 0.95);
+}
+
+.ageaf-diff-review__fallback-diff-line.is-removed {
+  color: rgba(255, 188, 198, 0.95);
+}
+
+.ageaf-diff-review__fallback-code {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(9, 14, 11, 0.92);
+  color: rgba(233, 242, 236, 0.92);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.ageaf-patch-review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ageaf-patch-review__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ageaf-panel-muted);
+  flex-wrap: nowrap;
+}
+
+.ageaf-patch-review__title {
+  font-weight: 600;
+  color: var(--ageaf-panel-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ageaf-patch-review__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.ageaf-patch-review__actions .ageaf-panel__apply {
+  margin-left: 0;
+  min-width: 84px;
+  text-align: center;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.ageaf-patch-review__proposal {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ageaf-patch-review__proposal-title {
+  font-size: 12px;
+  color: var(--ageaf-panel-muted);
+  font-weight: 600;
+}
+
+.ageaf-patch-review__proposal-code {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(9, 14, 11, 0.92);
+  color: rgba(233, 242, 236, 0.92);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.ageaf-patch-review__proposal-code code {
+  font-family: inherit;
+}
+
+.ageaf-patch-review__warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #f5b27a;
+}
+
+.ageaf-patch-review__warning .ageaf-panel__apply {
+  margin-left: 0;
+}
+
 .ageaf-panel__status {
   font-size: 12px;
   color: var(--ageaf-panel-muted);
@@ -678,9 +858,9 @@
   margin: 0;
   padding: 0;
   background: transparent;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-wrap: break-word;
+  overflow: auto;
+  white-space: pre;
+  word-wrap: normal;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', 'source-code-pro', monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -693,6 +873,7 @@
   font-family: inherit;
   background: transparent;
   color: rgba(233, 242, 236, 0.9);
+  white-space: inherit;
 }
 
 /* Prism Token Colors - Adapted from Tomorrow Night theme */
@@ -895,6 +1076,37 @@
   margin-top: 6px;
   display: flex;
   justify-content: flex-start;
+}
+
+.ageaf-message__attachment-chip-row {
+  margin: 6px 0;
+}
+
+.ageaf-message__attachment-chip {
+  max-width: 100%;
+}
+
+.ageaf-patch-review__proposal-quote {
+  margin-top: 2px;
+}
+
+.ageaf-patch-review__proposal-quote .ageaf-message__quote-lang {
+  top: 10px;
+  left: 12px;
+}
+
+.ageaf-patch-review__proposal-quote .ageaf-message__copy {
+  top: 10px;
+  right: 10px;
+}
+
+/* Proposed text should behave like a code viewer: no wrapping, both-axis scroll. */
+.ageaf-patch-review__proposal-quote .ageaf-code-block {
+  max-height: 220px;
+}
+
+.ageaf-patch-review__proposal-quote .ageaf-code-block code {
+  white-space: inherit;
 }
 
 .ageaf-message__copy-response {

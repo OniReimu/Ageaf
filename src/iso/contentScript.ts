@@ -1,5 +1,6 @@
 'use strict';
 
+import './webpackPublicPath';
 import { mountPanel, unmountPanel } from './panel/Panel';
 const LAYOUT_ID = 'ageaf-layout';
 const LAYOUT_MAIN_CLASS = 'ageaf-layout__main';
@@ -7,11 +8,35 @@ const EDITOR_REQUEST_EVENT = 'ageaf:editor:request';
 const EDITOR_RESPONSE_EVENT = 'ageaf:editor:response';
 const EDITOR_REPLACE_EVENT = 'ageaf:editor:replace';
 const EDITOR_INSERT_EVENT = 'ageaf:editor:insert';
+const EDITOR_APPLY_REQUEST_EVENT = 'ageaf:editor:apply:request';
+const EDITOR_APPLY_RESPONSE_EVENT = 'ageaf:editor:apply:response';
 const EDITOR_FILE_REQUEST_EVENT = 'ageaf:editor:file-content:request';
 const EDITOR_FILE_RESPONSE_EVENT = 'ageaf:editor:file-content:response';
 const PANEL_INSERT_SELECTION_EVENT = 'ageaf:panel:insert-selection';
 const selectionRequests = new Map<string, (payload: any) => void>();
 const fileRequests = new Map<string, (payload: any) => void>();
+const applyRequests = new Map<string, (payload: { ok: boolean; error?: string }) => void>();
+
+type ApplyReplaceRangeArgs = {
+  from: number;
+  to: number;
+  expectedOldText: string;
+  text: string;
+};
+
+type ApplyReplaceInFileArgs = {
+  filePath: string;
+  expectedOldText: string;
+  text: string;
+  from?: number;
+  to?: number;
+};
+
+type ApplyResponse = {
+  requestId: string;
+  ok: boolean;
+  error?: string;
+};
 
 declare global {
   interface Window {
@@ -20,6 +45,8 @@ declare global {
       requestFileContent: (name: string) => Promise<any>;
       replaceSelection: (text: string) => void;
       insertAtCursor: (text: string) => void;
+      applyReplaceRange: (payload: ApplyReplaceRangeArgs) => Promise<{ ok: boolean; error?: string }>;
+      applyReplaceInFile: (payload: ApplyReplaceInFileArgs) => Promise<{ ok: boolean; error?: string }>;
     };
   }
 }
@@ -40,6 +67,15 @@ function onFileContentResponse(event: Event) {
   if (!handler) return;
   fileRequests.delete(detail.requestId);
   handler(detail);
+}
+
+function onApplyResponse(event: Event) {
+  const detail = (event as CustomEvent<ApplyResponse>).detail;
+  if (!detail?.requestId) return;
+  const handler = applyRequests.get(detail.requestId);
+  if (!handler) return;
+  applyRequests.delete(detail.requestId);
+  handler({ ok: detail.ok, error: detail.error });
 }
 
 function requestSelection() {
@@ -66,6 +102,45 @@ function replaceSelection(text: string) {
 
 function insertAtCursor(text: string) {
   window.dispatchEvent(new CustomEvent(EDITOR_INSERT_EVENT, { detail: { text } }));
+}
+
+function applyReplaceRange({ from, to, expectedOldText, text }: ApplyReplaceRangeArgs) {
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    applyRequests.set(requestId, resolve);
+    window.dispatchEvent(
+      new CustomEvent(EDITOR_APPLY_REQUEST_EVENT, {
+        detail: {
+          requestId,
+          kind: 'replaceRange',
+          from,
+          to,
+          expectedOldText,
+          text,
+        },
+      })
+    );
+  });
+}
+
+function applyReplaceInFile({ filePath, expectedOldText, text, from, to }: ApplyReplaceInFileArgs) {
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    applyRequests.set(requestId, resolve);
+    window.dispatchEvent(
+      new CustomEvent(EDITOR_APPLY_REQUEST_EVENT, {
+        detail: {
+          requestId,
+          kind: 'replaceInFile',
+          filePath,
+          expectedOldText,
+          text,
+          ...(typeof from === 'number' ? { from } : {}),
+          ...(typeof to === 'number' ? { to } : {}),
+        },
+      })
+    );
+  });
 }
 
 function ensureKatexFontFaces() {
@@ -190,11 +265,14 @@ function updatePanelMount() {
 
 window.addEventListener(EDITOR_RESPONSE_EVENT, onSelectionResponse as EventListener);
 window.addEventListener(EDITOR_FILE_RESPONSE_EVENT, onFileContentResponse as EventListener);
+window.addEventListener(EDITOR_APPLY_RESPONSE_EVENT, onApplyResponse as EventListener);
 window.ageafBridge = {
   requestSelection,
   requestFileContent,
   replaceSelection,
   insertAtCursor,
+  applyReplaceRange,
+  applyReplaceInFile,
 };
 
 function isPanelTarget(target: EventTarget | null) {

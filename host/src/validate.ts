@@ -14,5 +14,31 @@ export function validatePatch(value: unknown): Patch {
     return { kind: patch.kind, text: patch.text } as Patch;
   }
 
+  if (patch.kind === 'replaceRangeInFile') {
+    if (
+      typeof (patch as any).filePath !== 'string' ||
+      typeof (patch as any).expectedOldText !== 'string' ||
+      typeof patch.text !== 'string'
+    ) {
+      throw new Error('Invalid patch');
+    }
+
+    const from = (patch as any).from;
+    const to = (patch as any).to;
+    const hasFrom = typeof from === 'number' && Number.isFinite(from);
+    const hasTo = typeof to === 'number' && Number.isFinite(to);
+    if ((hasFrom || hasTo) && !(hasFrom && hasTo && to >= from)) {
+      throw new Error('Invalid patch');
+    }
+
+    return {
+      kind: 'replaceRangeInFile',
+      filePath: (patch as any).filePath,
+      expectedOldText: (patch as any).expectedOldText,
+      text: patch.text,
+      ...(hasFrom && hasTo ? { from, to } : {}),
+    };
+  }
+
   throw new Error('Invalid patch');
 }

@@ -1,11 +1,13 @@
 import { getContentAfterCursor, getContentBeforeCursor, getCmView } from '../helpers';
-import { onReplaceContent } from '../eventHandlers';
+import { applyReplacementAtRange, onReplaceContent } from '../eventHandlers';
 import { MAX_LENGTH_AFTER_CURSOR, MAX_LENGTH_BEFORE_CURSOR } from '../../constants';
 
 const REQUEST_EVENT = 'ageaf:editor:request';
 const RESPONSE_EVENT = 'ageaf:editor:response';
 const REPLACE_EVENT = 'ageaf:editor:replace';
 const INSERT_EVENT = 'ageaf:editor:insert';
+const APPLY_REQUEST_EVENT = 'ageaf:editor:apply:request';
+const APPLY_RESPONSE_EVENT = 'ageaf:editor:apply:response';
 const FILE_REQUEST_EVENT = 'ageaf:editor:file-content:request';
 const FILE_RESPONSE_EVENT = 'ageaf:editor:file-content:response';
 
@@ -27,6 +29,33 @@ interface SelectionResponse {
 
 interface ApplyPatchRequest {
   text: string;
+}
+
+interface ApplyReplaceRangeRequest {
+  requestId: string;
+  kind: 'replaceRange';
+  from: number;
+  to: number;
+  expectedOldText: string;
+  text: string;
+}
+
+interface ApplyReplaceInFileRequest {
+  requestId: string;
+  kind: 'replaceInFile';
+  filePath: string;
+  expectedOldText: string;
+  text: string;
+  from?: number;
+  to?: number;
+}
+
+type ApplyRequest = ApplyReplaceRangeRequest | ApplyReplaceInFileRequest;
+
+interface ApplyResponse {
+  requestId: string;
+  ok: boolean;
+  error?: string;
 }
 
 interface FileContentRequest {
@@ -51,6 +80,20 @@ function getActiveTabName(): string | null {
   if (!(selected instanceof HTMLElement)) return null;
   const text = (selected.getAttribute('aria-label') ?? selected.textContent ?? '').trim();
   return text || null;
+}
+
+function normalizeFileName(filePath: string): string {
+  const trimmed = filePath.trim();
+  const parts = trimmed.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : trimmed;
+}
+
+function matchesActiveFile(activeName: string | null, filePath: string): boolean {
+  if (!activeName) return false;
+  const active = activeName.trim().toLowerCase();
+  const target = filePath.trim().toLowerCase();
+  const base = normalizeFileName(target).toLowerCase();
+  return active === target || active === base;
 }
 
 function findClickableByName(name: string): HTMLElement | null {
@@ -183,6 +226,87 @@ function onSelectionRequest(event: Event) {
   window.dispatchEvent(new CustomEvent(RESPONSE_EVENT, { detail: response }));
 }
 
+function onApplyRequest(event: Event) {
+  const detail = (event as CustomEvent<ApplyRequest>).detail;
+  const view = getCmView();
+  let ok = true;
+  let error: string | undefined;
+
+  if (!detail?.requestId) return;
+
+  if (detail.kind === 'replaceRange') {
+    if (typeof detail.expectedOldText !== 'string' || typeof detail.text !== 'string') return;
+    const current = view.state.sliceDoc(detail.from, detail.to);
+    if (current !== detail.expectedOldText) {
+      ok = false;
+      error = 'Selection changed';
+    } else {
+      applyReplacementAtRange(view, detail.from, detail.to, detail.text);
+    }
+  } else if (detail.kind === 'replaceInFile') {
+    if (
+      typeof detail.filePath !== 'string' ||
+      typeof detail.expectedOldText !== 'string' ||
+      typeof detail.text !== 'string'
+    ) {
+      return;
+    }
+
+    if (!matchesActiveFile(getActiveTabName(), detail.filePath)) {
+      ok = false;
+      error = `Open ${normalizeFileName(detail.filePath)} in Overleaf and retry.`;
+    } else if (!detail.expectedOldText) {
+      ok = false;
+      error = 'Expected text missing';
+    } else {
+      let from: number | null = null;
+      let to: number | null = null;
+      const rangeFrom =
+        typeof detail.from === 'number' && Number.isFinite(detail.from) ? detail.from : null;
+      const rangeTo = typeof detail.to === 'number' && Number.isFinite(detail.to) ? detail.to : null;
+
+      if (typeof rangeFrom === 'number' && typeof rangeTo === 'number' && rangeTo >= rangeFrom) {
+        from = rangeFrom;
+        to = rangeTo;
+      } else {
+        const full = view.state.sliceDoc(0, view.state.doc.length);
+        const first = full.indexOf(detail.expectedOldText);
+        if (first === -1) {
+          ok = false;
+          error = 'Expected text not found';
+        } else {
+          const second = full.indexOf(detail.expectedOldText, first + detail.expectedOldText.length);
+          if (second !== -1) {
+            ok = false;
+            error = 'Expected text appears multiple times';
+          } else {
+            from = first;
+            to = first + detail.expectedOldText.length;
+          }
+        }
+      }
+
+      if (ok && typeof from === 'number' && typeof to === 'number') {
+        const current = view.state.sliceDoc(from, to);
+        if (current !== detail.expectedOldText) {
+          ok = false;
+          error = 'Selection changed';
+        } else {
+          applyReplacementAtRange(view, from, to, detail.text);
+        }
+      }
+    }
+  }
+
+  const response: ApplyResponse = {
+    requestId: detail.requestId,
+    ok,
+    ...(error ? { error } : {}),
+  };
+
+  window.dispatchEvent(new CustomEvent(APPLY_RESPONSE_EVENT, { detail: response }));
+}
+
 function onReplaceSelection(event: Event) {
   const detail = (event as CustomEvent<ApplyPatchRequest>).detail;
   if (!detail?.text) return;
@@ -214,6 +338,7 @@ function onInsertAtCursor(event: Event) {
 export function registerEditorBridge() {
   window.addEventListener(REQUEST_EVENT, onSelectionRequest as EventListener);
   window.addEventListener(FILE_REQUEST_EVENT, onFileContentRequest as EventListener);
+  window.addEventListener(APPLY_REQUEST_EVENT, onApplyRequest as EventListener);
   window.addEventListener(REPLACE_EVENT, onReplaceSelection as EventListener);
   window.addEventListener(INSERT_EVENT, onInsertAtCursor as EventListener);
 }

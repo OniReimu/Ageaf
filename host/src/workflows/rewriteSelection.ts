@@ -1,5 +1,5 @@
 import type { JobEvent, Patch } from '../types.js';
-import { runClaudeStructuredPatch, type ClaudeRuntimeConfig } from '../runtimes/claude/agent.js';
+import { runClaudeText, type ClaudeRuntimeConfig } from '../runtimes/claude/agent.js';
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -17,9 +17,16 @@ type RewritePayload = {
   };
 };
 
+const REWRITE_START = '<<<AGEAF_REWRITE>>>';
+const REWRITE_END = '<<<AGEAF_REWRITE_END>>>';
+
 const REWRITE_PROMPT = `Rewrite the selected LaTeX text for clarity and academic tone.
 Preserve all LaTeX commands, citations (e.g., \\cite{}), labels (\\label{}), references (\\ref{}), and math.
-Return a JSON object only: {\"kind\":\"replaceSelection\",\"text\":\"...\"}.`;
+
+Output ONLY the rewritten selection between the markers below (no JSON, no Markdown, no explanation):
+${REWRITE_START}
+... rewritten selection here ...
+${REWRITE_END}`;
 
 export function buildRewritePrompt(payload: RewritePayload) {
   const selection = payload.context?.selection ?? '';
@@ -28,13 +35,24 @@ export function buildRewritePrompt(payload: RewritePayload) {
 
   return [
     REWRITE_PROMPT,
-    '\nContext before:\n',
+    '\n\nContext before:\n```latex\n',
     before,
-    '\nSelection:\n',
+    '\n```\n\nSelection:\n```latex\n',
     selection,
-    '\nContext after:\n',
+    '\n```\n\nContext after:\n```latex\n',
     after,
+    '\n```\n',
   ].join('');
+}
+
+function extractRewriteText(resultText: string | null) {
+  if (!resultText) return null;
+  const startIndex = resultText.indexOf(REWRITE_START);
+  if (startIndex < 0) return null;
+  const endIndex = resultText.indexOf(REWRITE_END, startIndex + REWRITE_START.length);
+  if (endIndex < 0) return null;
+  const body = resultText.slice(startIndex + REWRITE_START.length, endIndex).trim();
+  return body.length > 0 ? body : null;
 }
 
 export async function runRewriteSelection(payload: RewritePayload, emitEvent: EmitEvent) {
@@ -46,10 +64,19 @@ export async function runRewriteSelection(payload: RewritePayload, emitEvent: Em
 
   const prompt = buildRewritePrompt(payload);
   emitEvent({ event: 'delta', data: { text: 'Preparing rewrite...' } });
-  await runClaudeStructuredPatch({
+
+  let doneEvent: JobEvent | null = null;
+  const wrappedEmit: EmitEvent = (event) => {
+    if (event.event === 'done') {
+      doneEvent = event;
+      return;
+    }
+    emitEvent(event);
+  };
+
+  const resultText = await runClaudeText({
     prompt,
-    fallbackPatch: patch,
-    emitEvent,
+    emitEvent: wrappedEmit,
     runtime: payload.runtime?.claude,
     safety: {
       enabled: payload.userSettings?.enableCommandBlocklist ?? false,
@@ -57,4 +84,24 @@ export async function runRewriteSelection(payload: RewritePayload, emitEvent: Em
     },
     enableTools: payload.userSettings?.enableTools ?? false,
   });
+
+  const status = (doneEvent as any)?.data?.status;
+  if (status && status !== 'ok') {
+    emitEvent(doneEvent as JobEvent);
+    return;
+  }
+
+  const rewritten = extractRewriteText(resultText);
+  if (!rewritten && process.env.AGEAF_CLAUDE_MOCK !== 'true') {
+    emitEvent({
+      event: 'done',
+      data: { status: 'error', message: 'Rewrite output missing markers' },
+    });
+    return;
+  }
+  emitEvent({
+    event: 'patch',
+    data: { kind: 'replaceSelection', text: rewritten ?? selection },
+  });
+  emitEvent(doneEvent ?? { event: 'done', data: { status: 'ok' } });
 }
