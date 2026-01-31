@@ -25,6 +25,7 @@ import { LOCAL_STORAGE_KEY_OPTIONS } from '../../constants';
 import { Options } from '../../types';
 import { parseMarkdown, renderMarkdown } from './markdown';
 import { DiffReview } from './DiffReview';
+import { loadSkillsManifest, searchSkills, type SkillEntry } from './skills/skillsRegistry';
 import {
   ProviderId,
   StoredConversation,
@@ -715,6 +716,10 @@ const Panel = () => {
   const [mentionResults, setMentionResults] = useState<OverleafEntry[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
+  const [skillOpen, setSkillOpen] = useState(false);
+  const [skillResults, setSkillResults] = useState<SkillEntry[]>([]);
+  const [skillIndex, setSkillIndex] = useState(0);
+  const skillRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const attachmentErrorTimerRef = useRef<number | null>(null);
   const [isDropActive, setIsDropActive] = useState(false);
@@ -1998,6 +2003,71 @@ const Panel = () => {
     setMentionOpen(false);
     setMentionResults([]);
     mentionRangeRef.current = null;
+    syncEditorEmpty();
+  };
+
+  const getSlashQuery = () => {
+    const editor = editorRef.current;
+    if (!editor) return null;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.startContainer)) return null;
+    const node = range.endContainer;
+    if (node.nodeType !== Node.TEXT_NODE) return null;
+    const textNode = node as Text;
+    const anchorOffset = range.endOffset;
+    const before = textNode.data.slice(0, anchorOffset);
+    const match = before.match(/(^|[\s\(\[\{])\/([A-Za-z0-9._-]*)$/);
+    if (!match) return null;
+    const query = match[2] ?? '';
+    const start = anchorOffset - (query.length + 1);
+    return { query, node: textNode, start, end: anchorOffset };
+  };
+
+  const updateSkillState = async () => {
+    if (isComposingRef.current) return;
+    const match = getSlashQuery();
+    if (!match) {
+      setSkillOpen(false);
+      setSkillResults([]);
+      skillRangeRef.current = null;
+      return;
+    }
+    try {
+      const manifest = await loadSkillsManifest();
+      const results = searchSkills(manifest.skills, match.query);
+      skillRangeRef.current = { node: match.node, start: match.start, end: match.end };
+      setSkillResults(results.slice(0, 20));
+      setSkillIndex(0);
+      setSkillOpen(true);
+    } catch (err) {
+      console.error('Failed to load skills:', err);
+      setSkillOpen(false);
+      setSkillResults([]);
+    }
+  };
+
+  const insertSkill = (skill: SkillEntry) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const selection = window.getSelection();
+    if (!selection) return;
+    const rangeInfo = skillRangeRef.current;
+    if (rangeInfo) {
+      const { node, start, end } = rangeInfo;
+      node.data = node.data.slice(0, start) + node.data.slice(end);
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    insertTextAtCursor(`/${skill.name} `);
+    setSkillOpen(false);
+    setSkillResults([]);
+    skillRangeRef.current = null;
     syncEditorEmpty();
   };
 
@@ -4629,6 +4699,32 @@ const Panel = () => {
       }
     }
 
+    if (skillOpen) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setSkillIndex((prev) => Math.min(prev + 1, Math.max(0, skillResults.length - 1)));
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setSkillIndex((prev) => Math.max(prev - 1, 0));
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        const selected = skillResults[skillIndex];
+        if (selected) {
+          event.preventDefault();
+          insertSkill(selected);
+          return;
+        }
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setSkillOpen(false);
+        return;
+      }
+    }
+
     // Local undo/redo for the editor to avoid Overleaf intercepting Cmd/Ctrl+Z/Y.
     if (event.metaKey || event.ctrlKey) {
       const key = event.key.toLowerCase();
@@ -5676,6 +5772,7 @@ const Panel = () => {
           onInput={() => {
             syncEditorEmpty();
             updateMentionState();
+            void updateSkillState();
           }}
           onPaste={(event) => handlePaste(event as ClipboardEvent)}
           onKeyDown={(event) => onInputKeyDown(event as KeyboardEvent)}
@@ -5685,6 +5782,7 @@ const Panel = () => {
           onCompositionEnd={() => {
             isComposingRef.current = false;
             updateMentionState();
+            void updateSkillState();
           }}
         />
         {mentionOpen ? (
@@ -5729,6 +5827,48 @@ const Panel = () => {
               ))
             ) : (
               <div class="ageaf-mention__empty">No project files found.</div>
+            )}
+          </div>
+        ) : null}
+        {skillOpen ? (
+          <div
+            class="ageaf-skill"
+            onWheel={(event) => {
+              const el = event.currentTarget as HTMLElement | null;
+              if (!el) return;
+              if (el.scrollHeight <= el.clientHeight) return;
+              el.scrollTop += (event as unknown as WheelEvent).deltaY;
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            {skillResults.length > 0 ? (
+              skillResults.map((skill, index) => (
+                <button
+                  key={skill.id}
+                  type="button"
+                  class={`ageaf-skill__option ${index === skillIndex ? 'is-active' : ''}`}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    insertSkill(skill);
+                  }}
+                  title={skill.description}
+                >
+                  <div class="ageaf-skill__name">/{skill.name}</div>
+                  <div class="ageaf-skill__description">{skill.description}</div>
+                  {skill.tags.length > 0 ? (
+                    <div class="ageaf-skill__tags">
+                      {skill.tags.map((tag) => (
+                        <span key={tag} class="ageaf-skill__tag">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </button>
+              ))
+            ) : (
+              <div class="ageaf-skill__empty">No skills found.</div>
             )}
           </div>
         ) : null}
