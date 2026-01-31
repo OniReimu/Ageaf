@@ -2102,18 +2102,23 @@ const Panel = () => {
     try {
       const manifest = await loadSkillsManifest();
       const skillContents: string[] = [];
+      const resolvedNames = new Set<string>();
 
       for (const name of directiveNames) {
         const skill = manifest.skills.find((s) => s.name === name);
         if (skill) {
           const markdown = await loadSkillMarkdown(skill);
           skillContents.push(`\n\n# Skill: ${skill.name}\n\n${markdown}`);
+          resolvedNames.add(name);
         }
       }
 
-      // Strip directives from message text
-      const strippedText = text.replace(pattern, (match, before, _skillName, after) => {
-        return before + after;
+      // Strip ONLY directives that resolved to actual skills (preserve unknown directives)
+      const strippedText = text.replace(pattern, (match, before, skillName, after) => {
+        if (resolvedNames.has(skillName)) {
+          return before + after;
+        }
+        return match; // Keep unknown directives intact
       });
 
       const skillsPrompt = skillContents.length > 0 ? skillContents.join('\n\n') : '';

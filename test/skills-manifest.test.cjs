@@ -12,7 +12,6 @@ test('generateSkillsManifest creates valid manifest', async () => {
 
   // Verify structure
   assert.ok(manifest.version, 'manifest should have version');
-  assert.ok(manifest.generatedAt, 'manifest should have generatedAt timestamp');
   assert.ok(Array.isArray(manifest.skills), 'manifest.skills should be an array');
 
   // Verify skill count (should have >50 skills from AI-research-SKILLs)

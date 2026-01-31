@@ -51,11 +51,12 @@ function parseSkillFile(filePath, skillsDir) {
   // Generate relative path from skills directory
   const relativePath = path.relative(skillsDir, filePath);
 
-  // Generate stable ID from relative path (remove /SKILL.md suffix)
-  const id = relativePath.replace(/\/SKILL\.md$/, '');
+  // Generate stable ID from relative path (dirname, normalized to forward slashes)
+  // This ensures consistent IDs across Windows/POSIX and strips the SKILL.md filename
+  const id = path.dirname(relativePath).split(path.sep).join('/');
 
   // Determine source from first path component
-  const pathParts = id.split(path.sep);
+  const pathParts = id.split('/');
   const source = pathParts[0] || 'unknown';
 
   // Extract name (last component before SKILL.md)
@@ -87,10 +88,9 @@ async function generateSkillsManifest(skillsDir) {
   // Sort by ID for stable ordering
   skills.sort((a, b) => a.id.localeCompare(b.id));
 
-  // Build manifest
+  // Build manifest (no generatedAt for deterministic builds)
   return {
     version: 1,
-    generatedAt: new Date().toISOString(),
     skills,
   };
 }
@@ -108,10 +108,18 @@ async function main() {
 
   console.log(`Found ${manifest.skills.length} skills`);
 
-  // Write manifest to file
-  fs.writeFileSync(outputPath, JSON.stringify(manifest, null, 2), 'utf-8');
+  // Write manifest to file (only if content changed, for deterministic builds)
+  const newContent = JSON.stringify(manifest, null, 2) + '\n';
+  const existingContent = fs.existsSync(outputPath)
+    ? fs.readFileSync(outputPath, 'utf-8')
+    : '';
 
-  console.log(`Manifest written to: ${outputPath}`);
+  if (newContent !== existingContent) {
+    fs.writeFileSync(outputPath, newContent, 'utf-8');
+    console.log(`Manifest written to: ${outputPath}`);
+  } else {
+    console.log(`Manifest unchanged: ${outputPath}`);
+  }
 }
 
 // Export for testing
