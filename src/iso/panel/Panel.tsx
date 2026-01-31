@@ -25,7 +25,12 @@ import { LOCAL_STORAGE_KEY_OPTIONS } from '../../constants';
 import { Options } from '../../types';
 import { parseMarkdown, renderMarkdown } from './markdown';
 import { DiffReview } from './DiffReview';
-import { loadSkillsManifest, searchSkills, type SkillEntry } from './skills/skillsRegistry';
+import {
+  loadSkillsManifest,
+  loadSkillMarkdown,
+  searchSkills,
+  type SkillEntry,
+} from './skills/skillsRegistry';
 import {
   ProviderId,
   StoredConversation,
@@ -2069,6 +2074,55 @@ const Panel = () => {
     setSkillResults([]);
     skillRangeRef.current = null;
     syncEditorEmpty();
+  };
+
+  const processSkillDirectives = async (
+    text: string
+  ): Promise<{ skillsPrompt: string; strippedText: string }> => {
+    // Extract skill directives from text (e.g., /langchain, /vllm)
+    // Pattern: (start OR whitespace/bracket) + "/" + (allowed chars)
+    const pattern = /(^|[\s([{])\/([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
+    const matches = text.matchAll(pattern);
+    const directiveNames: string[] = [];
+    const seen = new Set<string>();
+
+    for (const match of matches) {
+      const skillName = match[2];
+      if (skillName && !seen.has(skillName)) {
+        directiveNames.push(skillName);
+        seen.add(skillName);
+      }
+    }
+
+    if (directiveNames.length === 0) {
+      return { skillsPrompt: '', strippedText: text };
+    }
+
+    // Load skills manifest and find matching skills
+    try {
+      const manifest = await loadSkillsManifest();
+      const skillContents: string[] = [];
+
+      for (const name of directiveNames) {
+        const skill = manifest.skills.find((s) => s.name === name);
+        if (skill) {
+          const markdown = await loadSkillMarkdown(skill);
+          skillContents.push(`\n\n# Skill: ${skill.name}\n\n${markdown}`);
+        }
+      }
+
+      // Strip directives from message text
+      const strippedText = text.replace(pattern, (match, before, _skillName, after) => {
+        return before + after;
+      });
+
+      const skillsPrompt = skillContents.length > 0 ? skillContents.join('\n\n') : '';
+
+      return { skillsPrompt, strippedText };
+    } catch (err) {
+      console.error('Failed to process skill directives:', err);
+      return { skillsPrompt: '', strippedText: text };
+    }
   };
 
   const formatLineCount = (value: number) => {
@@ -4119,6 +4173,8 @@ const Panel = () => {
     try {
       const selection = await bridge.requestSelection();
       const resolvedMessageText = await resolveMentionFiles(text);
+      const { skillsPrompt, strippedText } = await processSkillDirectives(resolvedMessageText);
+      const finalMessageText = strippedText;
       const options = await getOptions();
       const runtimeModel =
         currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
@@ -4173,7 +4229,7 @@ const Panel = () => {
 	              },
 	              overleaf: { url: window.location.href },
 	              context: {
-                message: resolvedMessageText,
+                message: finalMessageText,
                 selection: selection?.selection ?? '',
                 surroundingBefore: selection?.before ?? '',
                 surroundingAfter: selection?.after ?? '',
@@ -4205,7 +4261,9 @@ const Panel = () => {
               policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
               userSettings: {
                 displayName: options.displayName,
-                customSystemPrompt: options.customSystemPrompt,
+                customSystemPrompt: skillsPrompt
+                  ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
+                  : options.customSystemPrompt,
               },
             }
           : {
@@ -4225,7 +4283,7 @@ const Panel = () => {
         },
         overleaf: { url: window.location.href },
         context: {
-                message: resolvedMessageText,
+                message: finalMessageText,
           selection: selection?.selection ?? '',
           surroundingBefore: selection?.before ?? '',
           surroundingAfter: selection?.after ?? '',
@@ -4257,7 +4315,9 @@ const Panel = () => {
         policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
               userSettings: {
                 displayName: options.displayName,
-                customSystemPrompt: options.customSystemPrompt,
+                customSystemPrompt: skillsPrompt
+                  ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
+                  : options.customSystemPrompt,
                 enableTools: options.enableTools,
                 enableCommandBlocklist: options.enableCommandBlocklist,
                 blockedCommandsUnix: options.blockedCommandsUnix,
