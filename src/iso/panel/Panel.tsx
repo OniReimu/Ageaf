@@ -1979,6 +1979,8 @@ const Panel = () => {
     setMentionResults(results);
     setMentionIndex(0);
     setMentionOpen(true);
+    // Close skill menu when mention menu opens (mutually exclusive)
+    setSkillOpen(false);
   };
 
   const insertMentionEntry = (entry: OverleafEntry) => {
@@ -2023,7 +2025,9 @@ const Panel = () => {
     const textNode = node as Text;
     const anchorOffset = range.endOffset;
     const before = textNode.data.slice(0, anchorOffset);
+    console.log('[getSlashQuery] before:', JSON.stringify(before), 'offset:', anchorOffset);
     const match = before.match(/(^|[\s\(\[\{])\/([A-Za-z0-9._-]*)$/);
+    console.log('[getSlashQuery] match:', match);
     if (!match) return null;
     const query = match[2] ?? '';
     const start = anchorOffset - (query.length + 1);
@@ -2031,8 +2035,10 @@ const Panel = () => {
   };
 
   const updateSkillState = async () => {
+    console.log('[updateSkillState] called');
     if (isComposingRef.current) return;
     const match = getSlashQuery();
+    console.log('[updateSkillState] match result:', match);
     if (!match) {
       setSkillOpen(false);
       setSkillResults([]);
@@ -2040,14 +2046,20 @@ const Panel = () => {
       return;
     }
     try {
+      console.log('[updateSkillState] loading manifest...');
       const manifest = await loadSkillsManifest();
+      console.log('[updateSkillState] manifest loaded, skills:', manifest.skills.length);
       const results = searchSkills(manifest.skills, match.query);
+      console.log('[updateSkillState] search results:', results.length, 'for query:', match.query);
       skillRangeRef.current = { node: match.node, start: match.start, end: match.end };
       setSkillResults(results.slice(0, 20));
       setSkillIndex(0);
       setSkillOpen(true);
+      console.log('[updateSkillState] skill menu opened');
+      // Close mention menu when skill menu opens (mutually exclusive)
+      setMentionOpen(false);
     } catch (err) {
-      console.error('Failed to load skills:', err);
+      console.error('[updateSkillState] Failed to load skills:', err);
       setSkillOpen(false);
       setSkillResults([]);
     }

@@ -1,6 +1,5 @@
 {
   "version": 1,
-  "generatedAt": "2026-01-31T22:29:45.585Z",
   "skills": [
     {
       "id": "ai-research/01-model-architecture/litgpt",
@@ -293,8 +292,19 @@
     {
       "id": "ai-research/05-data-processing/ray-data",
       "name": "ray-data",
-      "description": "",
-      "tags": [],
+      "description": "Scalable data processing for ML workloads. Streaming execution across CPU/GPU, supports Parquet/CSV/JSON/images. Integrates with Ray Train, PyTorch, TensorFlow. Scales from single machine to 100s of nodes. Use for batch inference, data preprocessing, multi-modal data loading, or distributed ETL pipelines.",
+      "tags": [
+        "Data Processing",
+        "Ray Data",
+        "Distributed Computing",
+        "ML Pipelines",
+        "Batch Inference",
+        "ETL",
+        "Scalable",
+        "Ray",
+        "PyTorch",
+        "TensorFlow"
+      ],
       "source": "ai-research",
       "path": "skills/ai-research/05-data-processing/ray-data/SKILL.md"
     },
@@ -589,8 +599,19 @@
     {
       "id": "ai-research/08-distributed-training/ray-train",
       "name": "ray-train",
-      "description": "",
-      "tags": [],
+      "description": "Distributed training orchestration across clusters. Scales PyTorch/TensorFlow/HuggingFace from laptop to 1000s of nodes. Built-in hyperparameter tuning with Ray Tune, fault tolerance, elastic scaling. Use when training massive models across multiple machines or running distributed hyperparameter sweeps.",
+      "tags": [
+        "Ray Train",
+        "Distributed Training",
+        "Orchestration",
+        "Ray",
+        "Hyperparameter Tuning",
+        "Fault Tolerance",
+        "Elastic Scaling",
+        "Multi-Node",
+        "PyTorch",
+        "TensorFlow"
+      ],
       "source": "ai-research",
       "path": "skills/ai-research/08-distributed-training/ray-train/SKILL.md"
     },
