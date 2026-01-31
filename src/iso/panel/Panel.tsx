@@ -417,6 +417,9 @@ const Panel = () => {
 
     // Pending completion
     pendingDone: { status: string; message?: string } | null;
+
+    // Patch proposals received while streaming a reply
+    pendingPatchReviewMessages: StoredMessage[];
   };
 
   const sessionStates = useRef<Map<string, SessionRuntimeState>>(new Map());
@@ -437,6 +440,7 @@ const Panel = () => {
     activityStartTime: null,
     lastActivity: Date.now(),
     pendingDone: null,
+    pendingPatchReviewMessages: [],
   });
 
   // Get or create session state
@@ -2030,7 +2034,10 @@ const Panel = () => {
           if (text === INTERRUPTED_BY_USER_MARKER) {
             element.classList.add('ageaf-message__interrupt');
           }
-          if (text.includes('[Attachment:') && /\[Attachment:\s+.+?\s+·\s+\d+\s+lines\]/.test(text)) {
+          if (
+            text.includes('[Attachment:') &&
+            /\[Attachment:\s+.+?\s+·\s+\d+\s+lines\]/.test(text)
+          ) {
             const nextIndex = findNextElementIndex(i + 1);
             if (nextIndex !== -1) {
               const nextNode = nodes[nextIndex] as HTMLElement;
@@ -2382,6 +2389,18 @@ const Panel = () => {
     };
     chipStoreRef.current = { ...chipStoreRef.current, [chipId]: payload };
 
+    const preview = (() => {
+      const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+      if (!normalized) return '';
+      const lines = normalized.split('\n');
+      const maxLines = 6;
+      let value = lines.slice(0, maxLines).join('\n');
+      if (lines.length > maxLines) value += '\n…';
+      const maxChars = 240;
+      if (value.length > maxChars) value = `${value.slice(0, maxChars)}…`;
+      return value;
+    })();
+
     const chip = document.createElement('span');
     chip.className = 'ageaf-panel__chip';
     chip.setAttribute('data-chip-id', chipId);
@@ -2401,6 +2420,7 @@ const Panel = () => {
       }`
     );
     chip.setAttribute('contenteditable', 'false');
+    if (preview) chip.title = preview;
 
     const extMatch = filename.match(/\.[a-z0-9]+$/i);
     const ext = extMatch ? extMatch[0].toLowerCase() : '';
@@ -2483,6 +2503,27 @@ const Panel = () => {
     if (text == null) return;
     event.preventDefault();
     if (shouldChipPaste(text)) {
+      const bridge = window.ageafBridge;
+      if (bridge?.requestSelection) {
+        void (async () => {
+          try {
+            const selection = await bridge.requestSelection();
+            const selectedText = selection?.selection ?? '';
+            if (selectedText && selectedText.trim()) {
+              const lineFrom =
+                typeof selection?.lineFrom === 'number' ? selection.lineFrom : undefined;
+              const lineTo =
+                typeof selection?.lineTo === 'number' ? selection.lineTo : undefined;
+              insertChipFromText(selectedText, undefined, lineFrom, lineTo);
+              return;
+            }
+          } catch {
+            // ignore selection errors and fallback to clipboard
+          }
+          insertChipFromText(text);
+        })();
+        return;
+      }
       insertChipFromText(text);
     } else {
       insertTextAtCursor(text);
@@ -3513,8 +3554,15 @@ const Panel = () => {
           ...(statusLine ? { statusLine } : {}),
           });
     }
-    if (pending.status !== 'ok') {
-      const message = pending.message ?? 'Job failed';
+
+        if (pending.status === 'ok') {
+          if (sessionState.pendingPatchReviewMessages.length > 0) {
+            updatedMessages.push(...sessionState.pendingPatchReviewMessages);
+            sessionState.pendingPatchReviewMessages = [];
+          }
+        } else {
+          sessionState.pendingPatchReviewMessages = [];
+          const message = pending.message ?? 'Job failed';
           updatedMessages.push({
             role: 'system' as const,
             content: message,
@@ -3672,6 +3720,7 @@ const Panel = () => {
     stopStreamTimer(conversationId);
     sessionState.streamTokens = [];
     sessionState.pendingDone = null;
+    sessionState.pendingPatchReviewMessages = [];
 
     // Update UI
     interruptedRef.current = true;
@@ -3733,6 +3782,7 @@ const Panel = () => {
     sessionState.interrupted = false;
     sessionState.activityStartTime = Date.now();
     sessionState.pendingDone = null;
+    sessionState.pendingPatchReviewMessages = [];
     // IMPORTANT: Reset streaming buffers so previous replies can't leak into this reply.
     stopStreamTimer(sessionConversationId);
     sessionState.streamTokens = [];
@@ -4193,6 +4243,27 @@ const Panel = () => {
           }
 
           if (!storedPatchReviewMessage) return;
+
+          // For chat, queue patch review cards so they render inline (after the assistant response),
+          // instead of appearing "pinned" above the message while streaming.
+          //
+          // NOTE: In rare cases (race / late events), a patch can arrive after we already finalized
+          // the assistant message. In that case, queueing would "lose" the review card because there
+          // is no pending done event left to flush it. If the job is already finalized, append
+          // immediately instead.
+          if (action === 'chat') {
+            const jobStillActive =
+              sessionState.activeJobId === jobId ||
+              sessionState.isSending ||
+              sessionState.pendingDone != null;
+            if (jobStillActive) {
+              sessionState.pendingPatchReviewMessages.push(storedPatchReviewMessage);
+              // If we're already waiting on `done` but tokens are drained, flush immediately.
+              maybeFinalizeStream(sessionConversationId, provider);
+              return;
+            }
+          }
+
           const updatedMessages = [...conversation.messages, storedPatchReviewMessage];
           chatStateRef.current = setConversationMessages(
             state,

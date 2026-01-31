@@ -15,6 +15,31 @@ function withTimeout(ms: number): TimeoutSignal {
   };
 }
 
+function collectDeltaText(sse: string): string {
+  const lines = sse.split('\n');
+  let currentEvent: string | null = null;
+  let combined = '';
+
+  for (const line of lines) {
+    if (line.startsWith('event: ')) {
+      currentEvent = line.slice('event: '.length).trim();
+      continue;
+    }
+
+    if (currentEvent !== 'delta') continue;
+    if (!line.startsWith('data: ')) continue;
+
+    try {
+      const payload = JSON.parse(line.slice('data: '.length)) as { text?: unknown };
+      if (typeof payload.text === 'string') combined += payload.text;
+    } catch {
+      // ignore malformed delta payloads
+    }
+  }
+
+  return combined;
+}
+
 test('POST /v1/jobs supports provider=codex', async () => {
   const previousMock = process.env.AGEAF_CLAUDE_MOCK;
   process.env.AGEAF_CLAUDE_MOCK = 'true';
@@ -57,7 +82,7 @@ test('POST /v1/jobs supports provider=codex', async () => {
       assert.equal(eventsResponse.status, 200);
       const text = await eventsResponse.text();
       assert.match(text, /event: delta/);
-      assert.match(text, /Hello from /);
+      assert.match(collectDeltaText(text), /Hello from /);
       assert.match(text, /Codex/);
       assert.match(text, /event: usage/);
       assert.match(text, /event: done/);

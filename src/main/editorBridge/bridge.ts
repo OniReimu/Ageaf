@@ -127,6 +127,18 @@ function findClickableByName(name: string): HTMLElement | null {
   return null;
 }
 
+function restoreActiveFile(originalName: string | null, activeName: string | null) {
+  // Best-effort restore previous active file (avoid disrupting the user).
+  try {
+    if (originalName && activeName && originalName !== activeName) {
+      const restore = findClickableByName(originalName);
+      restore?.click();
+    }
+  } catch {
+    // ignore restore errors
+  }
+}
+
 async function tryActivateFileByName(name: string): Promise<boolean> {
   const el = findClickableByName(name);
   if (!el) return false;
@@ -180,15 +192,7 @@ async function onFileContentRequest(event: Event) {
   const activeName = getActiveTabName();
   const content = view.state.sliceDoc(0, view.state.doc.length);
 
-  // Best-effort restore previous active file (avoid disrupting the user).
-  try {
-    if (originalName && activeName && originalName !== activeName) {
-      const restore = findClickableByName(originalName);
-      restore?.click();
-    }
-  } catch {
-    // ignore restore errors
-  }
+  restoreActiveFile(originalName, activeName);
 
   const response: FileContentResponse = {
     requestId: detail.requestId,
@@ -252,6 +256,8 @@ async function onApplyRequest(event: Event) {
       return;
     }
 
+    const originalName = getActiveTabName();
+
     const activateTargetFile = async () => {
       const beforeText = view.state.sliceDoc(0, view.state.doc.length);
       const beforeHash = `${beforeText.length}:${beforeText.slice(0, 64)}:${beforeText.slice(-64)}`;
@@ -293,12 +299,19 @@ async function onApplyRequest(event: Event) {
       return { ok: true as const, from: first, to: first + detail.expectedOldText.length };
     };
 
-    if (!detail.expectedOldText) {
-      ok = false;
-      error = 'Expected text missing';
-    } else {
-      let activated = false;
-      let resolved = resolveReplacementRange();
+    const hasExplicitRange =
+      typeof detail.from === 'number' &&
+      Number.isFinite(detail.from) &&
+      typeof detail.to === 'number' &&
+      Number.isFinite(detail.to) &&
+      detail.to >= detail.from;
+
+      if (!detail.expectedOldText && !hasExplicitRange) {
+        ok = false;
+        error = 'Expected text missing';
+      } else {
+        let activated = false;
+        let resolved = resolveReplacementRange();
 
       if (!resolved.ok && resolved.retryable) {
         try {
@@ -353,6 +366,8 @@ async function onApplyRequest(event: Event) {
             : resolved.error;
       }
     }
+
+    restoreActiveFile(originalName, getActiveTabName());
   }
 
   const response: ApplyResponse = {
