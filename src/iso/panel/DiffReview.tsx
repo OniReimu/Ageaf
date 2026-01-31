@@ -3,11 +3,13 @@ import { preloadDiffHTML } from '@pierre/diffs/ssr';
 import { ResolvedThemes, parseDiffFromFile, setLanguageOverride } from '@pierre/diffs';
 import githubDark from '@shikijs/themes/github-dark';
 import { diffLines } from 'diff';
+import { startTypingReveal } from './typingReveal';
 
 type Props = {
   oldText: string;
   newText: string;
   fileName?: string;
+  animate?: boolean;
 };
 
 if (!ResolvedThemes.has('github-dark')) {
@@ -93,7 +95,7 @@ function renderFallback(
   wrapper.appendChild(container);
 }
 
-export function DiffReview({ oldText, newText, fileName = 'selection.tex' }: Props) {
+export function DiffReview({ oldText, newText, fileName = 'selection.tex', animate = true }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const renderSeqRef = useRef(0);
 
@@ -104,6 +106,7 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex' }: Pro
     const currentRender = renderSeqRef.current + 1;
     renderSeqRef.current = currentRender;
     let cancelled = false;
+    let typingController: { cancel: () => void } | null = null;
 
     void (async () => {
       const startedAt = Date.now();
@@ -156,12 +159,20 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex' }: Pro
             oldText,
             newText,
           });
+          if (animate) {
+            typingController?.cancel();
+            typingController = startTypingReveal(wrapper);
+          }
           return;
         }
 
         statusEl.remove();
         const shadowRoot = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
         shadowRoot.innerHTML = html;
+        if (animate) {
+          typingController?.cancel();
+          typingController = startTypingReveal(shadowRoot);
+        }
       } catch (error) {
         window.clearInterval(tickId);
         console.error('[Ageaf] Diff render failed', error);
@@ -173,11 +184,16 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex' }: Pro
           oldText,
           newText,
         });
+        if (animate) {
+          typingController?.cancel();
+          typingController = startTypingReveal(wrapperNow);
+        }
       }
     })();
 
     return () => {
       cancelled = true;
+      typingController?.cancel();
     };
   }, [oldText, newText, fileName]);
 

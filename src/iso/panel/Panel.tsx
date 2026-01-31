@@ -1,4 +1,5 @@
 import { render } from 'preact';
+import { startTypingReveal } from './typingReveal';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import {
@@ -100,6 +101,216 @@ const CheckIcon = () => (
       stroke-linecap="round"
       stroke-linejoin="round"
     />
+  </svg>
+);
+
+const TypingRevealHtml = ({ html, revealKey }: { html: string; revealKey: string }) => {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const controller = startTypingReveal(el);
+    return () => controller.cancel();
+  }, [revealKey]);
+
+  return <div ref={ref} dangerouslySetInnerHTML={{ __html: html }} />;
+};
+
+const PatchReviewCard = ({
+  message,
+  patchReview,
+  status,
+  error,
+  busy,
+  canAct,
+  copied,
+  onCopy,
+  onAccept,
+  onReject,
+  markAnimated,
+}: {
+  message: Message;
+  patchReview: StoredPatchReview;
+  status: 'pending' | 'accepted' | 'rejected';
+  error: string | null;
+  busy: boolean;
+  canAct: boolean;
+  copied: boolean;
+  onCopy: () => void;
+  onAccept: () => void;
+  onReject: () => void;
+  markAnimated: () => void;
+}) => {
+  // One-off: animate only the very first time this card is created.
+  // Persist a flag so refreshes / subsequent renders do not animate.
+  const shouldAnimateRef = useRef<boolean>(!(patchReview as any).hasAnimated);
+
+  useEffect(() => {
+    if (!shouldAnimateRef.current) return;
+    markAnimated();
+  }, []);
+
+  const fileLabel =
+    patchReview.kind === 'replaceRangeInFile'
+      ? patchReview.filePath
+      : patchReview.kind === 'replaceSelection'
+        ? patchReview.fileName ?? 'selection.tex'
+        : null;
+
+  const title =
+    status === 'accepted'
+      ? 'Review changes · Accepted'
+      : status === 'rejected'
+        ? 'Review changes · Rejected'
+        : 'Review changes';
+
+  const proposalHtml =
+    'text' in patchReview
+      ? (() => {
+          const file =
+            patchReview.kind === 'replaceRangeInFile'
+              ? patchReview.filePath
+              : patchReview.kind === 'replaceSelection'
+                ? patchReview.fileName ?? 'selection.tex'
+                : 'snippet.tex';
+          const ext = (file.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
+          const fenceLang = ext === 'tex' ? 'latex-raw' : ext ? ext : 'text';
+          const normalizedText = patchReview.text.replace(/\r\n/g, '\n');
+          return renderMarkdown(`\`\`\`${fenceLang}\n${normalizedText}\n\`\`\``);
+        })()
+      : '';
+
+  const proposalContent = shouldAnimateRef.current ? (
+    <TypingRevealHtml
+      revealKey={`${message.id}:${(patchReview as any).text?.length ?? 0}`}
+      html={proposalHtml}
+    />
+  ) : (
+    <div dangerouslySetInnerHTML={{ __html: proposalHtml }} />
+  );
+
+  return (
+    <div class="ageaf-patch-review">
+      <div class="ageaf-patch-review__header">
+        <div class="ageaf-patch-review__title">
+          {title}
+          {fileLabel ? <span> · {fileLabel}</span> : null}
+        </div>
+        <div class="ageaf-patch-review__actions">
+          {status === 'pending' ? (
+            <>
+              <button
+                class="ageaf-panel__apply"
+                type="button"
+                disabled={!canAct || Boolean(error)}
+                onClick={onAccept}
+              >
+                Accept
+              </button>
+              <button
+                class="ageaf-panel__apply is-secondary"
+                type="button"
+                disabled={busy}
+                onClick={onReject}
+              >
+                Reject
+              </button>
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      {error ? (
+        <div class="ageaf-patch-review__warning">
+          <span>{error}</span>
+          <button class="ageaf-panel__apply is-secondary" type="button" onClick={onCopy}>
+            {copied ? <CheckIcon /> : <CopyIcon />}
+            <span>Copy proposed text</span>
+          </button>
+        </div>
+      ) : null}
+
+      {patchReview.kind === 'replaceRangeInFile' ? (
+        <DiffReview
+          oldText={patchReview.expectedOldText}
+          newText={patchReview.text}
+          fileName={patchReview.filePath}
+          animate={shouldAnimateRef.current}
+        />
+      ) : patchReview.kind === 'replaceSelection' ? (
+        <DiffReview
+          oldText={patchReview.selection}
+          newText={patchReview.text}
+          fileName={patchReview.fileName ?? undefined}
+          animate={shouldAnimateRef.current}
+        />
+      ) : null}
+
+      {'text' in patchReview ? (
+        <div class="ageaf-patch-review__proposal">
+          <div class="ageaf-patch-review__proposal-title">Proposed text</div>
+          <div class="ageaf-message__quote-block ageaf-patch-review__proposal-quote">
+            <div class="ageaf-message__quote-lang">
+              {(() => {
+                const file =
+                  patchReview.kind === 'replaceRangeInFile'
+                    ? patchReview.filePath
+                    : patchReview.kind === 'replaceSelection'
+                      ? patchReview.fileName ?? 'selection.tex'
+                      : 'snippet.tex';
+                const ext = (file.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
+                if (ext === 'tex') return 'LATEX';
+                return ext ? ext.toUpperCase() : 'TEXT';
+              })()}
+            </div>
+            <button
+              class="ageaf-message__copy"
+              type="button"
+              aria-label="Copy proposed text"
+              title="Copy proposed text"
+              onClick={onCopy}
+            >
+              {copied ? <CheckIcon /> : <CopyIcon />}
+            </button>
+            <div class="ageaf-message__quote-content">{proposalContent}</div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+const RewriteIcon = () => (
+  <svg
+    class="ageaf-toolbar-icon"
+    viewBox="0 0 20 20"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <path d="M3 14.5h8M3 10.5h11M3 6.5h7" />
+    <path d="M15.5 13.5l3 3-3 3" />
+  </svg>
+);
+
+const AttachIcon = () => (
+  <svg
+    class="ageaf-toolbar-icon"
+    viewBox="0 0 20 20"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <path d="M10.5 4v8.5a3 3 0 01-6 0V4.5a2 2 0 014 0V12" />
   </svg>
 );
 
@@ -356,7 +567,6 @@ const Panel = () => {
   const [currentThinkingTokens, setCurrentThinkingTokens] = useState<number | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [yoloMode, setYoloMode] = useState(true);
-  const [autoCompactEnabled, setAutoCompactEnabled] = useState(false);
   const [copiedItems, setCopiedItems] = useState<Record<string, boolean>>({});
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([]);
   const imageAttachmentsRef = useRef<ImageAttachment[]>([]);
@@ -860,7 +1070,6 @@ const Panel = () => {
           setCurrentThinkingMode(getThinkingModeIdForCodexEffort(effort));
           setCurrentThinkingTokens(null);
           setYoloMode((options.openaiApprovalPolicy ?? 'never') === 'never');
-          setAutoCompactEnabled(options.autoCompactEnabled ?? false);
 
           // Update connection health - runtime is working since we got metadata
           lastHostOkAtRef.current = now;
@@ -917,7 +1126,6 @@ const Panel = () => {
             : (options.claudeMaxThinkingTokens ?? null)
         );
         setYoloMode(options.claudeYoloMode ?? true);
-        setAutoCompactEnabled(options.autoCompactEnabled ?? false);
 
         // Update connection health - runtime is working since we got metadata
         lastHostOkAtRef.current = now;
@@ -941,7 +1149,6 @@ const Panel = () => {
         setCurrentThinkingTokens(options.claudeMaxThinkingTokens ?? null);
         setCurrentModel(options.claudeModel ?? DEFAULT_MODEL_VALUE);
         setYoloMode(options.claudeYoloMode ?? true);
-        setAutoCompactEnabled(options.autoCompactEnabled ?? false);
       }
     };
 
@@ -2677,143 +2884,27 @@ const Panel = () => {
       const canAct = status === 'pending' && !busy;
       const copyId = `${message.id}-patch-proposal`;
 
-      const fileLabel =
-        patchReview.kind === 'replaceRangeInFile'
-          ? patchReview.filePath
-          : patchReview.kind === 'replaceSelection'
-            ? patchReview.fileName ?? 'selection.tex'
-            : null;
-
-      const title =
-        status === 'accepted'
-          ? 'Review changes · Accepted'
-          : status === 'rejected'
-            ? 'Review changes · Rejected'
-            : 'Review changes';
-
       return (
-        <div class="ageaf-patch-review">
-          <div class="ageaf-patch-review__header">
-            <div class="ageaf-patch-review__title">
-              {title}
-              {fileLabel ? <span> · {fileLabel}</span> : null}
-            </div>
-            <div class="ageaf-patch-review__actions">
-              {status === 'pending' ? (
-                <>
-                  <button
-                    class="ageaf-panel__apply"
-                    type="button"
-                    disabled={!canAct || Boolean(error)}
-                    onClick={() => void onAcceptPatchReviewMessage(message.id)}
-                  >
-                    Accept
-                  </button>
-                  <button
-                    class="ageaf-panel__apply is-secondary"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => onRejectPatchReviewMessage(message.id)}
-                  >
-                    Reject
-                  </button>
-                </>
-              ) : null}
-            </div>
-          </div>
-
-          {error ? (
-            <div class="ageaf-patch-review__warning">
-              <span>{error}</span>
-              <button
-                class="ageaf-panel__apply is-secondary"
-                type="button"
-                onClick={() => {
-                  void (async () => {
-                    const didCopy = await copyToClipboard(
-                      'text' in patchReview ? patchReview.text : ''
-                    );
-                    if (didCopy) markCopied(copyId);
-                  })();
-                }}
-              >
-                {copiedItems[copyId] ? <CheckIcon /> : <CopyIcon />}
-                <span>Copy proposed text</span>
-              </button>
-            </div>
-          ) : null}
-
-          {patchReview.kind === 'replaceRangeInFile' ? (
-            <DiffReview
-              oldText={patchReview.expectedOldText}
-              newText={patchReview.text}
-              fileName={patchReview.filePath}
-            />
-          ) : patchReview.kind === 'replaceSelection' ? (
-            <DiffReview
-              oldText={patchReview.selection}
-              newText={patchReview.text}
-              fileName={patchReview.fileName ?? undefined}
-            />
-          ) : null}
-
-          {'text' in patchReview ? (
-            <div class="ageaf-patch-review__proposal">
-              <div class="ageaf-patch-review__proposal-title">Proposed text</div>
-              <div class="ageaf-message__quote-block ageaf-patch-review__proposal-quote">
-                <div class="ageaf-message__quote-lang">
-                  {(() => {
-                    const file =
-                      patchReview.kind === 'replaceRangeInFile'
-                        ? patchReview.filePath
-                        : patchReview.kind === 'replaceSelection'
-                          ? patchReview.fileName ?? 'selection.tex'
-                          : 'snippet.tex';
-                    const ext = (file.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
-                    if (ext === 'tex') return 'LATEX';
-                    return ext ? ext.toUpperCase() : 'TEXT';
-                  })()}
-                </div>
-                <button
-                  class="ageaf-message__copy"
-                  type="button"
-                  aria-label="Copy proposed text"
-                  title="Copy proposed text"
-                  onClick={() => {
-                    const copyId = `${message.id}-patch-proposal`;
-                    void (async () => {
-                      const success = await copyToClipboard(patchReview.text);
-                      if (success) markCopied(copyId);
-                    })();
-                  }}
-                >
-                  {copiedItems[`${message.id}-patch-proposal`] ? <CheckIcon /> : <CopyIcon />}
-                </button>
-                <div class="ageaf-message__quote-content">
-                  <div
-                    dangerouslySetInnerHTML={{
-                      __html: (() => {
-                        const file =
-                          patchReview.kind === 'replaceRangeInFile'
-                            ? patchReview.filePath
-                            : patchReview.kind === 'replaceSelection'
-                              ? patchReview.fileName ?? 'selection.tex'
-                              : 'snippet.tex';
-                        const ext = (file.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
-                        const fenceLang =
-                          ext === 'tex' ? 'latex-raw' : ext ? ext : 'text';
-                        const normalizedText = patchReview.text.replace(/\r\n/g, '\n');
-                        return renderMarkdown(
-                          `\`\`\`${fenceLang}\n${normalizedText}\n\`\`\``
-                        );
-                      })(),
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          ) : null}
-        </div>
+        <PatchReviewCard
+          message={message}
+          patchReview={patchReview}
+          status={status}
+          error={error}
+          busy={busy}
+          canAct={canAct}
+          copied={Boolean(copiedItems[copyId])}
+          onCopy={() => {
+            void (async () => {
+              const didCopy = await copyToClipboard('text' in patchReview ? patchReview.text : '');
+              if (didCopy) markCopied(copyId);
+            })();
+          }}
+          onAccept={() => void onAcceptPatchReviewMessage(message.id)}
+          onReject={() => onRejectPatchReviewMessage(message.id)}
+          markAnimated={() =>
+            updatePatchReviewMessage(message.id, (next) => ({ ...(next as any), hasAnimated: true }))
+          }
+        />
       );
     }
 
@@ -3274,12 +3365,6 @@ const Panel = () => {
     await persistRuntimeOptions({ claudeYoloMode: next });
   };
 
-  const onToggleAutoCompact = async () => {
-    const next = !autoCompactEnabled;
-    setAutoCompactEnabled(next);
-    await persistRuntimeOptions({ autoCompactEnabled: next });
-  };
-
   const getRuntimeConfig = async () => {
     const options = await getOptions();
     if (chatProvider === 'codex') {
@@ -3337,113 +3422,6 @@ const Panel = () => {
           conversationId: conversationId ?? undefined,
         },
       };
-    }
-  };
-
-	  const onManualCompact = async () => {
-	    if (!chatConversationIdRef.current) {
-	      return;
-	    }
-
-    // Confirmation dialog
-    const confirmed = window.confirm(
-      'Compact this conversation?\n\n' +
-      'Chat history will be summarised to reduce context usage. This action cannot be undone.'
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
-    setSending(true);
-
-    // Add system message to chat
-    setMessages((prev) => [
-      ...prev,
-      createMessage({
-        role: 'system',
-        content: 'Chat compact in progress. Chat history will be summarised.'
-      })
-    ]);
-
-	    try {
-	      const options = await getOptions();
-	      const runtime = await getRuntimeConfig();
-	      const { jobId } = await createJob(options, {
-	        provider: chatProvider,
-	        action: 'chat',
-	        compaction: { requestCompaction: true },
-	        runtime,
-	        userSettings: { autoCompactEnabled: true },
-	      });
-
-	      await streamJobEvents(options, jobId, (event: JobEvent) => {
-	        if (event.event === 'usage') {
-	          const usedTokens = Number(event.data?.usedTokens ?? 0);
-	          const contextWindow = Number(event.data?.contextWindow ?? 0) || null;
-	          const normalized = normalizeContextUsage({ usedTokens, contextWindow });
-	          setContextUsage(normalized);
-
-	          const conversationId = chatConversationIdRef.current;
-	          if (conversationId) {
-	            const state = chatStateRef.current;
-	            if (state) {
-	              const nextUsage: StoredContextUsage = {
-	                usedTokens: normalized.usedTokens,
-	                contextWindow: normalized.contextWindow,
-	                percentage: normalized.percentage ?? null,
-	                updatedAt: Date.now(),
-	              };
-	              chatStateRef.current = setConversationContextUsage(
-	                state,
-	                chatProvider,
-	                conversationId,
-	                nextUsage
-	              );
-	              scheduleChatSave();
-	            }
-	          }
-	          return;
-	        }
-
-	        if (event.event === 'done') {
-	          const status = event.data?.status ?? 'ok';
-	          if (status === 'ok') {
-	            setMessages((prev) => [
-	              ...prev,
-	              createMessage({
-	                role: 'system',
-	                content: 'Compaction complete. Context usage updated.',
-	              }),
-	            ]);
-	            void refreshContextUsage({ force: true });
-	            return;
-	          }
-
-	          const message =
-	            typeof event.data?.message === 'string' && event.data.message
-	              ? event.data.message
-	              : 'Unknown error';
-	          setMessages((prev) => [
-	            ...prev,
-	            createMessage({
-	              role: 'system',
-	              content: `Compaction failed: ${message}`,
-	            }),
-	          ]);
-	        }
-	      });
-	    } catch (error) {
-	      // Add error message to chat
-	      setMessages((prev) => [
-        ...prev,
-        createMessage({
-          role: 'system',
-          content: `Compaction failed: ${error instanceof Error ? error.message : 'Unknown error'}`
-        })
-      ]);
-    } finally {
-      setSending(false);
     }
   };
 
@@ -4022,7 +4000,6 @@ const Panel = () => {
               userSettings: {
                 displayName: options.displayName,
                 customSystemPrompt: options.customSystemPrompt,
-                autoCompactEnabled: options.autoCompactEnabled,
               },
             }
           : {
@@ -4078,7 +4055,6 @@ const Panel = () => {
                 enableTools: options.enableTools,
                 enableCommandBlocklist: options.enableCommandBlocklist,
                 blockedCommandsUnix: options.blockedCommandsUnix,
-                autoCompactEnabled: options.autoCompactEnabled,
               },
             };
 
@@ -5345,16 +5321,6 @@ const Panel = () => {
               />
             </svg>
             <span class="ageaf-runtime__value">{usagePercent}%</span>
-            <button
-              type="button"
-              class="ageaf-runtime__compact-button"
-              onClick={onManualCompact}
-              disabled={isSending || !chatConversationIdRef.current}
-              data-tooltip="Compact conversation"
-              aria-label="Compact conversation"
-            >
-              ⚡
-            </button>
           </div>
 	          <button
 	            class={`ageaf-runtime__yolo ${yoloMode ? 'is-on' : ''}`}
@@ -5430,7 +5396,7 @@ const Panel = () => {
                 aria-label="Rewrite selection"
                 data-tooltip="Rewrite selection"
               >
-                ✍
+                <RewriteIcon />
               </button>
               <button
                 class="ageaf-toolbar-button"
@@ -5439,7 +5405,7 @@ const Panel = () => {
                 aria-label="Attach files"
                 data-tooltip="Attach files"
               >
-                📁
+                <AttachIcon />
               </button>
               <div class="ageaf-toolbar-menu">
                 <button
@@ -6009,21 +5975,6 @@ const Panel = () => {
                       />
                       <p class="ageaf-settings__hint">
                         Patterns to block on Unix, one per line. Supports regex.
-                      </p>
-
-                      <label class="ageaf-settings__checkbox">
-                        <input
-                          type="checkbox"
-                          checked={settings.autoCompactEnabled ?? false}
-                          onChange={(event) =>
-                            updateSettings({ autoCompactEnabled: event.currentTarget.checked })
-                          }
-                        />
-                        Auto-compact at 85% context usage
-                      </label>
-                      <p class="ageaf-settings__hint">
-                        Automatically compacts conversation when approaching context limit.
-                        Sends /compact command to the provider before your request.
                       </p>
                     </div>
                   ) : null}

@@ -31,11 +31,13 @@ export type StoredPatchReview =
       text: string;
       status?: StoredPatchReviewStatus;
       fileName?: string;
+      hasAnimated?: boolean;
     }
   | {
       kind: 'insertAtCursor';
       text: string;
       status?: StoredPatchReviewStatus;
+      hasAnimated?: boolean;
     }
   | {
       kind: 'replaceRangeInFile';
@@ -45,6 +47,7 @@ export type StoredPatchReview =
       from?: number;
       to?: number;
       status?: StoredPatchReviewStatus;
+      hasAnimated?: boolean;
     };
 
 export type StoredMessage = {
@@ -219,6 +222,8 @@ function normalizeStoredPatchReview(raw: any): StoredPatchReview | null {
   if (!raw || typeof raw !== 'object') return null;
   const kind = raw.kind;
   const status = normalizePatchReviewStatus(raw.status);
+  const hasAnimatedRaw = raw.hasAnimated ?? raw.has_animated;
+  const hasAnimated = typeof hasAnimatedRaw === 'boolean' ? hasAnimatedRaw : undefined;
 
   if (kind === 'replaceSelection') {
     const selection = typeof raw.selection === 'string' ? raw.selection : null;
@@ -246,6 +251,7 @@ function normalizeStoredPatchReview(raw: any): StoredPatchReview | null {
       text,
       ...(status ? { status } : {}),
       ...(fileName ? { fileName } : {}),
+      ...(hasAnimated ? { hasAnimated } : {}),
     };
   }
 
@@ -256,6 +262,7 @@ function normalizeStoredPatchReview(raw: any): StoredPatchReview | null {
       kind,
       text,
       ...(status ? { status } : {}),
+      ...(hasAnimated ? { hasAnimated } : {}),
     };
   }
 
@@ -287,6 +294,7 @@ function normalizeStoredPatchReview(raw: any): StoredPatchReview | null {
       ...(typeof from === 'number' ? { from } : {}),
       ...(typeof to === 'number' ? { to } : {}),
       ...(status ? { status } : {}),
+      ...(hasAnimated ? { hasAnimated } : {}),
     };
   }
 
