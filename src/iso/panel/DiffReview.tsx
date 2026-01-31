@@ -11,6 +11,7 @@ type Props = {
   fileName?: string;
   animate?: boolean;
   wrap?: boolean;
+  startLineNumber?: number;
 };
 
 if (!ResolvedThemes.has('github-dark')) {
@@ -73,7 +74,7 @@ function injectShadowOverrides(shadowRoot: ShadowRoot, options: { wrap: boolean 
          space for the per-hunk copy button to the left of the line number. */
       [data-column-number] {
         position: relative !important;
-        padding-left: 24px !important;
+        padding-left: 32px !important;
       }
 
       /* Tighten the gap between number and content a bit. */
@@ -161,6 +162,64 @@ function normalizeCollapsedUnchangedIndicators(shadowRoot: ShadowRoot) {
     const match = raw.match(/(\d+)/);
     if (!match) return;
     label.textContent = `— ${match[1]} unchanged lines hidden —`;
+  });
+}
+
+function adjustLineNumbers(shadowRoot: ShadowRoot, startLineNumber: number) {
+  if (!startLineNumber || startLineNumber <= 0) return;
+
+  // Find all line number elements - the library uses [data-line-number-content] or direct text in [data-column-number]
+  const lineNumberElements = shadowRoot.querySelectorAll('[data-column-number]');
+  
+  lineNumberElements.forEach((el) => {
+    // Try to find [data-line-number-content] first, then fall back to the column element itself
+    const lineNumberContent = el.querySelector('[data-line-number-content]') as HTMLElement | null;
+    const target = lineNumberContent ?? (el as HTMLElement);
+    
+    if (!target) return;
+    
+    // Get the text content - might be in a child node or directly in the element
+    let text = target.textContent?.trim() ?? '';
+    
+    // If empty, try to find text in child nodes
+    if (!text) {
+      const textNode = Array.from(target.childNodes).find(
+        (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim()
+      );
+      text = textNode?.textContent?.trim() ?? '';
+    }
+    
+    if (!text) return;
+    
+    // Parse line numbers - could be "123" or "123-456" for ranges, or might have whitespace
+    const match = text.match(/^(\d+)(?:-(\d+))?$/);
+    if (!match) return;
+    
+    const start = Number.parseInt(match[1], 10);
+    const end = match[2] ? Number.parseInt(match[2], 10) : null;
+    
+    if (!Number.isFinite(start) || start <= 0) return;
+    
+    // Adjust by adding the offset (subtract 1 because the diff starts at line 1, but we want to add the offset)
+    const adjustedStart = start + startLineNumber - 1;
+    const adjustedEnd = end ? end + startLineNumber - 1 : null;
+    
+    // Update the display
+    const newText = adjustedEnd ? `${adjustedStart}-${adjustedEnd}` : String(adjustedStart);
+    
+    if (lineNumberContent) {
+      lineNumberContent.textContent = newText;
+    } else {
+      // Replace the text node if it exists, otherwise set textContent
+      const textNode = Array.from(target.childNodes).find(
+        (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim()
+      );
+      if (textNode) {
+        textNode.textContent = newText;
+      } else {
+        target.textContent = newText;
+      }
+    }
   });
 }
 
@@ -331,6 +390,7 @@ export function DiffReview({
   fileName = 'selection.tex',
   animate = true,
   wrap = false,
+  startLineNumber,
 }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const renderSeqRef = useRef(0);
@@ -412,6 +472,11 @@ export function DiffReview({
 
          injectShadowOverrides(shadowRoot, { wrap });
         normalizeCollapsedUnchangedIndicators(shadowRoot);
+        
+        // Adjust line numbers to show absolute line numbers from the file
+        if (startLineNumber) {
+          adjustLineNumbers(shadowRoot, startLineNumber);
+        }
 
          // Inject copy buttons on added line segments (modal only).
          if (wrap) {
@@ -445,7 +510,7 @@ export function DiffReview({
       typingControllerRef.current?.cancel();
       typingControllerRef.current = null;
     };
-  }, [oldText, newText, fileName]);
+  }, [oldText, newText, fileName, startLineNumber]);
 
   return <div class="ageaf-diff-review" ref={wrapperRef} />;
 }

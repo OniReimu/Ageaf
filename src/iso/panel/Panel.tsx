@@ -260,6 +260,25 @@ const PatchReviewCard = ({
         ? 'Review changes · Rejected'
         : 'Review changes';
 
+  // Calculate starting line number for absolute line number display
+  const calculateStartLineNumber = (): number | undefined => {
+    if (patchReview.kind === 'replaceSelection') {
+      // For replaceSelection, use lineFrom if available (this is the absolute line number)
+      return patchReview.lineFrom;
+    } else if (patchReview.kind === 'replaceRangeInFile') {
+      // For replaceRangeInFile, the 'from' offset is relative to the full file, not the snippet.
+      // We don't have the full file content here, so we can't calculate the absolute line number.
+      // The diff library will show relative line numbers (1, 2, 3...) which is acceptable
+      // since we're showing a snippet diff, not the full file diff.
+      // If we need absolute line numbers for replaceRangeInFile, we'd need to pass
+      // the starting line number from the host when creating the patch.
+      return undefined;
+    }
+    return undefined;
+  };
+
+  const startLineNumber = calculateStartLineNumber();
+
   return (
     <div class="ageaf-patch-review">
       <div class="ageaf-patch-review__header">
@@ -337,6 +356,7 @@ const PatchReviewCard = ({
           newText={patchReview.text}
           fileName={patchReview.filePath}
           animate={shouldAnimateRef.current}
+          startLineNumber={startLineNumber}
         />
       ) : patchReview.kind === 'replaceSelection' ? (
         <DiffReview
@@ -344,6 +364,7 @@ const PatchReviewCard = ({
           newText={patchReview.text}
           fileName={patchReview.fileName ?? undefined}
           animate={shouldAnimateRef.current}
+          startLineNumber={startLineNumber}
         />
       ) : null}
 
@@ -375,7 +396,8 @@ const PatchReviewCard = ({
                   newText={patchReview.text}
                   fileName={patchReview.filePath}
                   animate={false}
-                   wrap={true}
+                  wrap={true}
+                  startLineNumber={startLineNumber}
                 />
               ) : patchReview.kind === 'replaceSelection' ? (
                 <DiffReview
@@ -383,7 +405,8 @@ const PatchReviewCard = ({
                   newText={patchReview.text}
                   fileName={patchReview.fileName ?? undefined}
                   animate={false}
-                   wrap={true}
+                  wrap={true}
+                  startLineNumber={startLineNumber}
                 />
               ) : null}
             </div>

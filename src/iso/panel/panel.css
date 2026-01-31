@@ -483,7 +483,7 @@
 .ageaf-diff-modal__content {
   flex: 1;
   /* Keep a stable bottom inset regardless of modal height. */
-  padding: 16px 20px 16px 20px;
+  padding: 16px 20px 16px 32px;
   /* Let the diff card handle scrolling so its bottom border stays aligned. */
   overflow: hidden;
   min-height: 0;
