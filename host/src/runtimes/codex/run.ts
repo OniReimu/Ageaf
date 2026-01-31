@@ -172,6 +172,10 @@ function buildPrompt(
   const custom = payload.userSettings?.customSystemPrompt?.trim();
 
   const hasOverleafFileBlocks = message.includes('[Overleaf file:');
+  const hasSelection =
+    contextForPrompt &&
+    typeof contextForPrompt.selection === 'string' &&
+    contextForPrompt.selection.trim().length > 0;
 
   const rewriteInstructions = [
     'You are rewriting a selected LaTeX region from Overleaf.',
@@ -190,6 +194,24 @@ function buildPrompt(
     '- Do NOT wrap the markers in Markdown code fences.',
   ].join('\n');
 
+  const patchGuidance = [
+    'Patch proposals (optional):',
+    '- If you want the user to apply edits in Overleaf, include exactly one fenced code block labeled `ageaf-patch` containing ONLY a JSON object matching one of:',
+    '- { "kind":"replaceSelection", "text":"..." }',
+    '- { "kind":"replaceRangeInFile", "filePath":"main.tex", "expectedOldText":"...", "text":"...", "from":123, "to":456 } (from/to optional but if used must both be provided)',
+    '- { "kind":"insertAtCursor", "text":"..." }',
+    '- Put all explanation/change notes outside the `ageaf-patch` code block.',
+    '- Do NOT include the full rewritten text outside the patch (the UI will show it separately).',
+  ].join('\n');
+
+  const selectionPatchGuidance = hasSelection
+    ? [
+        'Selection edits:',
+        '- If `Context.selection` is present and the user is asking you to proofread/rewrite/edit the selection, prefer emitting a `ageaf-patch` with { "kind":"replaceSelection", "text":"..." }.',
+        '- Keep the visible response short (change notes only).',
+      ].join('\n')
+    : '';
+
   const fileUpdateInstructions = [
     'Overleaf file edits:',
     '- The user may include one or more `[Overleaf file: <path>]` blocks showing the current file contents.',
@@ -206,6 +228,8 @@ function buildPrompt(
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     'Respond in Markdown, keep it concise.',
+    action === 'chat' ? patchGuidance : '',
+    action === 'chat' ? selectionPatchGuidance : '',
     `Action: ${action}`,
     contextForPrompt ? `Context:\n${JSON.stringify(contextForPrompt, null, 2)}` : '',
     action === 'rewrite' ? rewriteInstructions : '',
@@ -214,10 +238,6 @@ function buildPrompt(
 
   if (custom) {
     baseParts.push(`\nAdditional instructions:\n${custom}`);
-  }
-
-  if (message) {
-    baseParts.push(`\nUser message:\n${message}`);
   }
 
   return baseParts.join('\n\n');

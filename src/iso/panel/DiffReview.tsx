@@ -14,6 +14,20 @@ if (!ResolvedThemes.has('github-dark')) {
   ResolvedThemes.set('github-dark', githubDark);
 }
 
+function formatElapsed(seconds: number) {
+  const s = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(s / 3600);
+  const minutes = Math.floor((s % 3600) / 60);
+  const secs = s % 60;
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${String(secs).padStart(2, '0')}s`;
+  }
+  return `${secs}s`;
+}
+
 function renderFallback(
   wrapper: HTMLElement,
   input: { oldText: string; newText: string; title: string }
@@ -84,13 +98,35 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex' }: Pro
   const renderSeqRef = useRef(0);
 
   useEffect(() => {
-    if (!wrapperRef.current) return;
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
     const isSame = oldText === newText;
     const currentRender = renderSeqRef.current + 1;
     renderSeqRef.current = currentRender;
     let cancelled = false;
 
     void (async () => {
+      const startedAt = Date.now();
+      // Show a lightweight progress line immediately so the UI doesn't feel stuck.
+      wrapper.innerHTML = '';
+      const statusEl = document.createElement('div');
+      statusEl.className = 'ageaf-diff-review__status';
+      statusEl.textContent = `Rendering diff · ${formatElapsed(0)}`;
+      wrapper.appendChild(statusEl);
+
+      const host = document.createElement('div');
+      host.className = 'ageaf-diff-review__host';
+      wrapper.appendChild(host);
+
+      const tickId = window.setInterval(() => {
+        if (cancelled || renderSeqRef.current !== currentRender) {
+          window.clearInterval(tickId);
+          return;
+        }
+        const elapsed = (Date.now() - startedAt) / 1000;
+        statusEl.textContent = `Rendering diff · ${formatElapsed(elapsed)}`;
+      }, 250);
+
       try {
         const fileDiff = setLanguageOverride(
           parseDiffFromFile(
@@ -110,9 +146,8 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex' }: Pro
           },
         });
 
+        window.clearInterval(tickId);
         if (cancelled || renderSeqRef.current !== currentRender) return;
-        const wrapper = wrapperRef.current;
-        if (!wrapper) return;
 
         // `data-diffs` appears in the embedded CSS too; ensure we have the actual container.
         if (!html || !html.includes('data-diffs=\"\"')) {
@@ -124,21 +159,16 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex' }: Pro
           return;
         }
 
-        let host = wrapper.querySelector<HTMLElement>('.ageaf-diff-review__host');
-        if (!host) {
-          host = document.createElement('div');
-          host.className = 'ageaf-diff-review__host';
-          wrapper.innerHTML = '';
-          wrapper.appendChild(host);
-        }
+        statusEl.remove();
         const shadowRoot = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
         shadowRoot.innerHTML = html;
       } catch (error) {
+        window.clearInterval(tickId);
         console.error('[Ageaf] Diff render failed', error);
-        const wrapper = wrapperRef.current;
-        if (!wrapper) return;
+        const wrapperNow = wrapperRef.current;
+        if (!wrapperNow) return;
         if (cancelled || renderSeqRef.current !== currentRender) return;
-        renderFallback(wrapper, {
+        renderFallback(wrapperNow, {
           title: oldText === newText ? 'No changes' : 'Diff unavailable',
           oldText,
           newText,

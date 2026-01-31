@@ -3449,6 +3449,20 @@ const Panel = () => {
 
   const thinkingEnabled = currentThinkingMode !== 'off';
 
+  const formatElapsed = (seconds: number) => {
+    const s = Math.max(0, Math.floor(seconds));
+    const hours = Math.floor(s / 3600);
+    const minutes = Math.floor((s % 3600) / 60);
+    const secs = s % 60;
+    if (hours > 0) {
+      return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`;
+    }
+    if (minutes > 0) {
+      return `${minutes}m ${String(secs).padStart(2, '0')}s`;
+    }
+    return `${secs}s`;
+  };
+
   const stopThinkingTimer = (conversationId: string) => {
     const sessionState = getSessionState(conversationId);
     if (sessionState.thinkingTimerId !== null) {
@@ -3468,7 +3482,7 @@ const Panel = () => {
     if (!thinkingEnabled) {
       setStreamingState('Working · ESC to interrupt', true);
       } else {
-    setStreamingState('Thinking 0s · ESC to interrupt', true);
+    setStreamingState(`Thinking ${formatElapsed(0)} · ESC to interrupt`, true);
       }
     }
 
@@ -3480,7 +3494,7 @@ const Panel = () => {
 
       // Only update UI if this is still the current session
       if (conversationId === chatConversationIdRef.current) {
-        setStreamingStatus(`Thinking ${seconds}s · ESC to interrupt`);
+        setStreamingStatus(`Thinking ${formatElapsed(seconds)} · ESC to interrupt`);
       }
     }, 250);
   };
@@ -4368,6 +4382,34 @@ const Panel = () => {
     const hasImages = imageList.length > 0;
     const hasFiles = fileList.length > 0;
     if (!bridge || (!hasContent && !hasImages && !hasFiles)) return;
+
+    // Allow users to approve a pending tool request by pasting a request id.
+    // Example: "Get on with Request ID: f9e2dd31-000b-469f-be7a-939230e455c7"
+    if (!hasImages && !hasFiles) {
+      const match = text.trim().match(/^Get on with Request ID:\s*(.+)\s*$/i);
+      if (match) {
+        const requestId = match[1]?.trim();
+        if (requestId) {
+          const pending = toolRequests.find(
+            (req) => String(req.requestId) === requestId && req.kind === 'approval'
+          );
+          clearEditor();
+          scrollToBottom();
+          if (pending) {
+            void respondToToolRequest(pending, 'accept');
+          } else {
+            setMessages((prev) => [
+              ...prev,
+              createMessage({
+                role: 'system',
+                content: `No pending approval found for request id: ${requestId}`,
+              }),
+            ]);
+          }
+          return;
+        }
+      }
+    }
 
     const conversationId = chatConversationIdRef.current;
     if (!conversationId) return;

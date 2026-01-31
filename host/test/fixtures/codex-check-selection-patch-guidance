@@ -1,0 +1,145 @@
+#!/usr/bin/env node
+
+import { createInterface } from "node:readline";
+
+function write(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+function hasOwn(value, key) {
+  return (
+    value &&
+    typeof value === "object" &&
+    Object.prototype.hasOwnProperty.call(value, key)
+  );
+}
+
+function requireKeys(value, keys) {
+  return keys.every((key) => hasOwn(value, key));
+}
+
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("0.0.0-test\n");
+  process.exit(0);
+}
+
+if (args[0] !== "app-server") {
+  process.stderr.write(`Unknown args: ${args.join(" ")}\n`);
+  process.exit(1);
+}
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+let nextThread = 0;
+const knownThreads = new Set();
+
+rl.on("line", (line) => {
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
+
+  if (!msg || typeof msg !== "object") return;
+
+  if (msg.id && msg.method === "initialize") {
+    write({ id: msg.id, result: { ok: true } });
+    return;
+  }
+
+  if (msg.method === "initialized") {
+    return;
+  }
+
+  if (msg.id && msg.method === "model/list") {
+    const required = ["cursor", "limit"];
+    if (!requireKeys(msg.params, required)) {
+      write({ id: msg.id, error: { message: "invalid model/list params" } });
+      return;
+    }
+    write({ id: msg.id, result: { data: [], nextCursor: null } });
+    return;
+  }
+
+  if (msg.id && msg.method === "thread/start") {
+    const required = [
+      "model",
+      "modelProvider",
+      "cwd",
+      "approvalPolicy",
+      "sandbox",
+      "config",
+      "baseInstructions",
+      "developerInstructions",
+      "experimentalRawEvents",
+    ];
+    if (!requireKeys(msg.params, required)) {
+      write({ id: msg.id, error: { message: "invalid thread/start params" } });
+      return;
+    }
+    nextThread += 1;
+    const threadId = `thread-${nextThread}`;
+    knownThreads.add(threadId);
+    write({ id: msg.id, result: { thread: { id: threadId } } });
+    return;
+  }
+
+  if (msg.id && msg.method === "turn/start") {
+    const required = [
+      "threadId",
+      "input",
+      "cwd",
+      "approvalPolicy",
+      "sandboxPolicy",
+      "model",
+      "effort",
+      "summary",
+      "outputSchema",
+      "collaborationMode",
+    ];
+    if (!requireKeys(msg.params, required)) {
+      write({ id: msg.id, error: { message: "invalid turn/start params" } });
+      return;
+    }
+    const threadId = msg.params?.threadId ?? msg.params?.thread_id ?? "thread-1";
+    if (!knownThreads.has(threadId)) {
+      write({ id: msg.id, error: { message: "unknown threadId" } });
+      write({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
+      return;
+    }
+
+    let promptText = "";
+    const input = msg.params?.input;
+    if (Array.isArray(input)) {
+      const textItem = input.find(
+        (entry) => entry && typeof entry === "object" && entry.type === "text"
+      );
+      if (typeof textItem?.text === "string") promptText = textItem.text;
+    }
+
+    const hasGuidance =
+      promptText.includes("ageaf-patch") &&
+      promptText.includes("replaceSelection") &&
+      promptText.includes("Selection edits");
+    write({ id: msg.id, result: { ok: true } });
+    write({ method: "turn/started", params: { threadId, turn: { id: "turn-1" } } });
+    write({
+      method: "item/agentMessage/delta",
+      params: {
+        threadId,
+        itemId: "item-1",
+        delta: hasGuidance
+          ? "HAS_SELECTION_PATCH_GUIDANCE"
+          : "MISSING_SELECTION_PATCH_GUIDANCE",
+      },
+    });
+    write({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
+    return;
+  }
+
+  if (msg.id) {
+    write({ id: msg.id, result: { ok: true } });
+  }
+});
+
