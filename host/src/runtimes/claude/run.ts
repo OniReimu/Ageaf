@@ -4,6 +4,7 @@ import { runClaudeText, type ClaudeRuntimeConfig } from './agent.js';
 import { getClaudeRuntimeStatus } from './client.js';
 import type { CommandBlocklistConfig } from './safety.js';
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { buildReplaceRangePatchesFromFileUpdates } from '../../patch/fileUpdate.js';
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -169,6 +170,7 @@ export async function runClaudeJob(
   const messageWithAttachments = [message, attachmentBlock]
     .filter((part) => typeof part === 'string' && part.trim().length > 0)
     .join('\n\n');
+  const hasOverleafFileBlocks = messageWithAttachments.includes('[Overleaf file:');
   const contextWithAttachments =
     payload.context && typeof payload.context === 'object'
       ? { ...(payload.context as Record<string, unknown>), message: messageWithAttachments }
@@ -200,6 +202,17 @@ If asked about the model/runtime, use this note and do not guess.`;
     '- Put all explanation/change notes outside the `ageaf-patch` code block.',
     '- Also show the proposed new text to the user separately (e.g., in a ` ```latex ` code block).',
   ].join('\n');
+  const fileUpdateGuidance = [
+    'Overleaf file edits:',
+    '- The user may include one or more `[Overleaf file: <path>]` blocks showing the current file contents.',
+    '- If the user asks you to edit/proofread/rewrite such a file, append the UPDATED FULL FILE CONTENTS inside these markers at the VERY END of your message:',
+    '<<<AGEAF_FILE_UPDATE path="main.tex">>>',
+    '... full updated file contents here ...',
+    '<<<AGEAF_FILE_UPDATE_END>>>',
+    '- Do not wrap these markers in Markdown fences.',
+    '- Do not output anything after the end marker.',
+    '- Put change notes in normal Markdown BEFORE the markers.',
+  ].join('\n');
   const greetingGuidance = [
     'Greeting behavior:',
     '- If the user message is a short greeting or acknowledgement, reply with a brief greeting (1 sentence).',
@@ -213,6 +226,7 @@ If asked about the model/runtime, use this note and do not guess.`;
     'You are Ageaf, a concise Overleaf assistant.',
     responseGuidance,
     patchGuidance,
+    hasOverleafFileBlocks ? fileUpdateGuidance : '',
     greetingMode ? greetingGuidance : 'If the user message is not a greeting, respond normally but stay concise.',
   ];
   
@@ -232,12 +246,44 @@ If asked about the model/runtime, use this note and do not guess.`;
 
   const enableTools = payload.userSettings?.enableTools ?? false;
 
-  await runClaudeText({
-    prompt:
-      images.length > 0 ? buildImagePromptStream(promptText, images) : promptText,
-    emitEvent,
+  let doneEvent: JobEvent | null = null;
+  let patchEmitted = false;
+  const wrappedEmit: EmitEvent = (event) => {
+    if (event.event === 'done') {
+      doneEvent = event;
+      return;
+    }
+    if (event.event === 'patch') {
+      patchEmitted = true;
+    }
+    emitEvent(event);
+  };
+
+  const resultText = await runClaudeText({
+    prompt: images.length > 0 ? buildImagePromptStream(promptText, images) : promptText,
+    emitEvent: wrappedEmit,
     runtime: payload.runtime?.claude,
     safety,
     enableTools,
   });
+
+  const status = (doneEvent as any)?.data?.status;
+  if (status && status !== 'ok') {
+    emitEvent(doneEvent as JobEvent);
+    return;
+  }
+
+  if (!patchEmitted && hasOverleafFileBlocks && typeof resultText === 'string' && resultText) {
+    const patches = buildReplaceRangePatchesFromFileUpdates({
+      output: resultText,
+      message: messageWithAttachments,
+    });
+    for (const patch of patches) {
+      emitEvent({ event: 'patch', data: patch });
+      patchEmitted = true;
+      break;
+    }
+  }
+
+  emitEvent(doneEvent ?? { event: 'done', data: { status: 'ok' } });
 }

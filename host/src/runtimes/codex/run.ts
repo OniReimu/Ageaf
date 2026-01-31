@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { JobEvent } from '../../types.js';
 import { buildAttachmentBlock, getAttachmentLimits } from '../../attachments/textAttachments.js';
 import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
+import { buildReplaceRangePatchesFromFileUpdates } from '../../patch/fileUpdate.js';
 import { validatePatch } from '../../validate.js';
 import { getCodexAppServer } from './appServer.js';
 import { parseCodexTokenUsage } from './tokenUsage.js';
@@ -170,6 +171,8 @@ function buildPrompt(
   const message = contextMessage ?? getUserMessage(payload.context) ?? '';
   const custom = payload.userSettings?.customSystemPrompt?.trim();
 
+  const hasOverleafFileBlocks = message.includes('[Overleaf file:');
+
   const rewriteInstructions = [
     'You are rewriting a selected LaTeX region from Overleaf.',
     'Preserve LaTeX commands, citations (\\cite{}), labels (\\label{}), refs (\\ref{}), and math.',
@@ -187,12 +190,26 @@ function buildPrompt(
     '- Do NOT wrap the markers in Markdown code fences.',
   ].join('\n');
 
+  const fileUpdateInstructions = [
+    'Overleaf file edits:',
+    '- The user may include one or more `[Overleaf file: <path>]` blocks showing the current file contents.',
+    '- If the user asks you to edit/proofread/rewrite such a file, append the UPDATED FULL FILE CONTENTS inside these markers at the VERY END of your message:',
+    '<<<AGEAF_FILE_UPDATE path="main.tex">>>',
+    '... full updated file contents here ...',
+    '<<<AGEAF_FILE_UPDATE_END>>>',
+    '- Do not wrap these markers in Markdown fences.',
+    '- Do not output anything after the end marker.',
+    '- Put change notes in normal Markdown BEFORE the markers.',
+    '- Do NOT include the full updated file contents in the visible response (only inside the markers).',
+  ].join('\n');
+
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     'Respond in Markdown, keep it concise.',
     `Action: ${action}`,
     contextForPrompt ? `Context:\n${JSON.stringify(contextForPrompt, null, 2)}` : '',
     action === 'rewrite' ? rewriteInstructions : '',
+    hasOverleafFileBlocks ? fileUpdateInstructions : '',
   ].filter(Boolean);
 
   if (custom) {
@@ -297,7 +314,7 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
   const prompt = buildPrompt(payload, contextForPrompt);
   let done = false;
   const action = payload.action ?? 'chat';
-  const shouldHidePatchPayload = action === 'rewrite' || action === 'fix_error';
+  const shouldHidePatchPayload = true;
   const REWRITE_START = '<<<AGEAF_REWRITE>>>';
   const REWRITE_END = '<<<AGEAF_REWRITE_END>>>';
   const rewriteStartRe = /<<<\s*AGEAF_REWRITE\s*>>>/i;
@@ -306,7 +323,8 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
   let visibleBuffer = '';
   let patchPayloadStarted = false;
   let patchEmitted = false;
-  const patchPayloadStartRe = /```(?:ageaf[-_]?patch)|<<<\s*AGEAF_REWRITE\s*>>>/i;
+  const patchPayloadStartRe =
+    /```(?:ageaf[-_]?patch)|<<<\s*AGEAF_REWRITE\s*>>>|<<<\s*AGEAF_FILE_UPDATE\b/i;
   const HOLD_BACK_CHARS = 32;
   // Filled synchronously by the Promise executor below.
   // (Promise executors run immediately.)
@@ -443,6 +461,17 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
                   patchEmitted = true;
                 }
               }
+            }
+          }
+
+          if (!patchEmitted) {
+            const patches = buildReplaceRangePatchesFromFileUpdates({
+              output: fullText,
+              message: messageWithAttachments,
+            });
+            if (patches.length > 0) {
+              emitEvent({ event: 'patch', data: patches[0] });
+              patchEmitted = true;
             }
           }
           emitEvent({ event: 'done', data: { status: 'ok', threadId } });

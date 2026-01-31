@@ -1,0 +1,181 @@
+#!/usr/bin/env node
+
+import { createInterface } from "node:readline";
+
+function write(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+function hasOwn(value, key) {
+  return (
+    value &&
+    typeof value === "object" &&
+    Object.prototype.hasOwnProperty.call(value, key)
+  );
+}
+
+function requireKeys(value, keys) {
+  return keys.every((key) => hasOwn(value, key));
+}
+
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write("0.0.0-test\n");
+  process.exit(0);
+}
+
+if (args[0] !== "app-server") {
+  process.stderr.write(`Unknown args: ${args.join(" ")}\n`);
+  process.exit(1);
+}
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+let nextThread = 0;
+const knownThreads = new Set();
+
+rl.on("line", (line) => {
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
+
+  if (!msg || typeof msg !== "object") return;
+
+  if (msg.id && msg.method === "initialize") {
+    write({ id: msg.id, result: { ok: true } });
+    return;
+  }
+
+  if (msg.method === "initialized") {
+    return;
+  }
+
+  if (msg.id && msg.method === "thread/start") {
+    const required = [
+      "model",
+      "modelProvider",
+      "cwd",
+      "approvalPolicy",
+      "sandbox",
+      "config",
+      "baseInstructions",
+      "developerInstructions",
+      "experimentalRawEvents",
+    ];
+    if (!requireKeys(msg.params, required)) {
+      write({ id: msg.id, error: { message: "invalid thread/start params" } });
+      return;
+    }
+    nextThread += 1;
+    const threadId = `thread-${nextThread}`;
+    knownThreads.add(threadId);
+    write({ id: msg.id, result: { thread: { id: threadId } } });
+    return;
+  }
+
+  if (msg.id && msg.method === "thread/resume") {
+    const required = [
+      "threadId",
+      "history",
+      "path",
+      "model",
+      "modelProvider",
+      "cwd",
+      "approvalPolicy",
+      "sandbox",
+      "config",
+      "baseInstructions",
+      "developerInstructions",
+    ];
+    if (!requireKeys(msg.params, required)) {
+      write({ id: msg.id, error: { message: "invalid thread/resume params" } });
+      return;
+    }
+    const threadId = String(msg.params?.threadId ?? "");
+    knownThreads.add(threadId);
+    write({ id: msg.id, result: { thread: { id: threadId } } });
+    return;
+  }
+
+  if (msg.id && msg.method === "turn/start") {
+    const required = [
+      "threadId",
+      "input",
+      "cwd",
+      "approvalPolicy",
+      "sandboxPolicy",
+      "model",
+      "effort",
+      "summary",
+      "outputSchema",
+      "collaborationMode",
+    ];
+    if (!requireKeys(msg.params, required)) {
+      const threadId = msg.params?.threadId ?? msg.params?.thread_id ?? "thread-1";
+      const turnId = "turn-invalid-params";
+      write({ id: msg.id, error: { message: "invalid turn/start params" } });
+      write({
+        method: "error",
+        params: {
+          threadId,
+          turnId,
+          error: { message: "invalid turn/start params" },
+          willRetry: false,
+        },
+      });
+      write({ method: "turn/completed", params: { threadId, turn: { id: turnId } } });
+      return;
+    }
+
+    const threadId = msg.params?.threadId ?? msg.params?.thread_id ?? "thread-1";
+    if (!knownThreads.has(threadId)) {
+      const turnId = "turn-unknown-thread";
+      write({ id: msg.id, error: { message: "unknown threadId" } });
+      write({
+        method: "error",
+        params: {
+          threadId,
+          turnId,
+          error: { message: "unknown threadId" },
+          willRetry: false,
+        },
+      });
+      write({ method: "turn/completed", params: { threadId, turn: { id: turnId } } });
+      return;
+    }
+
+    const turnId = "turn-1";
+    write({ id: msg.id, result: { ok: true } });
+    write({ method: "turn/started", params: { threadId, turn: { id: turnId } } });
+
+    write({
+      method: "item/agentMessage/delta",
+      params: {
+        threadId,
+        itemId: "item-1",
+        delta: "Change notes:\n- Proofread for clarity.\n\n",
+      },
+    });
+    write({
+      method: "item/agentMessage/delta",
+      params: { threadId, itemId: "item-1", delta: "<<<AGEAF_FILE_UPDATE path=\"main.tex\">>>\n" },
+    });
+    write({
+      method: "item/agentMessage/delta",
+      params: { threadId, itemId: "item-1", delta: "Hello there\n" },
+    });
+    write({
+      method: "item/agentMessage/delta",
+      params: { threadId, itemId: "item-1", delta: "<<<AGEAF_FILE_UPDATE_END>>>\n" },
+    });
+
+    write({ method: "turn/completed", params: { threadId, turn: { id: turnId } } });
+    return;
+  }
+
+  if (msg.id) {
+    write({ id: msg.id, result: { ok: true } });
+  }
+});

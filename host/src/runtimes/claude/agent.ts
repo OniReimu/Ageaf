@@ -246,6 +246,43 @@ async function runQuery(
   let doneEmitted = false;
   let resultText = '';
   let sawStreamText = false;
+  let visibleBuffer = '';
+  let payloadStarted = false;
+  const payloadStartRe =
+    /```(?:ageaf[-_]?patch)|<<<\s*AGEAF_REWRITE\s*>>>|<<<\s*AGEAF_FILE_UPDATE\b/i;
+  const HOLD_BACK_CHARS = 32;
+
+  const emitVisibleDelta = (text: string) => {
+    if (!text) return;
+    if (payloadStarted) return;
+
+    visibleBuffer += text;
+    const matchIndex = visibleBuffer.search(payloadStartRe);
+    if (matchIndex >= 0) {
+      const beforePayload = visibleBuffer.slice(0, matchIndex);
+      if (beforePayload) {
+        emitEvent({ event: 'delta', data: { text: beforePayload } });
+      }
+      payloadStarted = true;
+      visibleBuffer = '';
+      return;
+    }
+
+    if (visibleBuffer.length > HOLD_BACK_CHARS) {
+      const flush = visibleBuffer.slice(0, visibleBuffer.length - HOLD_BACK_CHARS);
+      visibleBuffer = visibleBuffer.slice(-HOLD_BACK_CHARS);
+      if (flush) {
+        emitEvent({ event: 'delta', data: { text: flush } });
+      }
+    }
+  };
+
+  const flushVisible = () => {
+    if (payloadStarted) return;
+    if (!visibleBuffer) return;
+    emitEvent({ event: 'delta', data: { text: visibleBuffer } });
+    visibleBuffer = '';
+  };
 
   const emitUsage = (resultMessage: {
     modelUsage?: Record<string, unknown>;
@@ -292,7 +329,7 @@ async function runQuery(
             if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text') {
               const text = (block as { text?: unknown }).text;
               if (typeof text === 'string' && text) {
-                emitEvent({ event: 'delta', data: { text } });
+                emitVisibleDelta(text);
               }
             }
           }
@@ -303,19 +340,20 @@ async function runQuery(
         const event = (message as { event?: any }).event;
         if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
           sawStreamText = true;
-          emitEvent({ event: 'delta', data: { text: event.delta.text } });
+          emitVisibleDelta(String(event.delta.text ?? ''));
         }
         if (event?.type === 'content_block_start' && event.content_block?.type === 'text') {
           if (event.content_block.text) {
             sawStreamText = true;
           }
-          emitEvent({ event: 'delta', data: { text: event.content_block.text } });
+          emitVisibleDelta(String(event.content_block.text ?? ''));
         }
         break;
       }
       case 'result': {
         const resultMessage = message as { subtype?: string; result?: string; structured_output?: unknown };
         resultText = resultMessage.result ?? '';
+        flushVisible();
         emitUsage(resultMessage as { modelUsage?: Record<string, unknown> });
         if (structuredOutput) {
           const candidates: unknown[] = [resultMessage.structured_output, resultText].filter(
