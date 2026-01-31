@@ -32,7 +32,7 @@ export function startTypingReveal(root: ParentNode, options: TypingRevealOptions
     root,
     NodeFilter.SHOW_TEXT,
     {
-      acceptNode(node) {
+      acceptNode(node: Node) {
         if (!(node instanceof Text)) return NodeFilter.FILTER_REJECT;
         const text = node.nodeValue ?? '';
         if (!text) return NodeFilter.FILTER_REJECT;

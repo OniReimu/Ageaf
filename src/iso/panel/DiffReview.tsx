@@ -3,18 +3,21 @@ import { preloadDiffHTML } from '@pierre/diffs/ssr';
 import { ResolvedThemes, parseDiffFromFile, setLanguageOverride } from '@pierre/diffs';
 import githubDark from '@shikijs/themes/github-dark';
 import { diffLines } from 'diff';
-import { startTypingReveal } from './typingReveal';
+import { startTypingReveal, type TypingRevealController } from './typingReveal';
 
 type Props = {
   oldText: string;
   newText: string;
   fileName?: string;
   animate?: boolean;
+  wrap?: boolean;
 };
 
 if (!ResolvedThemes.has('github-dark')) {
   ResolvedThemes.set('github-dark', githubDark);
 }
+
+const SHADOW_OVERRIDES_STYLE_ID = 'ageaf-diff-shadow-overrides';
 
 function formatElapsed(seconds: number) {
   const s = Math.max(0, Math.floor(seconds));
@@ -28,6 +31,233 @@ function formatElapsed(seconds: number) {
     return `${minutes}m ${String(secs).padStart(2, '0')}s`;
   }
   return `${secs}s`;
+}
+
+async function copyToClipboard(text: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through to legacy copy
+  }
+
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand('copy');
+    textarea.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function injectShadowOverrides(shadowRoot: ShadowRoot, options: { wrap: boolean }) {
+  const existing = shadowRoot.querySelector(`style#${SHADOW_OVERRIDES_STYLE_ID}`) as HTMLStyleElement | null;
+  const style = existing ?? document.createElement('style');
+  style.id = SHADOW_OVERRIDES_STYLE_ID;
+  style.textContent = `
+    /* Ageaf overrides for @pierre/diffs Shadow DOM */
+
+    ${options.wrap ? `
+      /* In wrap mode, keep the library's layout/backgrounds and only reserve
+         space for the per-hunk copy button to the left of the line number. */
+      [data-column-number] {
+        position: relative !important;
+        padding-left: 24px !important;
+      }
+
+      /* Tighten the gap between number and content a bit. */
+      [data-column-content] {
+        padding-inline-start: 0.5ch !important;
+      }
+    ` : `
+      /* Non-wrap mode: keep the library's grid layout (so consecutive lines don't
+         develop seams), but force the content column to paint a full-width
+         background even when the text is shorter than the viewport. */
+      [data-line-type="change-addition"] [data-column-content],
+      [data-line-type="addition"] [data-column-content] {
+        background: rgba(57, 185, 138, 0.14) !important;
+        display: block !important;
+        width: max-content !important;
+        min-width: 100% !important;
+      }
+
+      [data-line-type="change-deletion"] [data-column-content],
+      [data-line-type="deletion"] [data-column-content] {
+        background: rgba(239, 68, 68, 0.12) !important;
+        display: block !important;
+        width: max-content !important;
+        min-width: 100% !important;
+      }
+
+      [data-line-type="change-addition"] [data-column-number],
+      [data-line-type="addition"] [data-column-number] {
+        background: rgba(57, 185, 138, 0.08) !important;
+      }
+
+      [data-line-type="change-deletion"] [data-column-number],
+      [data-line-type="deletion"] [data-column-number] {
+        background: rgba(239, 68, 68, 0.06) !important;
+      }
+    `}
+
+    /* Hide expand controls; keep the info line for readability. */
+    [data-separator="line-info"] [data-expand-button] { display: none !important; }
+
+    [data-separator="line-info"] {
+      opacity: 0.85;
+      user-select: none;
+    }
+
+    [data-separator="line-info"] [data-separator-content] {
+      font-style: italic;
+      opacity: 0.85;
+    }
+
+    /* Tiny copy button in added regions (superscript-ish). */
+    .ageaf-diff-copy-btn {
+      all: unset;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3px 5px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.10);
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s ease, background 0.15s ease;
+      z-index: 10;
+    }
+
+    [data-line-type="change-addition"]:hover .ageaf-diff-copy-btn,
+    [data-line-type="addition"]:hover .ageaf-diff-copy-btn { opacity: 0.7; }
+    .ageaf-diff-copy-btn:hover { opacity: 1 !important; background: rgba(255, 255, 255, 0.15); }
+
+    .ageaf-diff-copy-btn.is-copied { opacity: 1; background: rgba(46, 160, 67, 0.20); }
+    .ageaf-diff-copy-btn.is-failed { opacity: 1; background: rgba(220, 38, 38, 0.20); }
+
+    .ageaf-diff-copy-btn .ageaf-diff-copy-btn__icon-check { display: none; }
+    .ageaf-diff-copy-btn.is-copied .ageaf-diff-copy-btn__icon-copy { display: none; }
+    .ageaf-diff-copy-btn.is-copied .ageaf-diff-copy-btn__icon-check { display: inline; }
+
+    /* Optional word-wrap (used in the expand modal). */
+  `;
+  if (!existing) shadowRoot.appendChild(style);
+}
+
+function normalizeCollapsedUnchangedIndicators(shadowRoot: ShadowRoot) {
+  shadowRoot.querySelectorAll('[data-unmodified-lines]').forEach((label) => {
+    const raw = (label.textContent ?? '').trim();
+    const match = raw.match(/(\d+)/);
+    if (!match) return;
+    label.textContent = `— ${match[1]} unchanged lines hidden —`;
+  });
+}
+
+function getLineContent(line: Element) {
+  const column = line.querySelector('[data-column-content]') as HTMLElement | null;
+  const text = (column?.textContent ?? line.textContent ?? '').replace(/\u00A0/g, ' ');
+  return text;
+}
+
+function getColumnContent(line: Element) {
+  return line.querySelector('[data-column-content]') as HTMLElement | null;
+}
+
+function getColumnNumber(line: Element) {
+  return line.querySelector('[data-column-number]') as HTMLElement | null;
+}
+
+function injectCopyButtons(shadowRoot: ShadowRoot) {
+  let lines = shadowRoot.querySelectorAll('[data-line-type="change-addition"]');
+  if (lines.length === 0) {
+    // Back-compat for older diffs renderers.
+    lines = shadowRoot.querySelectorAll('[data-line-type="addition"]');
+  }
+  if (lines.length === 0) return;
+
+  // Group contiguous added lines into segments.
+  // We group by DOM adjacency so we don't accidentally bridge across context/deletions.
+  const segments: HTMLElement[][] = [];
+  let currentSegment: HTMLElement[] = [];
+  Array.from(lines).forEach((node) => {
+    const line = node as HTMLElement;
+    if (currentSegment.length === 0) {
+      currentSegment.push(line);
+      return;
+    }
+    const prev = currentSegment[currentSegment.length - 1];
+    const isAdjacent = line.previousElementSibling === prev;
+    if (isAdjacent) {
+      currentSegment.push(line);
+      return;
+    }
+    segments.push(currentSegment);
+    currentSegment = [line];
+  });
+  if (currentSegment.length > 0) segments.push(currentSegment);
+
+  // Inject copy button for each segment.
+  for (const segment of segments) {
+    const firstLine = segment[0];
+    if (!firstLine) continue;
+    const host = getColumnNumber(firstLine) ?? getColumnContent(firstLine) ?? firstLine;
+    if (host.querySelector('.ageaf-diff-copy-btn')) continue;
+
+    const text = segment
+      .map((line) => getLineContent(line))
+      .join('\n')
+      .trimEnd();
+    if (!text.trim()) continue;
+
+    const button = document.createElement('button');
+    button.className = 'ageaf-diff-copy-btn';
+    button.type = 'button';
+    button.innerHTML = `
+      <svg class="ageaf-diff-copy-btn__icon-copy" viewBox="0 0 16 16" width="12" height="12">
+        <path fill="currentColor" d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/>
+        <path fill="currentColor" d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
+      </svg>
+      <svg class="ageaf-diff-copy-btn__icon-check" viewBox="0 0 16 16" width="12" height="12">
+        <path fill="currentColor" d="M6.5 11.2 3.8 8.5l-1 1 3.7 3.7L14.2 5.5l-1-1z"/>
+      </svg>
+    `;
+    button.title = 'Copy proposed text';
+
+    host.style.position = 'relative';
+    button.style.position = 'absolute';
+    button.style.top = '4px';
+    button.style.left = '4px';
+
+    let timeoutId: number | null = null;
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void (async () => {
+        const ok = await copyToClipboard(text);
+        button.classList.toggle('is-copied', ok);
+        button.classList.toggle('is-failed', !ok);
+
+        if (timeoutId) window.clearTimeout(timeoutId);
+        timeoutId = window.setTimeout(() => {
+          button.classList.remove('is-copied');
+          button.classList.remove('is-failed');
+        }, 3000);
+      })();
+    });
+
+    host.appendChild(button);
+  }
 }
 
 function renderFallback(
@@ -95,9 +325,16 @@ function renderFallback(
   wrapper.appendChild(container);
 }
 
-export function DiffReview({ oldText, newText, fileName = 'selection.tex', animate = true }: Props) {
+export function DiffReview({
+  oldText,
+  newText,
+  fileName = 'selection.tex',
+  animate = true,
+  wrap = false,
+}: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const renderSeqRef = useRef(0);
+  const typingControllerRef = useRef<TypingRevealController | null>(null);
 
   useEffect(() => {
     const wrapper = wrapperRef.current;
@@ -106,7 +343,8 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex', anima
     const currentRender = renderSeqRef.current + 1;
     renderSeqRef.current = currentRender;
     let cancelled = false;
-    let typingController: { cancel: () => void } | null = null;
+    typingControllerRef.current?.cancel();
+    typingControllerRef.current = null;
 
     void (async () => {
       const startedAt = Date.now();
@@ -145,7 +383,9 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex', anima
             theme: 'github-dark',
             themeType: 'dark',
             diffStyle: 'unified',
-            overflow: 'scroll',
+            overflow: wrap ? 'wrap' : 'scroll',
+            expandUnchanged: false,
+            expansionLineCount: 3,
           },
         });
 
@@ -160,8 +400,8 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex', anima
             newText,
           });
           if (animate) {
-            typingController?.cancel();
-            typingController = startTypingReveal(wrapper);
+            typingControllerRef.current?.cancel();
+            typingControllerRef.current = startTypingReveal(wrapper);
           }
           return;
         }
@@ -169,9 +409,18 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex', anima
         statusEl.remove();
         const shadowRoot = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
         shadowRoot.innerHTML = html;
+
+         injectShadowOverrides(shadowRoot, { wrap });
+        normalizeCollapsedUnchangedIndicators(shadowRoot);
+
+         // Inject copy buttons on added line segments (modal only).
+         if (wrap) {
+           injectCopyButtons(shadowRoot);
+         }
+
         if (animate) {
-          typingController?.cancel();
-          typingController = startTypingReveal(shadowRoot);
+          typingControllerRef.current?.cancel();
+          typingControllerRef.current = startTypingReveal(shadowRoot);
         }
       } catch (error) {
         window.clearInterval(tickId);
@@ -185,15 +434,16 @@ export function DiffReview({ oldText, newText, fileName = 'selection.tex', anima
           newText,
         });
         if (animate) {
-          typingController?.cancel();
-          typingController = startTypingReveal(wrapperNow);
+          typingControllerRef.current?.cancel();
+          typingControllerRef.current = startTypingReveal(wrapperNow);
         }
       }
     })();
 
     return () => {
       cancelled = true;
-      typingController?.cancel();
+      typingControllerRef.current?.cancel();
+      typingControllerRef.current = null;
     };
   }, [oldText, newText, fileName]);
 

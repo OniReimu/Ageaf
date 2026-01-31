@@ -1,5 +1,4 @@
 import { render } from 'preact';
-import { startTypingReveal } from './typingReveal';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import {
@@ -104,18 +103,23 @@ const CheckIcon = () => (
   </svg>
 );
 
-const TypingRevealHtml = ({ html, revealKey }: { html: string; revealKey: string }) => {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const controller = startTypingReveal(el);
-    return () => controller.cancel();
-  }, [revealKey]);
-
-  return <div ref={ref} dangerouslySetInnerHTML={{ __html: html }} />;
-};
+const ExpandIcon = () => (
+  <svg
+    class="ageaf-patch-review__expand-icon"
+    viewBox="0 0 20 20"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <path
+      d="M3 3h7M17 3v7M17 17h-7M3 17v-7M12 8l5-5m0 0h-5m5 0v5"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </svg>
+);
 
 const PatchReviewCard = ({
   message,
@@ -145,11 +149,102 @@ const PatchReviewCard = ({
   // One-off: animate only the very first time this card is created.
   // Persist a flag so refreshes / subsequent renders do not animate.
   const shouldAnimateRef = useRef<boolean>(!(patchReview as any).hasAnimated);
+  const [showModal, setShowModal] = useState(false);
+  const [modalOffset, setModalOffset] = useState({ x: 0, y: 0 });
+  const [headerCopied, setHeaderCopied] = useState(false);
+  const headerCopyTimerRef = useRef<number | null>(null);
+
+  const copyToClipboard = async (text: string) => {
+    if (!text) return false;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (error) {
+          // Extension context invalidated - treat as a no-op.
+          if (
+            error instanceof Error &&
+            error.message.includes('Extension context invalidated')
+          ) {
+            return false;
+          }
+          // fall through to legacy copy
+        }
+      }
+
+      if (typeof document === 'undefined') return false;
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', 'true');
+      textarea.style.position = 'absolute';
+      textarea.style.left = '-9999px';
+      textarea.style.top = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes('Extension context invalidated')
+      ) {
+        return false;
+      }
+      return false;
+    }
+  };
 
   useEffect(() => {
     if (!shouldAnimateRef.current) return;
     markAnimated();
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (headerCopyTimerRef.current != null) {
+        window.clearTimeout(headerCopyTimerRef.current);
+        headerCopyTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // ESC key handler for modal
+  useEffect(() => {
+    if (!showModal) return;
+    setModalOffset({ x: 0, y: 0 });
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showModal]);
+
+  const startModalDrag = (event: MouseEvent) => {
+    // Only left-click dragging.
+    if ((event as any).button !== 0) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startOffset = { ...modalOffset };
+
+    const onMove = (e: MouseEvent) => {
+      setModalOffset({
+        x: startOffset.x + (e.clientX - startX),
+        y: startOffset.y + (e.clientY - startY),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
 
   const fileLabel =
     patchReview.kind === 'replaceRangeInFile'
@@ -165,31 +260,6 @@ const PatchReviewCard = ({
         ? 'Review changes · Rejected'
         : 'Review changes';
 
-  const proposalHtml =
-    'text' in patchReview
-      ? (() => {
-          const file =
-            patchReview.kind === 'replaceRangeInFile'
-              ? patchReview.filePath
-              : patchReview.kind === 'replaceSelection'
-                ? patchReview.fileName ?? 'selection.tex'
-                : 'snippet.tex';
-          const ext = (file.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
-          const fenceLang = ext === 'tex' ? 'latex-raw' : ext ? ext : 'text';
-          const normalizedText = patchReview.text.replace(/\r\n/g, '\n');
-          return renderMarkdown(`\`\`\`${fenceLang}\n${normalizedText}\n\`\`\``);
-        })()
-      : '';
-
-  const proposalContent = shouldAnimateRef.current ? (
-    <TypingRevealHtml
-      revealKey={`${message.id}:${(patchReview as any).text?.length ?? 0}`}
-      html={proposalHtml}
-    />
-  ) : (
-    <div dangerouslySetInnerHTML={{ __html: proposalHtml }} />
-  );
-
   return (
     <div class="ageaf-patch-review">
       <div class="ageaf-patch-review__header">
@@ -198,6 +268,36 @@ const PatchReviewCard = ({
           {fileLabel ? <span> · {fileLabel}</span> : null}
         </div>
         <div class="ageaf-patch-review__actions">
+          <button
+            class="ageaf-patch-review__expand-btn"
+            type="button"
+            onClick={() => setShowModal(true)}
+            title="Expand diff"
+          >
+            <ExpandIcon />
+          </button>
+          <button
+            class="ageaf-patch-review__expand-btn"
+            type="button"
+            onClick={() => {
+              void (async () => {
+                const ok = await copyToClipboard((patchReview as any).text ?? '');
+                if (!ok) return;
+                setHeaderCopied(true);
+                if (headerCopyTimerRef.current != null) {
+                  window.clearTimeout(headerCopyTimerRef.current);
+                }
+                headerCopyTimerRef.current = window.setTimeout(() => {
+                  setHeaderCopied(false);
+                  headerCopyTimerRef.current = null;
+                }, 3000);
+              })();
+            }}
+            title="Copy proposed text"
+            aria-label="Copy proposed text"
+          >
+            {headerCopied ? <CheckIcon /> : <CopyIcon />}
+          </button>
           {status === 'pending' ? (
             <>
               <button
@@ -247,33 +347,46 @@ const PatchReviewCard = ({
         />
       ) : null}
 
-      {'text' in patchReview ? (
-        <div class="ageaf-patch-review__proposal">
-          <div class="ageaf-patch-review__proposal-title">Proposed text</div>
-          <div class="ageaf-message__quote-block ageaf-patch-review__proposal-quote">
-            <div class="ageaf-message__quote-lang">
-              {(() => {
-                const file =
-                  patchReview.kind === 'replaceRangeInFile'
-                    ? patchReview.filePath
-                    : patchReview.kind === 'replaceSelection'
-                      ? patchReview.fileName ?? 'selection.tex'
-                      : 'snippet.tex';
-                const ext = (file.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
-                if (ext === 'tex') return 'LATEX';
-                return ext ? ext.toUpperCase() : 'TEXT';
-              })()}
+      {showModal ? (
+        <div class="ageaf-diff-modal__backdrop">
+          <div
+            class="ageaf-diff-modal"
+            style={{ transform: `translate(${modalOffset.x}px, ${modalOffset.y}px)` }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div class="ageaf-diff-modal__header" onMouseDown={(e) => startModalDrag(e as any)}>
+              <div class="ageaf-diff-modal__title">
+                {title}
+                {fileLabel ? <span> · {fileLabel}</span> : null}
+              </div>
+              <button
+                class="ageaf-diff-modal__close"
+                type="button"
+                onClick={() => setShowModal(false)}
+                title="Close (ESC)"
+              >
+                ✕
+              </button>
             </div>
-            <button
-              class="ageaf-message__copy"
-              type="button"
-              aria-label="Copy proposed text"
-              title="Copy proposed text"
-              onClick={onCopy}
-            >
-              {copied ? <CheckIcon /> : <CopyIcon />}
-            </button>
-            <div class="ageaf-message__quote-content">{proposalContent}</div>
+            <div class="ageaf-diff-modal__content">
+              {patchReview.kind === 'replaceRangeInFile' ? (
+                <DiffReview
+                  oldText={patchReview.expectedOldText}
+                  newText={patchReview.text}
+                  fileName={patchReview.filePath}
+                  animate={false}
+                   wrap={true}
+                />
+              ) : patchReview.kind === 'replaceSelection' ? (
+                <DiffReview
+                  oldText={patchReview.selection}
+                  newText={patchReview.text}
+                  fileName={patchReview.fileName ?? undefined}
+                  animate={false}
+                   wrap={true}
+                />
+              ) : null}
+            </div>
           </div>
         </div>
       ) : null}
