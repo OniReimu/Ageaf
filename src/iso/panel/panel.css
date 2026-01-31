@@ -393,37 +393,107 @@
   flex: 0 0 auto;
 }
 
-.ageaf-patch-review__proposal {
-  display: grid;
-  gap: 8px;
-  margin-top: 6px;
+.ageaf-patch-review__expand-btn {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+  border-radius: 6px;
 }
 
-.ageaf-patch-review__proposal-title {
-  font-size: 12px;
-  color: var(--ageaf-panel-muted);
+.ageaf-patch-review__expand-btn:hover {
+  opacity: 1;
+  background: rgba(57, 185, 138, 0.10);
+}
+
+.ageaf-patch-review__expand-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--ageaf-panel-text-color);
+}
+
+.ageaf-diff-modal__backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.ageaf-diff-modal {
+  background: var(--ageaf-panel-bg);
+  border: 1px solid var(--ageaf-panel-border);
+  border-radius: 8px;
+  width: min(960px, 90vw);
+  height: min(720px, 90vh);
+  min-width: 360px;
+  min-height: 280px;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  resize: both;
+  overflow: hidden;
+}
+
+.ageaf-diff-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--ageaf-panel-border);
+  flex-shrink: 0;
+  cursor: move;
+}
+
+.ageaf-diff-modal__title {
+  font-size: 14px;
   font-weight: 600;
+  color: var(--ageaf-panel-text);
 }
 
-.ageaf-patch-review__proposal-code {
-  margin: 0;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  background: rgba(9, 14, 11, 0.92);
-  color: rgba(233, 242, 236, 0.92);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-    "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 220px;
-  overflow: auto;
+.ageaf-diff-modal__close {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  font-size: 18px;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
 }
 
-.ageaf-patch-review__proposal-code code {
-  font-family: inherit;
+.ageaf-diff-modal__close:hover {
+  opacity: 1;
+}
+
+.ageaf-diff-modal__content {
+  flex: 1;
+  /* Keep a stable bottom inset regardless of modal height. */
+  padding: 16px 20px 16px 20px;
+  /* Let the diff card handle scrolling so its bottom border stays aligned. */
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+}
+
+.ageaf-diff-modal__content > .ageaf-diff-review {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
 }
 
 .ageaf-patch-review__warning {
@@ -1091,29 +1161,6 @@
 
 .ageaf-message__attachment-chip {
   max-width: 100%;
-}
-
-.ageaf-patch-review__proposal-quote {
-  margin-top: 2px;
-}
-
-.ageaf-patch-review__proposal-quote .ageaf-message__quote-lang {
-  top: 10px;
-  left: 12px;
-}
-
-.ageaf-patch-review__proposal-quote .ageaf-message__copy {
-  top: 10px;
-  right: 10px;
-}
-
-/* Proposed text should behave like a code viewer: no wrapping, both-axis scroll. */
-.ageaf-patch-review__proposal-quote .ageaf-code-block {
-  max-height: 220px;
-}
-
-.ageaf-patch-review__proposal-quote .ageaf-code-block code {
-  white-space: inherit;
 }
 
 .ageaf-message__copy-response {
