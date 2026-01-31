@@ -1411,6 +1411,14 @@
   position: relative;
   font-family: inherit;
   padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.ageaf-toolbar-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
 .ageaf-toolbar-button:hover:not(:disabled),
@@ -1798,29 +1806,6 @@
 .ageaf-runtime__value--accent {
   color: var(--ageaf-panel-accent);
   font-weight: 600;
-}
-
-.ageaf-runtime__compact-button {
-  margin-left: 4px;
-  padding: 2px 6px;
-  font-size: 12px;
-  background: var(--ageaf-panel-bg-hover);
-  color: var(--ageaf-panel-text);
-  border: 1px solid var(--ageaf-panel-border);
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.ageaf-runtime__compact-button:hover:not(:disabled) {
-  background: var(--ageaf-panel-accent);
-  color: #fff;
-  border-color: var(--ageaf-panel-accent);
-}
-
-.ageaf-runtime__compact-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .ageaf-runtime__menu {
