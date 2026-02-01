@@ -2110,6 +2110,8 @@ const Panel = () => {
       return { skillsPrompt: '', strippedText: text };
     }
 
+    console.log('[processSkillDirectives] Found directives:', directiveNames);
+
     // Load skills manifest and find matching skills
     try {
       const manifest = await loadSkillsManifest();
@@ -2120,8 +2122,12 @@ const Panel = () => {
         const skill = manifest.skills.find((s) => s.name === name);
         if (skill) {
           const markdown = await loadSkillMarkdown(skill);
+          const contentLength = markdown.length;
           skillContents.push(`\n\n# Skill: ${skill.name}\n\n${markdown}`);
           resolvedNames.add(name);
+          console.log(`[processSkillDirectives] ✓ Loaded skill: /${name} (${contentLength} chars)`);
+        } else {
+          console.log(`[processSkillDirectives] ✗ Skill not found: /${name}`);
         }
       }
 
@@ -2135,9 +2141,16 @@ const Panel = () => {
 
       const skillsPrompt = skillContents.length > 0 ? skillContents.join('\n\n') : '';
 
+      if (resolvedNames.size > 0) {
+        console.log(
+          `[processSkillDirectives] Injected ${resolvedNames.size} skill(s) into system prompt (${skillsPrompt.length} chars total)`
+        );
+        console.log('[processSkillDirectives] Skills injected:', Array.from(resolvedNames).map(n => `/${n}`).join(', '));
+      }
+
       return { skillsPrompt, strippedText };
     } catch (err) {
-      console.error('Failed to process skill directives:', err);
+      console.error('[processSkillDirectives] Failed to process skill directives:', err);
       return { skillsPrompt: '', strippedText: text };
     }
   };
@@ -4504,15 +4517,12 @@ const Panel = () => {
               },
             };
           } else if (patch.kind === 'insertAtCursor') {
-            storedPatchReviewMessage = {
-              role: 'system',
-              content: '',
-              patchReview: {
-                kind: 'insertAtCursor',
-                text: patch.text,
-                status: 'pending',
-              },
-            };
+            const filename = getActiveFilename() ?? 'snippet.tex';
+            const language = getFenceLanguage(filename) || 'tex';
+            const fence = getSafeMarkdownFence(patch.text);
+            const fenceStart = language ? `${fence}${language}` : fence;
+            const content = `${fenceStart}\n${patch.text}\n${fence}\n`;
+            storedPatchReviewMessage = { role: 'assistant', content };
           }
 
           if (!storedPatchReviewMessage) return;
@@ -5933,15 +5943,6 @@ const Panel = () => {
                 >
                   <div class="ageaf-skill__name">/{skill.name}</div>
                   <div class="ageaf-skill__description">{skill.description}</div>
-                  {skill.tags.length > 0 ? (
-                    <div class="ageaf-skill__tags">
-                      {skill.tags.map((tag) => (
-                        <span key={tag} class="ageaf-skill__tag">
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
                 </button>
               ))
             ) : (
