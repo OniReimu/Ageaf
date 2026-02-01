@@ -14,10 +14,12 @@ test('generateSkillsManifest creates valid manifest', async () => {
   assert.ok(manifest.version, 'manifest should have version');
   assert.ok(Array.isArray(manifest.skills), 'manifest.skills should be an array');
 
-  // Verify bundled skill set is minimal:
-  // - ai-research: ONLY 20-ml-paper-writing
+  // Verify bundled skill set:
+  // - ai-research: 20-ml-paper-writing
   // - anthropic: doc-coauthoring
-  assert.strictEqual(manifest.skills.length, 2, `Expected 2 skills, got ${manifest.skills.length}`);
+  // - custom: paper-reviewer
+  // - k-dense: citation-management
+  assert.strictEqual(manifest.skills.length, 4, `Expected 4 skills, got ${manifest.skills.length}`);
 
   const paperSkill = manifest.skills.find((s) => s.name === 'ml-paper-writing');
   assert.ok(paperSkill, 'Should include ml-paper-writing skill');
@@ -30,6 +32,14 @@ test('generateSkillsManifest creates valid manifest', async () => {
   const docSkill = manifest.skills.find((s) => s.name === 'doc-coauthoring');
   assert.ok(docSkill, 'Should include doc-coauthoring skill');
   assert.strictEqual(docSkill.source, 'anthropic', 'doc-coauthoring should be from anthropic source');
+
+  const reviewerSkill = manifest.skills.find((s) => s.name === 'paper-reviewer');
+  assert.ok(reviewerSkill, 'Should include paper-reviewer skill');
+  assert.strictEqual(reviewerSkill.source, 'custom', 'paper-reviewer should be from custom source');
+
+  const citationSkill = manifest.skills.find((s) => s.name === 'citation-management');
+  assert.ok(citationSkill, 'Should include citation-management skill');
+  assert.strictEqual(citationSkill.source, 'k-dense', 'citation-management should be from k-dense source');
 
   // Verify skill structure
   const firstSkill = manifest.skills[0];

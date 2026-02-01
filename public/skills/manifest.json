@@ -28,6 +28,22 @@
       "tags": [],
       "source": "anthropic",
       "path": "skills/anthropic/doc-coauthoring/SKILL.md"
+    },
+    {
+      "id": "custom/paper-reviewer",
+      "name": "paper-reviewer",
+      "description": "This skill should be used when users request peer reviews of academic papers or manuscripts. It produces structured, evidence-based reviews following top-tier venue standards with no scores or accept/reject decisions. Activates on requests like \"review this paper\", \"provide a peer review\", or \"analyze this manuscript\".",
+      "tags": [],
+      "source": "custom",
+      "path": "skills/custom/paper-reviewer/SKILL.md"
+    },
+    {
+      "id": "k-dense/citation-management",
+      "name": "citation-management",
+      "description": "Comprehensive citation management for academic research. Search Google Scholar and PubMed for papers, extract accurate metadata, validate citations, and generate properly formatted BibTeX entries. This skill should be used when you need to find papers, verify citation information, convert DOIs to BibTeX, or ensure reference accuracy in scientific writing.",
+      "tags": [],
+      "source": "k-dense",
+      "path": "skills/k-dense/citation-management/SKILL.md"
     }
   ]
 }
