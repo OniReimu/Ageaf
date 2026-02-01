@@ -35,7 +35,7 @@ coverage/
 *.swp
 *.swo
 *~
-.DS_Store
+**/.DS_Store
 Thumbs.db
 
 # Chrome extension

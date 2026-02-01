@@ -195,13 +195,16 @@ function buildPrompt(
   ].join('\n');
 
   const patchGuidance = [
-    'Patch proposals (optional):',
-    '- If you want the user to apply edits in Overleaf, include exactly one fenced code block labeled `ageaf-patch` containing ONLY a JSON object matching one of:',
+    'Patch proposals (use ONLY when editing Overleaf; optional):',
+    '- Use an `ageaf-patch` block ONLY if the user is asking you to modify Overleaf content (rewrite/edit selection, update a file, fix LaTeX errors, etc).',
+    '- If the user is asking for general info or standalone writing (e.g. an abstract draft, explanation, today’s weather), do NOT emit `ageaf-patch` — put the full answer directly in the visible response.',
+    '- If you are outputting LaTeX meant to be pasted into Overleaf, prefer a fenced code block (e.g. ```tex).',
+    '- If you DO want the user to apply edits in Overleaf, include exactly one fenced code block labeled `ageaf-patch` containing ONLY a JSON object matching one of:',
     '- { "kind":"replaceSelection", "text":"..." }',
     '- { "kind":"replaceRangeInFile", "filePath":"main.tex", "expectedOldText":"...", "text":"...", "from":123, "to":456 } (from/to optional but if used must both be provided)',
     '- { "kind":"insertAtCursor", "text":"..." }',
     '- Put all explanation/change notes outside the `ageaf-patch` code block.',
-    '- Do NOT include the full rewritten text outside the patch (the UI will show it separately).',
+    '- Avoid `insertAtCursor` patches unless the user explicitly asks to insert at the cursor.',
   ].join('\n');
 
   const selectionPatchGuidance = hasSelection

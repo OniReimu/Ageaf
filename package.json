@@ -4,6 +4,8 @@
   "description": "Ageaf for Overleaf",
   "private": true,
   "scripts": {
+    "prebuild": "node scripts/generate-skills-manifest.cjs",
+    "prewatch": "node scripts/generate-skills-manifest.cjs",
     "watch": "webpack --mode=development --watch --config config/webpack.config.js",
     "dev": "./scripts/dev.sh",
     "build": "webpack --mode=production --config config/webpack.config.js",
@@ -20,6 +22,7 @@
     "copy-webpack-plugin": "^10.2.4",
     "css-loader": "^6.8.1",
     "file-loader": "^6.2.0",
+    "gray-matter": "^4.0.3",
     "mini-css-extract-plugin": "^2.7.6",
     "prettier": "^2.8.8",
     "ts-loader": "^9.2.8",

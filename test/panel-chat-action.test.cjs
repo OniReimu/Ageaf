@@ -8,5 +8,8 @@ test('Panel sends chat action with user message', () => {
   const contents = fs.readFileSync(panelPath, 'utf8');
 
   assert.match(contents, /action:\s*JobAction\s*=\s*'chat'/);
-  assert.match(contents, /message:\s*resolvedMessageText/);
+  assert.match(contents, /message:\s*finalMessageText/);
+  // Verify skill directive processing exists
+  assert.match(contents, /processSkillDirectives/);
+  assert.match(contents, /skillsPrompt/);
 });

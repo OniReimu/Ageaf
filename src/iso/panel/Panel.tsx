@@ -26,6 +26,12 @@ import { Options } from '../../types';
 import { parseMarkdown, renderMarkdown } from './markdown';
 import { DiffReview } from './DiffReview';
 import {
+  loadSkillsManifest,
+  loadSkillMarkdown,
+  searchSkills,
+  type SkillEntry,
+} from './skills/skillsRegistry';
+import {
   ProviderId,
   StoredConversation,
   StoredContextUsage,
@@ -715,6 +721,10 @@ const Panel = () => {
   const [mentionResults, setMentionResults] = useState<OverleafEntry[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
+  const [skillOpen, setSkillOpen] = useState(false);
+  const [skillResults, setSkillResults] = useState<SkillEntry[]>([]);
+  const [skillIndex, setSkillIndex] = useState(0);
+  const skillRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const attachmentErrorTimerRef = useRef<number | null>(null);
   const [isDropActive, setIsDropActive] = useState(false);
@@ -1969,6 +1979,8 @@ const Panel = () => {
     setMentionResults(results);
     setMentionIndex(0);
     setMentionOpen(true);
+    // Close skill menu when mention menu opens (mutually exclusive)
+    setSkillOpen(false);
   };
 
   const insertMentionEntry = (entry: OverleafEntry) => {
@@ -1999,6 +2011,148 @@ const Panel = () => {
     setMentionResults([]);
     mentionRangeRef.current = null;
     syncEditorEmpty();
+  };
+
+  const getSlashQuery = () => {
+    const editor = editorRef.current;
+    if (!editor) return null;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.startContainer)) return null;
+    const node = range.endContainer;
+    if (node.nodeType !== Node.TEXT_NODE) return null;
+    const textNode = node as Text;
+    const anchorOffset = range.endOffset;
+    const before = textNode.data.slice(0, anchorOffset);
+    console.log('[getSlashQuery] before:', JSON.stringify(before), 'offset:', anchorOffset);
+    const match = before.match(/(^|[\s\(\[\{])\/([A-Za-z0-9._-]*)$/);
+    console.log('[getSlashQuery] match:', match);
+    if (!match) return null;
+    const query = match[2] ?? '';
+    const start = anchorOffset - (query.length + 1);
+    return { query, node: textNode, start, end: anchorOffset };
+  };
+
+  const updateSkillState = async () => {
+    console.log('[updateSkillState] called');
+    if (isComposingRef.current) return;
+    const match = getSlashQuery();
+    console.log('[updateSkillState] match result:', match);
+    if (!match) {
+      setSkillOpen(false);
+      setSkillResults([]);
+      skillRangeRef.current = null;
+      return;
+    }
+    try {
+      console.log('[updateSkillState] loading manifest...');
+      const manifest = await loadSkillsManifest();
+      console.log('[updateSkillState] manifest loaded, skills:', manifest.skills.length);
+      const results = searchSkills(manifest.skills, match.query);
+      console.log('[updateSkillState] search results:', results.length, 'for query:', match.query);
+      skillRangeRef.current = { node: match.node, start: match.start, end: match.end };
+      setSkillResults(results.slice(0, 20));
+      setSkillIndex(0);
+      setSkillOpen(true);
+      console.log('[updateSkillState] skill menu opened');
+      // Close mention menu when skill menu opens (mutually exclusive)
+      setMentionOpen(false);
+    } catch (err) {
+      console.error('[updateSkillState] Failed to load skills:', err);
+      setSkillOpen(false);
+      setSkillResults([]);
+    }
+  };
+
+  const insertSkill = (skill: SkillEntry) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const selection = window.getSelection();
+    if (!selection) return;
+    const rangeInfo = skillRangeRef.current;
+    if (rangeInfo) {
+      const { node, start, end } = rangeInfo;
+      node.data = node.data.slice(0, start) + node.data.slice(end);
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    insertTextAtCursor(`/${skill.name} `);
+    setSkillOpen(false);
+    setSkillResults([]);
+    skillRangeRef.current = null;
+    syncEditorEmpty();
+  };
+
+  const processSkillDirectives = async (
+    text: string
+  ): Promise<{ skillsPrompt: string; strippedText: string }> => {
+    // Extract skill directives from text (e.g., /langchain, /vllm)
+    // Pattern: (start OR whitespace/bracket) + "/" + (allowed chars)
+    const pattern = /(^|[\s([{])\/([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
+    const matches = text.matchAll(pattern);
+    const directiveNames: string[] = [];
+    const seen = new Set<string>();
+
+    for (const match of matches) {
+      const skillName = match[2];
+      if (skillName && !seen.has(skillName)) {
+        directiveNames.push(skillName);
+        seen.add(skillName);
+      }
+    }
+
+    if (directiveNames.length === 0) {
+      return { skillsPrompt: '', strippedText: text };
+    }
+
+    console.log('[processSkillDirectives] Found directives:', directiveNames);
+
+    // Load skills manifest and find matching skills
+    try {
+      const manifest = await loadSkillsManifest();
+      const skillContents: string[] = [];
+      const resolvedNames = new Set<string>();
+
+      for (const name of directiveNames) {
+        const skill = manifest.skills.find((s) => s.name === name);
+        if (skill) {
+          const markdown = await loadSkillMarkdown(skill);
+          const contentLength = markdown.length;
+          skillContents.push(`\n\n# Skill: ${skill.name}\n\n${markdown}`);
+          resolvedNames.add(name);
+          console.log(`[processSkillDirectives] ✓ Loaded skill: /${name} (${contentLength} chars)`);
+        } else {
+          console.log(`[processSkillDirectives] ✗ Skill not found: /${name}`);
+        }
+      }
+
+      // Strip ONLY directives that resolved to actual skills (preserve unknown directives)
+      const strippedText = text.replace(pattern, (match, before, skillName, after) => {
+        if (resolvedNames.has(skillName)) {
+          return before + after;
+        }
+        return match; // Keep unknown directives intact
+      });
+
+      const skillsPrompt = skillContents.length > 0 ? skillContents.join('\n\n') : '';
+
+      if (resolvedNames.size > 0) {
+        console.log(
+          `[processSkillDirectives] Injected ${resolvedNames.size} skill(s) into system prompt (${skillsPrompt.length} chars total)`
+        );
+        console.log('[processSkillDirectives] Skills injected:', Array.from(resolvedNames).map(n => `/${n}`).join(', '));
+      }
+
+      return { skillsPrompt, strippedText };
+    } catch (err) {
+      console.error('[processSkillDirectives] Failed to process skill directives:', err);
+      return { skillsPrompt: '', strippedText: text };
+    }
   };
 
   const formatLineCount = (value: number) => {
@@ -4049,6 +4203,8 @@ const Panel = () => {
     try {
       const selection = await bridge.requestSelection();
       const resolvedMessageText = await resolveMentionFiles(text);
+      const { skillsPrompt, strippedText } = await processSkillDirectives(resolvedMessageText);
+      const finalMessageText = strippedText;
       const options = await getOptions();
       const runtimeModel =
         currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
@@ -4103,7 +4259,7 @@ const Panel = () => {
 	              },
 	              overleaf: { url: window.location.href },
 	              context: {
-                message: resolvedMessageText,
+                message: finalMessageText,
                 selection: selection?.selection ?? '',
                 surroundingBefore: selection?.before ?? '',
                 surroundingAfter: selection?.after ?? '',
@@ -4135,7 +4291,9 @@ const Panel = () => {
               policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
               userSettings: {
                 displayName: options.displayName,
-                customSystemPrompt: options.customSystemPrompt,
+                customSystemPrompt: skillsPrompt
+                  ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
+                  : options.customSystemPrompt,
               },
             }
           : {
@@ -4155,7 +4313,7 @@ const Panel = () => {
         },
         overleaf: { url: window.location.href },
         context: {
-                message: resolvedMessageText,
+                message: finalMessageText,
           selection: selection?.selection ?? '',
           surroundingBefore: selection?.before ?? '',
           surroundingAfter: selection?.after ?? '',
@@ -4187,7 +4345,9 @@ const Panel = () => {
         policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
               userSettings: {
                 displayName: options.displayName,
-                customSystemPrompt: options.customSystemPrompt,
+                customSystemPrompt: skillsPrompt
+                  ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
+                  : options.customSystemPrompt,
                 enableTools: options.enableTools,
                 enableCommandBlocklist: options.enableCommandBlocklist,
                 blockedCommandsUnix: options.blockedCommandsUnix,
@@ -4357,15 +4517,12 @@ const Panel = () => {
               },
             };
           } else if (patch.kind === 'insertAtCursor') {
-            storedPatchReviewMessage = {
-              role: 'system',
-              content: '',
-              patchReview: {
-                kind: 'insertAtCursor',
-                text: patch.text,
-                status: 'pending',
-              },
-            };
+            const filename = getActiveFilename() ?? 'snippet.tex';
+            const language = getFenceLanguage(filename) || 'tex';
+            const fence = getSafeMarkdownFence(patch.text);
+            const fenceStart = language ? `${fence}${language}` : fence;
+            const content = `${fenceStart}\n${patch.text}\n${fence}\n`;
+            storedPatchReviewMessage = { role: 'assistant', content };
           }
 
           if (!storedPatchReviewMessage) return;
@@ -4625,6 +4782,32 @@ const Panel = () => {
       if (event.key === 'Escape') {
         event.preventDefault();
         setMentionOpen(false);
+        return;
+      }
+    }
+
+    if (skillOpen) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setSkillIndex((prev) => Math.min(prev + 1, Math.max(0, skillResults.length - 1)));
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setSkillIndex((prev) => Math.max(prev - 1, 0));
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        const selected = skillResults[skillIndex];
+        if (selected) {
+          event.preventDefault();
+          insertSkill(selected);
+          return;
+        }
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setSkillOpen(false);
         return;
       }
     }
@@ -5676,6 +5859,7 @@ const Panel = () => {
           onInput={() => {
             syncEditorEmpty();
             updateMentionState();
+            void updateSkillState();
           }}
           onPaste={(event) => handlePaste(event as ClipboardEvent)}
           onKeyDown={(event) => onInputKeyDown(event as KeyboardEvent)}
@@ -5685,6 +5869,7 @@ const Panel = () => {
           onCompositionEnd={() => {
             isComposingRef.current = false;
             updateMentionState();
+            void updateSkillState();
           }}
         />
         {mentionOpen ? (
@@ -5729,6 +5914,39 @@ const Panel = () => {
               ))
             ) : (
               <div class="ageaf-mention__empty">No project files found.</div>
+            )}
+          </div>
+        ) : null}
+        {skillOpen ? (
+          <div
+            class="ageaf-skill"
+            onWheel={(event) => {
+              const el = event.currentTarget as HTMLElement | null;
+              if (!el) return;
+              if (el.scrollHeight <= el.clientHeight) return;
+              el.scrollTop += (event as unknown as WheelEvent).deltaY;
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            {skillResults.length > 0 ? (
+              skillResults.map((skill, index) => (
+                <button
+                  key={skill.id}
+                  type="button"
+                  class={`ageaf-skill__option ${index === skillIndex ? 'is-active' : ''}`}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    insertSkill(skill);
+                  }}
+                  title={skill.description}
+                >
+                  <div class="ageaf-skill__name">/{skill.name}</div>
+                  <div class="ageaf-skill__description">{skill.description}</div>
+                </button>
+              ))
+            ) : (
+              <div class="ageaf-skill__empty">No skills found.</div>
             )}
           </div>
         ) : null}
