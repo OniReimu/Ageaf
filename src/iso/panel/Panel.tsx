@@ -719,7 +719,8 @@ const Panel = () => {
   const imageAttachmentsRef = useRef<ImageAttachment[]>([]);
   const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([]);
   const fileAttachmentsRef = useRef<FileAttachment[]>([]);
-  const overlayLastKeyRef = useRef<string | null>(null);
+  const overlayLastKeyRef = useRef<string | null>(null); // legacy; replaced by overlayActiveIdsRef below
+  const overlayActiveIdsRef = useRef<Set<string>>(new Set());
   const [projectFiles, setProjectFiles] = useState<OverleafEntry[]>([]);
   const projectFilesRef = useRef<OverleafEntry[]>([]);
   const selectionSnapshotsRef = useRef<Map<string, SelectionSnapshot>>(new Map()); // jobId -> snapshot
@@ -4909,7 +4910,7 @@ const Panel = () => {
     });
   };
 
-  const onAcceptPatchReviewMessage = async (messageId: string) => {
+  const onAcceptPatchReviewMessage = async (messageId: string, overrideText?: string) => {
     if (patchActionBusyId) return;
     const msg = messages.find((m) => m.id === messageId);
     const patchReview = msg?.patchReview;
@@ -4929,11 +4930,12 @@ const Panel = () => {
           setPatchActionErrors((prev) => ({ ...prev, [messageId]: 'Apply bridge unavailable' }));
           return;
         }
+        const nextText = typeof overrideText === 'string' ? overrideText : patchReview.text;
         const result = await window.ageafBridge.applyReplaceRange({
           from: patchReview.from,
           to: patchReview.to,
           expectedOldText: patchReview.selection,
-          text: patchReview.text,
+          text: nextText,
         });
         if (!result?.ok) {
           setPatchActionErrors((prev) => ({
@@ -4951,10 +4953,11 @@ const Panel = () => {
           setPatchActionErrors((prev) => ({ ...prev, [messageId]: 'Apply bridge unavailable' }));
           return;
         }
+        const nextText = typeof overrideText === 'string' ? overrideText : patchReview.text;
         const result = await window.ageafBridge.applyReplaceInFile({
           filePath: patchReview.filePath,
           expectedOldText: patchReview.expectedOldText,
-          text: patchReview.text,
+          text: nextText,
           ...(typeof patchReview.from === 'number' ? { from: patchReview.from } : {}),
           ...(typeof patchReview.to === 'number' ? { to: patchReview.to } : {}),
         });
@@ -4971,7 +4974,8 @@ const Panel = () => {
 
       if (patchReview.kind === 'insertAtCursor') {
         if (!window.ageafBridge) return;
-        window.ageafBridge.insertAtCursor(patchReview.text);
+        const nextText = typeof overrideText === 'string' ? overrideText : patchReview.text;
+        window.ageafBridge.insertAtCursor(nextText);
         setPatchReviewStatus(messageId, 'accepted');
         return;
       }
@@ -4987,10 +4991,10 @@ const Panel = () => {
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ messageId?: string; action?: string }>).detail;
+      const detail = (event as CustomEvent<{ messageId?: string; action?: string; text?: string }>).detail;
       if (!detail?.messageId || !detail?.action) return;
       if (detail.action === 'accept') {
-        void onAcceptPatchReviewMessage(detail.messageId);
+        void onAcceptPatchReviewMessage(detail.messageId, detail.text);
         return;
       }
       if (detail.action === 'reject') {
@@ -5002,16 +5006,16 @@ const Panel = () => {
   }, [onAcceptPatchReviewMessage, onRejectPatchReviewMessage]);
 
   const emitPendingOverlay = (force = false) => {
-    const pending = [...messages]
-      .reverse()
-      .find((msg) => msg.patchReview && ((msg.patchReview as any).status ?? 'pending') === 'pending');
-    if (!pending?.patchReview) {
+    const pendingMessages = [...messages].filter(
+      (msg) => msg.patchReview && ((msg.patchReview as any).status ?? 'pending') === 'pending'
+    );
+    if (pendingMessages.length === 0) {
       // During initial mount, messages are temporarily empty until chat hydration finishes.
       // Do NOT clear the stored overlay in that window, or refresh restore will never show.
       if (!chatHydratedRef.current) return;
-      if (overlayLastKeyRef.current) {
+      if (overlayActiveIdsRef.current.size > 0) {
         window.dispatchEvent(new CustomEvent(EDITOR_OVERLAY_CLEAR_EVENT));
-        overlayLastKeyRef.current = null;
+        overlayActiveIdsRef.current.clear();
       }
       try {
         if (typeof chrome !== 'undefined' && chrome.storage?.local) {
@@ -5024,53 +5028,65 @@ const Panel = () => {
       return;
     }
 
-    const patchReview = pending.patchReview;
-    const status = (patchReview as any).status ?? 'pending';
-    if (status !== 'pending') {
-      if (overlayLastKeyRef.current) {
-        window.dispatchEvent(new CustomEvent(EDITOR_OVERLAY_CLEAR_EVENT));
-        overlayLastKeyRef.current = null;
+    const pendingDetails = pendingMessages
+      .map((msg) => {
+        const patchReview = msg.patchReview!;
+        const status = (patchReview as any).status ?? 'pending';
+        if (status !== 'pending') return null;
+        return {
+          messageId: msg.id,
+          kind: patchReview.kind,
+          from:
+            patchReview.kind === 'replaceSelection'
+              ? patchReview.from
+              : patchReview.kind === 'replaceRangeInFile'
+                ? patchReview.from
+                : undefined,
+          to:
+            patchReview.kind === 'replaceSelection'
+              ? patchReview.to
+              : patchReview.kind === 'replaceRangeInFile'
+                ? patchReview.to
+                : undefined,
+          oldText:
+            patchReview.kind === 'replaceSelection'
+              ? patchReview.selection
+              : patchReview.kind === 'replaceRangeInFile'
+                ? patchReview.expectedOldText
+                : '',
+          newText: 'text' in patchReview ? patchReview.text : '',
+          filePath: patchReview.kind === 'replaceRangeInFile' ? patchReview.filePath : undefined,
+          fileName: patchReview.kind === 'replaceSelection' ? patchReview.fileName ?? undefined : undefined,
+          projectId: getOverleafProjectIdFromPathname(window.location.pathname),
+        };
+      })
+      .filter(Boolean) as any[];
+
+    const nextIds = new Set(pendingDetails.map((d) => String(d.messageId)));
+    const prevIds = overlayActiveIdsRef.current;
+
+    // Clear overlays that are no longer pending
+    for (const prevId of prevIds) {
+      if (!nextIds.has(prevId)) {
+        window.dispatchEvent(new CustomEvent(EDITOR_OVERLAY_CLEAR_EVENT, { detail: { messageId: prevId } }));
       }
-      return;
     }
 
-    const key = `${pending.id}:${patchReview.kind}:${'text' in patchReview ? patchReview.text.length : 0}`;
-    if (!force && overlayLastKeyRef.current === key) return;
-    overlayLastKeyRef.current = key;
+    // Emit shows for all pending overlays (new or forced)
+    for (const detail of pendingDetails) {
+      const id = String(detail.messageId);
+      if (!force && prevIds.has(id)) continue;
+      window.dispatchEvent(new CustomEvent(EDITOR_OVERLAY_SHOW_EVENT, { detail }));
+    }
 
-    const detail = {
-      messageId: pending.id,
-      kind: patchReview.kind,
-      from:
-        patchReview.kind === 'replaceSelection'
-          ? patchReview.from
-          : patchReview.kind === 'replaceRangeInFile'
-            ? patchReview.from
-            : undefined,
-      to:
-        patchReview.kind === 'replaceSelection'
-          ? patchReview.to
-          : patchReview.kind === 'replaceRangeInFile'
-            ? patchReview.to
-            : undefined,
-      oldText:
-        patchReview.kind === 'replaceSelection'
-          ? patchReview.selection
-          : patchReview.kind === 'replaceRangeInFile'
-            ? patchReview.expectedOldText
-            : '',
-      newText: 'text' in patchReview ? patchReview.text : '',
-      filePath: patchReview.kind === 'replaceRangeInFile' ? patchReview.filePath : undefined,
-      fileName: patchReview.kind === 'replaceSelection' ? patchReview.fileName ?? undefined : undefined,
-      projectId: getOverleafProjectIdFromPathname(window.location.pathname),
-    };
+    overlayActiveIdsRef.current = nextIds;
 
-    window.dispatchEvent(new CustomEvent(EDITOR_OVERLAY_SHOW_EVENT, { detail }));
+    // Persist the full pending set for refresh restore.
     try {
       if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-        chrome.storage.local.set({ [LOCAL_STORAGE_KEY_INLINE_OVERLAY]: detail });
+        chrome.storage.local.set({ [LOCAL_STORAGE_KEY_INLINE_OVERLAY]: pendingDetails });
       }
-      window.localStorage.setItem(LOCAL_STORAGE_KEY_INLINE_OVERLAY, JSON.stringify(detail));
+      window.localStorage.setItem(LOCAL_STORAGE_KEY_INLINE_OVERLAY, JSON.stringify(pendingDetails));
     } catch {
       // ignore storage errors
     }
@@ -5082,7 +5098,7 @@ const Panel = () => {
 
   useEffect(() => {
     const handler = () => {
-      overlayLastKeyRef.current = null;
+      overlayActiveIdsRef.current.clear();
       emitPendingOverlay(true);
     };
     window.addEventListener(EDITOR_OVERLAY_READY_EVENT, handler as EventListener);
@@ -5103,7 +5119,7 @@ const Panel = () => {
       attempts += 1;
       const ready = Boolean((window as any).__ageafOverlayReady);
       if (ready) {
-        overlayLastKeyRef.current = null;
+        overlayActiveIdsRef.current.clear();
         emitPendingOverlay(true);
         window.clearInterval(timer);
         return;
@@ -5115,7 +5131,7 @@ const Panel = () => {
 
     // Try immediately too (covers fast loads).
     if (Boolean((window as any).__ageafOverlayReady)) {
-      overlayLastKeyRef.current = null;
+      overlayActiveIdsRef.current.clear();
       emitPendingOverlay(true);
       window.clearInterval(timer);
     }
