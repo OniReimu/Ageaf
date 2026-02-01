@@ -9,6 +9,9 @@ export interface EditorContent {
 export interface EditorContentView {
   state: EditorContentState,
   dispatch: (changes: any) => void;
+  coordsAtPos: (pos: number) => DOMRect | null;
+  scrollDOM: HTMLElement;
+  contentDOM: HTMLElement;
 };
 
 export interface EditorContentState {
@@ -16,6 +19,12 @@ export interface EditorContentState {
     lineAt: (pos: number) => {
       number: number;
       from: number;
+      text: string;
+    };
+    line: (number: number) => {
+      number: number;
+      from: number;
+      to: number;
       text: string;
     };
     length: number;

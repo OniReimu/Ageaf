@@ -21,7 +21,7 @@ import {
 } from '../api/client';
 import type { NativeHostRequest, NativeHostResponse } from '../messaging/nativeProtocol';
 import { getOptions } from '../../utils/helper';
-import { LOCAL_STORAGE_KEY_OPTIONS } from '../../constants';
+import { LOCAL_STORAGE_KEY_INLINE_OVERLAY, LOCAL_STORAGE_KEY_OPTIONS } from '../../constants';
 import { Options } from '../../types';
 import { parseMarkdown, renderMarkdown } from './markdown';
 import { DiffReview } from './DiffReview';
@@ -60,6 +60,10 @@ const DEFAULT_MODEL_VALUE = 'sonnet';
 const DEFAULT_MODEL_LABEL = 'Sonnet';
 const INTERRUPTED_BY_USER_MARKER = 'INTERRUPTED BY USER';
 const DEBUG_DIFF = false;
+const EDITOR_OVERLAY_SHOW_EVENT = 'ageaf:editor:overlay:show';
+const EDITOR_OVERLAY_CLEAR_EVENT = 'ageaf:editor:overlay:clear';
+const EDITOR_OVERLAY_READY_EVENT = 'ageaf:editor:overlay:ready';
+const PANEL_OVERLAY_ACTION_EVENT = 'ageaf:panel:patch-review-action';
 
 const CopyIcon = () => (
   <svg
@@ -564,6 +568,7 @@ type SelectionSnapshot = {
   to: number;
   lineFrom?: number;
   lineTo?: number;
+  fileName?: string;
 };
 
 type ToolRequest = {
@@ -714,6 +719,7 @@ const Panel = () => {
   const imageAttachmentsRef = useRef<ImageAttachment[]>([]);
   const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([]);
   const fileAttachmentsRef = useRef<FileAttachment[]>([]);
+  const overlayLastKeyRef = useRef<string | null>(null);
   const [projectFiles, setProjectFiles] = useState<OverleafEntry[]>([]);
   const projectFilesRef = useRef<OverleafEntry[]>([]);
   const selectionSnapshotsRef = useRef<Map<string, SelectionSnapshot>>(new Map()); // jobId -> snapshot
@@ -853,6 +859,7 @@ const Panel = () => {
   const chatProjectIdRef = useRef<string | null>(null);
   const chatConversationIdRef = useRef<string | null>(null);
   const chatStateRef = useRef<StoredProjectChat | null>(null);
+  const chatHydratedRef = useRef(false);
   const copyResetTimersRef = useRef<Record<string, number>>({});
   const latexCopyTimersRef = useRef<Map<HTMLElement, number>>(new Map());
   const chatSaveTimerRef = useRef<number | null>(null);
@@ -1430,6 +1437,7 @@ const Panel = () => {
   };
 
   const hydrateChatForProject = async (projectId: string, isActive: () => boolean) => {
+    chatHydratedRef.current = false;
     const stored = await loadProjectChat(projectId);
     if (!isActive()) return;
     const provider = stored.activeProvider;
@@ -1452,6 +1460,7 @@ const Panel = () => {
     void refreshContextUsage({ provider, conversationId: conversation.id });
 
     setMessages(conversation.messages.map((message) => createMessage(message)));
+    chatHydratedRef.current = true;
     scheduleChatSave();
   };
 
@@ -4361,6 +4370,7 @@ const Panel = () => {
         to: typeof selection?.to === 'number' ? selection.to : 0,
         lineFrom: typeof selection?.lineFrom === 'number' ? selection.lineFrom : undefined,
         lineTo: typeof selection?.lineTo === 'number' ? selection.lineTo : undefined,
+        fileName: getActiveFilename() ?? undefined,
       };
       selectionSnapshotsRef.current.set(jobId, selectionSnapshot);
       // A successful job creation proves the host is reachable and the runtime is usable.
@@ -4492,7 +4502,7 @@ const Panel = () => {
                   ...(typeof snapshot.lineTo === 'number' ? { lineTo: snapshot.lineTo } : {}),
                   text: patch.text,
                   status: 'pending',
-                  fileName: 'selection.tex',
+                  ...(snapshot.fileName ? { fileName: snapshot.fileName } : {}),
                 },
               };
             } else {
@@ -4974,6 +4984,157 @@ const Panel = () => {
       setPatchActionBusyId(null);
     }
   };
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ messageId?: string; action?: string }>).detail;
+      if (!detail?.messageId || !detail?.action) return;
+      if (detail.action === 'accept') {
+        void onAcceptPatchReviewMessage(detail.messageId);
+        return;
+      }
+      if (detail.action === 'reject') {
+        onRejectPatchReviewMessage(detail.messageId);
+      }
+    };
+    window.addEventListener(PANEL_OVERLAY_ACTION_EVENT, handler as EventListener);
+    return () => window.removeEventListener(PANEL_OVERLAY_ACTION_EVENT, handler as EventListener);
+  }, [onAcceptPatchReviewMessage, onRejectPatchReviewMessage]);
+
+  const emitPendingOverlay = (force = false) => {
+    const pending = [...messages]
+      .reverse()
+      .find((msg) => msg.patchReview && ((msg.patchReview as any).status ?? 'pending') === 'pending');
+    if (!pending?.patchReview) {
+      // During initial mount, messages are temporarily empty until chat hydration finishes.
+      // Do NOT clear the stored overlay in that window, or refresh restore will never show.
+      if (!chatHydratedRef.current) return;
+      if (overlayLastKeyRef.current) {
+        window.dispatchEvent(new CustomEvent(EDITOR_OVERLAY_CLEAR_EVENT));
+        overlayLastKeyRef.current = null;
+      }
+      try {
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          chrome.storage.local.remove([LOCAL_STORAGE_KEY_INLINE_OVERLAY]);
+        }
+        window.localStorage.removeItem(LOCAL_STORAGE_KEY_INLINE_OVERLAY);
+      } catch {
+        // ignore storage errors
+      }
+      return;
+    }
+
+    const patchReview = pending.patchReview;
+    const status = (patchReview as any).status ?? 'pending';
+    if (status !== 'pending') {
+      if (overlayLastKeyRef.current) {
+        window.dispatchEvent(new CustomEvent(EDITOR_OVERLAY_CLEAR_EVENT));
+        overlayLastKeyRef.current = null;
+      }
+      return;
+    }
+
+    const key = `${pending.id}:${patchReview.kind}:${'text' in patchReview ? patchReview.text.length : 0}`;
+    if (!force && overlayLastKeyRef.current === key) return;
+    overlayLastKeyRef.current = key;
+
+    const detail = {
+      messageId: pending.id,
+      kind: patchReview.kind,
+      from:
+        patchReview.kind === 'replaceSelection'
+          ? patchReview.from
+          : patchReview.kind === 'replaceRangeInFile'
+            ? patchReview.from
+            : undefined,
+      to:
+        patchReview.kind === 'replaceSelection'
+          ? patchReview.to
+          : patchReview.kind === 'replaceRangeInFile'
+            ? patchReview.to
+            : undefined,
+      oldText:
+        patchReview.kind === 'replaceSelection'
+          ? patchReview.selection
+          : patchReview.kind === 'replaceRangeInFile'
+            ? patchReview.expectedOldText
+            : '',
+      newText: 'text' in patchReview ? patchReview.text : '',
+      filePath: patchReview.kind === 'replaceRangeInFile' ? patchReview.filePath : undefined,
+      fileName: patchReview.kind === 'replaceSelection' ? patchReview.fileName ?? undefined : undefined,
+      projectId: getOverleafProjectIdFromPathname(window.location.pathname),
+    };
+
+    window.dispatchEvent(new CustomEvent(EDITOR_OVERLAY_SHOW_EVENT, { detail }));
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        chrome.storage.local.set({ [LOCAL_STORAGE_KEY_INLINE_OVERLAY]: detail });
+      }
+      window.localStorage.setItem(LOCAL_STORAGE_KEY_INLINE_OVERLAY, JSON.stringify(detail));
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  useEffect(() => {
+    emitPendingOverlay(false);
+  }, [messages]);
+
+  useEffect(() => {
+    const handler = () => {
+      overlayLastKeyRef.current = null;
+      emitPendingOverlay(true);
+    };
+    window.addEventListener(EDITOR_OVERLAY_READY_EVENT, handler as EventListener);
+    return () => window.removeEventListener(EDITOR_OVERLAY_READY_EVENT, handler as EventListener);
+  }, [messages]);
+
+  useEffect(() => {
+    // After refresh, the editor overlay may have already fired its "ready" event
+    // before the panel mounted. If so, `__ageafOverlayReady` will be set.
+    // We retry for a short time to cover both load orders.
+    const hasPending = messages.some(
+      (msg) => msg.patchReview && ((msg.patchReview as any).status ?? 'pending') === 'pending'
+    );
+    if (!hasPending) return;
+
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      const ready = Boolean((window as any).__ageafOverlayReady);
+      if (ready) {
+        overlayLastKeyRef.current = null;
+        emitPendingOverlay(true);
+        window.clearInterval(timer);
+        return;
+      }
+      if (attempts >= 20) {
+        window.clearInterval(timer);
+      }
+    }, 250);
+
+    // Try immediately too (covers fast loads).
+    if (Boolean((window as any).__ageafOverlayReady)) {
+      overlayLastKeyRef.current = null;
+      emitPendingOverlay(true);
+      window.clearInterval(timer);
+    }
+
+    return () => window.clearInterval(timer);
+  }, [messages]);
+
+  useEffect(() => {
+    return () => {
+      window.dispatchEvent(new CustomEvent(EDITOR_OVERLAY_CLEAR_EVENT));
+      try {
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          chrome.storage.local.remove([LOCAL_STORAGE_KEY_INLINE_OVERLAY]);
+        }
+      } catch {
+        // ignore storage errors
+      }
+    };
+  }, []);
 
   const dismissToolRequest = () => {
     setToolRequests((prev) => prev.slice(1));
