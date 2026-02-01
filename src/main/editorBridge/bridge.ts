@@ -238,14 +238,72 @@ async function onApplyRequest(event: Event) {
 
   if (!detail?.requestId) return;
 
+  const withProtectedEditBypass = (fn: () => void) => {
+    const key = '__ageafAllowProtectedEdits';
+    const prev = (window as any)[key];
+    (window as any)[key] = true;
+    try {
+      fn();
+    } finally {
+      (window as any)[key] = prev;
+    }
+  };
+
+  const findClosestOccurrence = (fullText: string, needle: string, hintFrom: number) => {
+    if (!needle) return null;
+    const windowSize = 8000;
+    const start = Math.max(0, hintFrom - Math.floor(windowSize / 2));
+    const end = Math.min(fullText.length, hintFrom + Math.floor(windowSize / 2));
+    const chunk = fullText.slice(start, end);
+    const hits: number[] = [];
+    let idx = chunk.indexOf(needle);
+    while (idx !== -1) {
+      hits.push(start + idx);
+      idx = chunk.indexOf(needle, idx + Math.max(1, needle.length));
+      if (hits.length > 10) break;
+    }
+    if (hits.length === 0) return null;
+    // Choose the closest hit to the original from position.
+    let best = hits[0];
+    let bestDist = Math.abs(best - hintFrom);
+    for (const pos of hits.slice(1)) {
+      const dist = Math.abs(pos - hintFrom);
+      if (dist < bestDist) {
+        best = pos;
+        bestDist = dist;
+      }
+    }
+    // Only accept if reasonably close (prevents wrong replacements when repeated text exists).
+    if (bestDist > 4000) return null;
+    return { from: best, to: best + needle.length };
+  };
+
   if (detail.kind === 'replaceRange') {
     if (typeof detail.expectedOldText !== 'string' || typeof detail.text !== 'string') return;
     const current = view.state.sliceDoc(detail.from, detail.to);
     if (current !== detail.expectedOldText) {
-      ok = false;
-      error = 'Selection changed';
+      // If offsets shifted due to earlier edits (e.g., multiple hunks in same paragraph),
+      // fall back to locating the expected text near the original position.
+      const full = view.state.sliceDoc(0, view.state.doc.length);
+      const closest = findClosestOccurrence(full, detail.expectedOldText, detail.from);
+      if (!closest) {
+        ok = false;
+        error = 'Selection changed';
+      } else {
+        const verify = view.state.sliceDoc(closest.from, closest.to);
+        if (verify !== detail.expectedOldText) {
+          ok = false;
+          error = 'Selection changed';
+        } else {
+          withProtectedEditBypass(() => {
+            applyReplacementAtRange(view, closest.from, closest.to, detail.text);
+          });
+        }
+      }
     } else {
-      applyReplacementAtRange(view, detail.from, detail.to, detail.text);
+      withProtectedEditBypass(() => {
+        applyReplacementAtRange(view, detail.from, detail.to, detail.text);
+      });
     }
   } else if (detail.kind === 'replaceInFile') {
     if (
@@ -345,7 +403,9 @@ async function onApplyRequest(event: Event) {
                 ok = false;
                 error = 'Selection changed';
               } else {
-                applyReplacementAtRange(view, refreshed.from, refreshed.to, detail.text);
+                withProtectedEditBypass(() => {
+                  applyReplacementAtRange(view, refreshed.from, refreshed.to, detail.text);
+                });
               }
             } else if (refreshed.error === 'Expected text not found') {
               ok = false;
@@ -356,7 +416,9 @@ async function onApplyRequest(event: Event) {
             }
           }
         } else {
-          applyReplacementAtRange(view, resolved.from, resolved.to, detail.text);
+          withProtectedEditBypass(() => {
+            applyReplacementAtRange(view, resolved.from as number, resolved.to as number, detail.text);
+          });
         }
       } else if (ok && !resolved.ok) {
         ok = false;
