@@ -14,20 +14,22 @@ test('generateSkillsManifest creates valid manifest', async () => {
   assert.ok(manifest.version, 'manifest should have version');
   assert.ok(Array.isArray(manifest.skills), 'manifest.skills should be an array');
 
-  // Verify skill count (should have >50 skills from AI-research-SKILLs)
-  assert.ok(
-    manifest.skills.length > 50,
-    `Expected >50 skills, got ${manifest.skills.length}`
+  // Verify bundled skill set is minimal:
+  // - ai-research: ONLY 20-ml-paper-writing
+  // - anthropic: doc-coauthoring
+  assert.strictEqual(manifest.skills.length, 2, `Expected 2 skills, got ${manifest.skills.length}`);
+
+  const paperSkill = manifest.skills.find((s) => s.name === 'ml-paper-writing');
+  assert.ok(paperSkill, 'Should include ml-paper-writing skill');
+  assert.strictEqual(
+    paperSkill.source,
+    'ai-research',
+    'ml-paper-writing should be from ai-research source'
   );
 
-  // Verify LangChain skill exists
-  const langchainSkill = manifest.skills.find((s) => s.name === 'langchain');
-  assert.ok(langchainSkill, 'Should include langchain skill');
-  assert.strictEqual(
-    langchainSkill.source,
-    'ai-research',
-    'LangChain should be from ai-research source'
-  );
+  const docSkill = manifest.skills.find((s) => s.name === 'doc-coauthoring');
+  assert.ok(docSkill, 'Should include doc-coauthoring skill');
+  assert.strictEqual(docSkill.source, 'anthropic', 'doc-coauthoring should be from anthropic source');
 
   // Verify skill structure
   const firstSkill = manifest.skills[0];
@@ -38,11 +40,8 @@ test('generateSkillsManifest creates valid manifest', async () => {
   assert.ok(firstSkill.source, 'Skill should have source');
   assert.ok(firstSkill.path, 'Skill should have path');
 
-  // Verify path format (should start with skills/ai-research/)
-  assert.ok(
-    firstSkill.path.startsWith('skills/ai-research/'),
-    `Path should start with skills/ai-research/, got: ${firstSkill.path}`
-  );
+  // Verify path format (should start with skills/)
+  assert.ok(firstSkill.path.startsWith('skills/'), `Path should start with skills/, got: ${firstSkill.path}`);
 
   // Verify path ends with SKILL.md
   assert.ok(
@@ -55,11 +54,11 @@ test('generateSkillsManifest handles skills with YAML frontmatter', async () => 
   const skillsDir = path.join(__dirname, '..', 'public', 'skills');
   const manifest = await generateSkillsManifest(skillsDir);
 
-  // Find a skill we know has frontmatter (e.g., vllm)
-  const vllmSkill = manifest.skills.find((s) => s.id.includes('vllm'));
-  assert.ok(vllmSkill, 'Should find vllm skill');
-  assert.ok(vllmSkill.description, 'vLLM should have description from frontmatter');
-  assert.ok(vllmSkill.tags.length > 0, 'vLLM should have tags from frontmatter');
+  // Find the ml-paper-writing skill (known to have frontmatter)
+  const paperSkill = manifest.skills.find((s) => s.name === 'ml-paper-writing');
+  assert.ok(paperSkill, 'Should find ml-paper-writing skill');
+  assert.ok(paperSkill.description, 'ml-paper-writing should have description from frontmatter');
+  assert.ok(paperSkill.tags.length > 0, 'ml-paper-writing should have tags from frontmatter');
 });
 
 test('generateSkillsManifest creates stable IDs', async () => {
