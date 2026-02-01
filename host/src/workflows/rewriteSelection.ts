@@ -45,8 +45,7 @@ export function buildRewritePrompt(payload: RewritePayload) {
   ].join('');
 }
 
-function extractRewriteText(resultText: string | null) {
-  if (!resultText) return null;
+function extractBetweenMarkers(resultText: string) {
   const startIndex = resultText.indexOf(REWRITE_START);
   if (startIndex < 0) return null;
   const endIndex = resultText.indexOf(REWRITE_END, startIndex + REWRITE_START.length);
@@ -55,12 +54,81 @@ function extractRewriteText(resultText: string | null) {
   return body.length > 0 ? body : null;
 }
 
+function extractFromUnclosedMarkers(resultText: string) {
+  const startIndex = resultText.indexOf(REWRITE_START);
+  const endIndex = resultText.indexOf(REWRITE_END);
+  if (startIndex >= 0 && endIndex < 0) {
+    const body = resultText.slice(startIndex + REWRITE_START.length).trim();
+    return body.length > 0 ? body : null;
+  }
+  if (endIndex >= 0 && startIndex < 0) {
+    const body = resultText.slice(0, endIndex).trim();
+    return body.length > 0 ? body : null;
+  }
+  return null;
+}
+
+function extractLastFencedBlock(resultText: string) {
+  // Prefer the last fenced code block (often the model emits the rewrite as ```latex ...```).
+  const fence = /```[a-zA-Z0-9_-]*\s*\n([\s\S]*?)\n```/g;
+  let match: RegExpExecArray | null = null;
+  let last: string | null = null;
+  // eslint-disable-next-line no-cond-assign
+  while ((match = fence.exec(resultText))) {
+    const body = (match[1] ?? '').trim();
+    if (body) last = body;
+  }
+  return last;
+}
+
+function extractTrailingText(resultText: string) {
+  // Remove any leading "change notes" bullet list and take the remaining text.
+  const lines = resultText.split(/\r?\n/);
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? '';
+    const trimmed = line.trim();
+    if (!trimmed) break;
+    const isBullet =
+      trimmed.startsWith('- ') ||
+      trimmed.startsWith('* ') ||
+      trimmed.startsWith('• ') ||
+      /^\d+\.\s+/.test(trimmed);
+    if (!isBullet) break;
+    i += 1;
+  }
+  // Skip blank lines after bullets.
+  while (i < lines.length && !(lines[i] ?? '').trim()) i += 1;
+  const rest = lines.slice(i).join('\n').trim();
+  if (rest) return rest;
+
+  // Fallback: last non-empty paragraph-like block.
+  const blocks = resultText.split(/\n\s*\n+/).map((b) => b.trim()).filter(Boolean);
+  const last = blocks.length > 0 ? blocks[blocks.length - 1] : '';
+  return last || null;
+}
+
+export function extractRewriteTextWithFallback(resultText: string | null) {
+  if (!resultText) return { text: null, usedFallback: false };
+
+  const between = extractBetweenMarkers(resultText);
+  if (between) return { text: between, usedFallback: false };
+
+  const unclosed = extractFromUnclosedMarkers(resultText);
+  if (unclosed) return { text: unclosed, usedFallback: true };
+
+  const fenced = extractLastFencedBlock(resultText);
+  if (fenced) return { text: fenced, usedFallback: true };
+
+  const trailing = extractTrailingText(resultText);
+  if (trailing) return { text: trailing, usedFallback: true };
+
+  return { text: null, usedFallback: true };
+}
+
 export async function runRewriteSelection(payload: RewritePayload, emitEvent: EmitEvent) {
   const selection = payload.context?.selection ?? '';
-  const patch: Patch = {
-    kind: 'replaceSelection',
-    text: selection,
-  };
+  const patch: Patch = { kind: 'replaceSelection', text: selection };
 
   const prompt = buildRewritePrompt(payload);
   emitEvent({ event: 'delta', data: { text: 'Preparing rewrite...' } });
@@ -91,13 +159,28 @@ export async function runRewriteSelection(payload: RewritePayload, emitEvent: Em
     return;
   }
 
-  const rewritten = extractRewriteText(resultText);
-  if (!rewritten && process.env.AGEAF_CLAUDE_MOCK !== 'true') {
+  // Keep test/dev behavior stable: in mock mode we don't enforce markers and we
+  // simply echo the original selection back as the patch.
+  if (process.env.AGEAF_CLAUDE_MOCK === 'true') {
+    emitEvent({ event: 'patch', data: patch });
+    emitEvent(doneEvent ?? { event: 'done', data: { status: 'ok' } });
+    return;
+  }
+
+  const extracted = extractRewriteTextWithFallback(resultText);
+  const rewritten = extracted.text;
+  if (!rewritten) {
     emitEvent({
       event: 'done',
       data: { status: 'error', message: 'Rewrite output missing markers' },
     });
     return;
+  }
+  if (extracted.usedFallback) {
+    emitEvent({
+      event: 'delta',
+      data: { text: 'Warning: rewrite output missing markers; using best-effort extraction.' },
+    });
   }
   emitEvent({
     event: 'patch',
