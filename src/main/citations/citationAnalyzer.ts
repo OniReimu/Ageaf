@@ -93,6 +93,82 @@ async function fetchDocDownload(projectId: string, docId: string): Promise<strin
   throw lastErr instanceof Error ? lastErr : new Error('Failed to fetch doc download');
 }
 
+type TexUsageAgg = Omit<CitationUsage, 'citationKey'>;
+type TexUsageCache = {
+  projectId: string | null;
+  builtAt: number;
+  usageByKey: Map<string, TexUsageAgg>;
+};
+
+let texUsageCache: TexUsageCache | null = null;
+let texUsageInFlight: Promise<TexUsageCache> | null = null;
+const TEX_USAGE_TTL_MS = 2 * 60 * 1000;
+
+async function buildTexUsageCache(): Promise<TexUsageCache> {
+  const projectId = getProjectIdFromPathname(window.location.pathname);
+  const projectFiles = detectProjectFilesHeuristic();
+  const texDocs = projectFiles.filter((f: any) => f.ext === 'tex' && f.entityType === 'doc' && typeof f.id === 'string');
+  const usageByKey = new Map<string, TexUsageAgg>();
+
+  if (!projectId || texDocs.length === 0) {
+    return { projectId, builtAt: Date.now(), usageByKey };
+  }
+
+  for (const texFile of texDocs as any[]) {
+    try {
+      const content = await fetchDocDownload(projectId, texFile.id as string);
+      const hits = extractCitationsWithLocations(content);
+      for (const { key, line } of hits) {
+        const existing = usageByKey.get(key) ?? { usedInFiles: [], totalUsages: 0, isUsed: false };
+        let fileEntry = existing.usedInFiles.find((f) => f.fileName === texFile.name);
+        if (!fileEntry) {
+          fileEntry = {
+            filePath: texFile.path,
+            fileName: texFile.name,
+            occurrences: 0,
+            lineNumbers: [],
+          };
+          existing.usedInFiles.push(fileEntry);
+        }
+        fileEntry.occurrences++;
+        fileEntry.lineNumbers.push(line);
+        existing.totalUsages++;
+        existing.isUsed = true;
+        usageByKey.set(key, existing);
+      }
+    } catch {
+      // ignore per-file failures
+    }
+  }
+
+  return { projectId, builtAt: Date.now(), usageByKey };
+}
+
+async function getTexUsageCache(): Promise<TexUsageCache> {
+  const projectId = getProjectIdFromPathname(window.location.pathname);
+  if (texUsageCache && texUsageCache.projectId === projectId && Date.now() - texUsageCache.builtAt < TEX_USAGE_TTL_MS) {
+    return texUsageCache;
+  }
+  if (texUsageInFlight) return texUsageInFlight;
+  texUsageInFlight = buildTexUsageCache()
+    .then((next) => {
+      texUsageCache = next;
+      return next;
+    })
+    .finally(() => {
+      texUsageInFlight = null;
+    });
+  return texUsageInFlight;
+}
+
+export async function warmTexCitationCache(): Promise<void> {
+  try {
+    await getTexUsageCache();
+  } catch {
+    // ignore warm failures
+  }
+}
+
 export async function analyzeCitations(
   bibContent: string,
   bibFileName: string
@@ -142,46 +218,16 @@ export async function analyzeCitations(
     });
   });
 
-  // Read each .tex file and extract citations (non-tab-switching: fetch doc download by id).
-  const projectId = getProjectIdFromPathname(window.location.pathname);
-  const fetchableTexDocs = texFiles.filter((f: any) => f?.entityType === 'doc' && typeof f?.id === 'string');
-
-  if (projectId && fetchableTexDocs.length > 0) {
-    for (const texFile of fetchableTexDocs) {
-      try {
-        const content = await fetchDocDownload(projectId, texFile.id as string);
-        const citationsWithLines = extractCitationsWithLocations(content);
-
-        citationsWithLines.forEach(({ key, line }) => {
-          const usage = usageMap.get(key);
-          if (usage) {
-            let fileEntry = usage.usedInFiles.find((f) => f.fileName === texFile.name);
-            if (!fileEntry) {
-              fileEntry = {
-                filePath: texFile.path,
-                fileName: texFile.name,
-                occurrences: 0,
-                lineNumbers: [],
-              };
-              usage.usedInFiles.push(fileEntry);
-            }
-            fileEntry.occurrences++;
-            fileEntry.lineNumbers.push(line);
-            usage.totalUsages++;
-            usage.isUsed = true;
-          }
-        });
-      } catch (err) {
-        console.warn(`Failed to fetch ${texFile.name}:`, err);
-      }
-    }
-  } else {
-    // We intentionally do NOT fall back to tab-switching reads here; they cause disruptive UI jumps.
-    console.warn('[Ageaf citations] Unable to fetch .tex docs via download endpoint', {
-      projectId,
-      texCandidates: texFiles.length,
-      fetchableTexDocs: fetchableTexDocs.length,
-      bibFileName,
+  // Fill usage map from cached .tex citation scan (non-tab-switching).
+  const texUsage = await getTexUsageCache();
+  for (const entry of entries) {
+    const agg = texUsage.usageByKey.get(entry.key);
+    if (!agg) continue;
+    usageMap.set(entry.key, {
+      citationKey: entry.key,
+      usedInFiles: agg.usedInFiles,
+      totalUsages: agg.totalUsages,
+      isUsed: agg.isUsed,
     });
   }
 
