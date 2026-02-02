@@ -623,6 +623,15 @@ type OverleafEntry = {
   name: string;
   ext: string;
   kind: 'tex' | 'bib' | 'img' | 'other' | 'folder';
+  /**
+   * Overleaf entity id when available (docs + file refs).
+   * In the Overleaf file tree DOM, this is exposed via `data-file-id`.
+   */
+  id?: string;
+  /**
+   * Overleaf entity type when available (`doc` or `file`), exposed via `data-file-type`.
+   */
+  entityType?: 'doc' | 'file' | string;
 };
 
 type RuntimeModel = {
@@ -4126,6 +4135,59 @@ const Panel = () => {
 
       const MAX_CHARS = 200_000;
       const MAX_FILES_PER_FOLDER = 5;
+      const projectId = getOverleafProjectIdFromPathname(window.location.pathname);
+      const fileContentCache = new Map<string, string>();
+
+      const normalizeMentionRef = (ref: string) => {
+        let s = ref.trim();
+        if (!s) return '';
+        s = s.replace(/\*+$/, '').trim();
+        if (s.includes('/')) s = s.split('/').filter(Boolean).pop() ?? s;
+        return s;
+      };
+
+      const findDocIdForRef = (ref: string) => {
+        const want = normalizeMentionRef(ref).toLowerCase();
+        if (!want) return null;
+        const nodes = Array.from(
+          document.querySelectorAll('[data-file-id][data-file-type="doc"]')
+        );
+        for (const node of nodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (node.closest('#ageaf-panel-root')) continue;
+          const treeItem = node.closest('[role="treeitem"]') as HTMLElement | null;
+          const name = (treeItem?.getAttribute('aria-label') ?? treeItem?.textContent ?? '').trim();
+          if (!name) continue;
+          if (name.trim().toLowerCase() !== want) continue;
+          const id = node.getAttribute('data-file-id')?.trim();
+          if (id) return id;
+        }
+        return null;
+      };
+
+      const fetchDocDownload = async (docId: string) => {
+        if (!projectId) throw new Error('Missing project id');
+        // Try both route casings to be robust.
+        const candidates = [
+          `/Project/${encodeURIComponent(projectId)}/doc/${encodeURIComponent(docId)}/download`,
+          `/project/${encodeURIComponent(projectId)}/doc/${encodeURIComponent(docId)}/download`,
+        ];
+        let lastErr: unknown = null;
+        for (const url of candidates) {
+          try {
+            const resp = await fetch(url, { credentials: 'include' });
+            if (!resp.ok) {
+              lastErr = new Error(`HTTP ${resp.status}`);
+              continue;
+            }
+            return await resp.text();
+          } catch (err) {
+            lastErr = err;
+          }
+        }
+        throw lastErr instanceof Error ? lastErr : new Error('Doc download failed');
+      };
+
       const langForExt = (name: string) => {
         const ext = getFileExtension(name);
         if (ext === '.tex') return 'tex';
@@ -4139,6 +4201,34 @@ const Panel = () => {
       };
 
       const resolveFile = async (ref: string) => {
+        // Prefer non-tab-switching doc fetch for text docs when possible.
+        // This avoids Overleaf UI tab switching which is disruptive.
+        const cached = fileContentCache.get(ref);
+        if (cached != null) {
+          const requested = ref;
+          const lang = langForExt(requested);
+          return `\n\n[Overleaf file: ${requested}]\n\`\`\`${lang}\n${cached}\n\`\`\`\n`;
+        }
+
+        const docId = findDocIdForRef(ref);
+        if (projectId && docId) {
+          try {
+            const content = await fetchDocDownload(docId);
+            fileContentCache.set(ref, content);
+            let body = content;
+            if (body.length > MAX_CHARS) {
+              const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
+              const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
+              body = `${head}\n\n… [truncated ${body.length - (head.length + tail.length)} chars] …\n\n${tail}`;
+            }
+            const requested = ref;
+            const lang = langForExt(requested);
+            return `\n\n[Overleaf file: ${requested}]\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
+          } catch (err) {
+            // Fall through to bridge below.
+          }
+        }
+
         if (!bridge.requestFileContent) {
           return `\n\n[Overleaf file: ${ref}]\n(Unable to read file content from Overleaf editor.)\n`;
         }
@@ -4151,8 +4241,13 @@ const Panel = () => {
           name: ref,
         }));
         const content = typeof resp?.content === 'string' ? resp.content : '';
-        const ok = !!resp?.ok && content.length > 0;
+        // Guard against a critical failure mode: bridge may return the *current* tab's
+        // content if it can't activate the requested file. In that case, treat as failure.
         const requested = typeof resp?.name === 'string' ? resp.name : ref;
+        const normalizedRequested = normalizeMentionRef(requested).toLowerCase();
+        const normalizedActive = normalizeMentionRef(String(resp?.activeName ?? '')).toLowerCase();
+        const activeMatches = !!normalizedRequested && normalizedActive === normalizedRequested;
+        const ok = !!resp?.ok && content.length > 0 && activeMatches;
 
         const injection = ok
           ? (() => {
@@ -6537,4 +6632,99 @@ const Panel = () => {
       ) : null}
     </aside>
   );
+};
+
+// Export helper functions for use by citation indicator
+export { Panel };
+export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
+  const entries: OverleafEntry[] = [];
+  const seen = new Set<string>();
+
+  const normalizeLabel = (raw: string): string => {
+    let s = raw.trim();
+    if (!s) return '';
+    s = s.replace(/\*+$/, '').trim(); // unsaved marker
+    s = s.replace(/\s*\(.*?\)\s*$/, '').trim(); // trailing "(...)" metadata
+    return s;
+  };
+
+  const basename = (p: string) => {
+    const parts = p.split('/').filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1]! : p;
+  };
+
+  const isFolderLike = (el: Element) => {
+    if (!(el instanceof HTMLElement)) return false;
+    if (el.getAttribute('aria-expanded') != null) return true;
+    const dt = el.getAttribute('data-type');
+    if (dt === 'folder') return true;
+    const cn = (el.className ?? '').toString();
+    return /\bfolder\b/i.test(cn);
+  };
+
+  const addEntry = (entry: OverleafEntry) => {
+    const key = `${entry.path}:${entry.kind}`.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push(entry);
+  };
+
+  // Scan tabs + file tree nodes (same broad selectors as editorBridge.findClickableByName)
+  const nodes = Array.from(
+    document.querySelectorAll(
+      [
+        '[role="tab"]',
+        '.cm-tab',
+        '.cm-tab-label',
+        '[role="treeitem"]',
+        '[data-file-id]',
+        '[data-testid="file-name"]',
+        '.file-tree-item-name',
+        '.file-name',
+        '.entity-name',
+        '.file-label',
+      ].join(', ')
+    )
+  );
+
+  for (const node of nodes) {
+    if (!(node instanceof HTMLElement)) continue;
+    if (node.closest('#ageaf-panel-root')) continue;
+    // Skip folder nodes in the tree
+    if (node.getAttribute('role') === 'treeitem' && isFolderLike(node)) continue;
+
+    const raw = (node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent || '').trim();
+    const text = normalizeLabel(raw);
+    if (!text) continue;
+
+    const base = basename(text);
+    const ext = base.split('.').pop()?.toLowerCase() || '';
+    if (!ext) continue;
+    const kind =
+      ext === 'tex'
+        ? 'tex'
+        : ext === 'bib'
+          ? 'bib'
+          : ext.match(/png|jpg|jpeg|pdf|svg/)
+            ? 'img'
+            : 'other';
+
+    // Prefer extracting Overleaf entity id/type from the file tree markup
+    // (file tree nodes contain a descendant with `data-file-id`).
+    const idNode =
+      node.matches?.('[data-file-id]') ? node : (node.querySelector?.('[data-file-id]') as HTMLElement | null);
+    const id = idNode?.getAttribute?.('data-file-id')?.trim() || undefined;
+    const entityType = idNode?.getAttribute?.('data-file-type')?.trim() || undefined;
+
+    addEntry({
+      path: text,
+      name: base,
+      ext,
+      kind,
+      ...(id ? { id } : {}),
+      ...(entityType ? { entityType } : {}),
+    });
+  }
+
+  return entries;
 };
