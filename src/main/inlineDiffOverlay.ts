@@ -242,9 +242,11 @@ function ensureInlineDiffStyles() {
     textarea.ageaf-inline-diff-widget__text {
       border: none;
       outline: none;
-      resize: vertical;
+      resize: none;
       min-height: 64px;
       display: block;
+      overflow: hidden; /* auto-sized via JS; avoid internal scrolling */
+      height: auto;
     }
 
     .ageaf-inline-diff-widget__actions {
@@ -918,7 +920,20 @@ function createWidgetDOM(text: string, messageId: string): HTMLElement {
   textEl.spellcheck = false;
   // Allow editing proposed text like Cursor does.
   (textEl as HTMLTextAreaElement).setAttribute('data-ageaf-proposed-editor', '1');
+  const autosize = () => {
+    try {
+      // Reset first so shrink works too.
+      (textEl as HTMLTextAreaElement).style.height = 'auto';
+      (textEl as HTMLTextAreaElement).style.height = `${(textEl as HTMLTextAreaElement).scrollHeight}px`;
+    } catch {
+      // ignore
+    }
+  };
+  // Size on input + initial mount.
+  textEl.addEventListener('input', autosize);
   wrap.appendChild(textEl);
+  // After mounting into DOM, scrollHeight becomes stable.
+  requestAnimationFrame(() => autosize());
 
   const actions = document.createElement('div');
   actions.className = 'ageaf-inline-diff-widget__actions';
@@ -1353,6 +1368,15 @@ export function registerInlineDiffOverlay() {
       WidgetType,
       Compartment,
     };
+
+    // Expose resolved CM6 exports for other Ageaf features that may register
+    // their event listeners after Overleaf fires UNSTABLE_editor:extensions.
+    try {
+      (window as any).__ageafCm6Exports = cm6Exports;
+      window.dispatchEvent(new CustomEvent('ageaf:cm6:resolved', { detail: { cm6Exports } }));
+    } catch {
+      // ignore
+    }
 
     logOnce('cm6-resolved', 'CM6 classes resolved from Overleaf event', {
       keys: Object.keys(CodeMirror).slice(0, 30),

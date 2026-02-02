@@ -61,6 +61,11 @@ interface ApplyResponse {
 interface FileContentRequest {
   requestId: string;
   name: string;
+  /**
+   * Optional tab/file label to restore after reading content.
+   * Useful for background reads that temporarily activate another file.
+   */
+  returnTo?: string | null;
 }
 
 interface FileContentResponse {
@@ -127,12 +132,24 @@ function findClickableByName(name: string): HTMLElement | null {
   return null;
 }
 
-function restoreActiveFile(originalName: string | null, activeName: string | null) {
+function restoreActiveFile(desiredName: string | null, activeName: string | null) {
   // Best-effort restore previous active file (avoid disrupting the user).
   try {
-    if (originalName && activeName && originalName !== activeName) {
-      const restore = findClickableByName(originalName);
-      restore?.click();
+    const desired = desiredName?.trim();
+    if (!desired) return;
+    if (activeName && desired === activeName) return;
+
+    // Try restoring by full label/path first, then by basename.
+    const restore = findClickableByName(desired);
+    if (restore) {
+      restore.click();
+      return;
+    }
+    const parts = desired.split('/').filter(Boolean);
+    if (parts.length > 1) {
+      const base = parts[parts.length - 1]!;
+      const restoreBase = findClickableByName(base);
+      restoreBase?.click();
     }
   } catch {
     // ignore restore errors
@@ -173,6 +190,7 @@ async function onFileContentRequest(event: Event) {
   const beforeText = view.state.sliceDoc(0, view.state.doc.length);
   const beforeHash = `${beforeText.length}:${beforeText.slice(0, 64)}:${beforeText.slice(-64)}`;
   const originalName = getActiveTabName();
+  const returnTo = (detail.returnTo ?? originalName) ?? null;
 
   let ok = true;
   let error: string | undefined;
@@ -180,7 +198,10 @@ async function onFileContentRequest(event: Event) {
   try {
     if (requested && (!originalName || originalName.trim() !== requested)) {
       const activated = await tryActivateFileByName(requested);
-      if (activated) {
+      if (!activated) {
+        ok = false;
+        error = `Unable to activate requested file: ${requested}`;
+      } else {
         await waitForDocChange(beforeHash, 2500);
       }
     }
@@ -192,7 +213,13 @@ async function onFileContentRequest(event: Event) {
   const activeName = getActiveTabName();
   const content = view.state.sliceDoc(0, view.state.doc.length);
 
-  restoreActiveFile(originalName, activeName);
+  // If we didn't end up on the requested file, do not claim success.
+  if (ok && requested && !matchesActiveFile(activeName, requested)) {
+    ok = false;
+    error = `Requested file not active (requested: ${requested}, active: ${activeName ?? 'unknown'})`;
+  }
+
+  restoreActiveFile(returnTo, activeName);
 
   const response: FileContentResponse = {
     requestId: detail.requestId,
