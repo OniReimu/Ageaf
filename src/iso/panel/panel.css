@@ -204,6 +204,7 @@
     transform: translateX(32px);
     opacity: 0;
   }
+
   to {
     transform: translateX(0);
     opacity: 1;
@@ -490,7 +491,7 @@
   display: flex;
 }
 
-.ageaf-diff-modal__content > .ageaf-diff-review {
+.ageaf-diff-modal__content>.ageaf-diff-review {
   flex: 1 1 auto;
   min-height: 0;
   max-height: none;
@@ -558,22 +559,30 @@
 }
 
 @keyframes ageaf-provider-flash-anthropic {
-  0%, 50% {
+
+  0%,
+  50% {
     background: rgba(57, 185, 138, 0.9);
     border-color: transparent;
   }
-  25%, 75% {
+
+  25%,
+  75% {
     background: transparent;
     border-color: rgba(57, 185, 138, 0.9);
   }
 }
 
 @keyframes ageaf-provider-flash-openai {
-  0%, 50% {
+
+  0%,
+  50% {
     background: rgba(95, 160, 255, 0.9);
     border-color: transparent;
   }
-  25%, 75% {
+
+  25%,
+  75% {
     background: transparent;
     border-color: rgba(95, 160, 255, 0.9);
   }
@@ -1082,8 +1091,8 @@
 }
 
 /* Left-align KaTeX rendered output - override KaTeX's default centering */
-.ageaf-latex--display > .katex,
-.ageaf-latex--display > .katex-display {
+.ageaf-latex--display>.katex,
+.ageaf-latex--display>.katex-display {
   text-align: left !important;
   margin-left: 0 !important;
   margin-right: auto !important;
@@ -1202,15 +1211,212 @@
   animation: ageaf-activity-pulse 1.2s ease-in-out infinite;
 }
 
+.ageaf-message__trace {
+  font-size: 12px;
+  color: var(--ageaf-panel-status);
+  text-shadow: 0 0 10px rgba(255, 165, 70, 0.25);
+  margin-bottom: 8px;
+  border-left: 2px solid rgba(255, 165, 70, 0.35);
+  padding-left: 8px;
+}
+
+.ageaf-message__trace.is-active {
+  animation: ageaf-activity-pulse 1.2s ease-in-out infinite;
+}
+
+.ageaf-message__trace-line {
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ageaf-message__trace-more {
+  margin-top: 2px;
+  opacity: 0.8;
+}
+
+.ageaf-message__trace-toggle {
+  margin-top: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--ageaf-panel-accent);
+  background: transparent;
+  border: 1px solid rgba(57, 185, 138, 0.3);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ageaf-message__trace-toggle:hover {
+  background: rgba(57, 185, 138, 0.1);
+  border-color: rgba(57, 185, 138, 0.5);
+}
+
+.ageaf-message__trace.is-active .ageaf-message__trace-toggle {
+  color: rgba(255, 165, 70, 0.9);
+  border-color: rgba(255, 165, 70, 0.4);
+}
+
+.ageaf-message__trace.is-active .ageaf-message__trace-toggle:hover {
+  background: rgba(255, 165, 70, 0.1);
+  border-color: rgba(255, 165, 70, 0.6);
+}
+
 @keyframes ageaf-activity-pulse {
+
   0%,
   100% {
     opacity: 0.6;
     text-shadow: 0 0 6px rgba(255, 165, 70, 0.3);
   }
+
   50% {
     opacity: 1;
     text-shadow: 0 0 16px rgba(255, 165, 70, 0.6);
+  }
+}
+
+/* Thinking Block - orange themed, matches status line */
+.ageaf-message__thinking {
+  font-size: 12px;
+  color: rgba(255, 200, 150, 0.9);
+  text-shadow: 0 0 10px rgba(255, 165, 70, 0.25);
+  margin-bottom: 8px;
+  border-left: 2px solid rgba(255, 165, 70, 0.35);
+  padding: 8px 10px 8px 12px;
+  background: rgba(255, 165, 70, 0.05);
+  border-radius: 0 6px 6px 0;
+}
+
+.ageaf-message__thinking.is-active {
+  animation: ageaf-thinking-pulse 1.5s ease-in-out infinite;
+}
+
+.ageaf-message__thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: rgba(255, 165, 70, 0.9);
+}
+
+.ageaf-message__thinking-content {
+  line-height: 1.5;
+  padding: 4px 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: var(--ageaf-panel-text);
+  opacity: 0.85;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.ageaf-message__thinking-content+.ageaf-message__thinking-content {
+  border-top: 1px solid rgba(255, 165, 70, 0.15);
+  margin-top: 4px;
+  padding-top: 8px;
+}
+
+.ageaf-message__thinking-toggle {
+  margin-top: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: rgba(255, 165, 70, 0.8);
+  background: transparent;
+  border: 1px solid rgba(255, 165, 70, 0.3);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.ageaf-message__thinking-toggle:hover {
+  background: rgba(255, 165, 70, 0.1);
+  border-color: rgba(255, 165, 70, 0.5);
+}
+
+@keyframes ageaf-thinking-pulse {
+
+  0%,
+  100% {
+    opacity: 0.7;
+    border-left-color: rgba(255, 165, 70, 0.35);
+  }
+
+  50% {
+    opacity: 1;
+    border-left-color: rgba(255, 165, 70, 0.7);
+  }
+}
+
+/* Tool Execution Indicators */
+.ageaf-tool-indicators {
+  padding: 4px 0;
+}
+
+.ageaf-tool-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.ageaf-tool-indicator--started {
+  color: var(--ageaf-panel-text);
+}
+
+.ageaf-tool-indicator--completed {
+  color: var(--ageaf-panel-text);
+  opacity: 0.7;
+}
+
+.ageaf-tool-indicator--failed {
+  color: rgba(255, 100, 100, 0.9);
+}
+
+.ageaf-tool-indicator__icon {
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.ageaf-tool-indicator__name {
+  font-weight: 500;
+  color: var(--ageaf-panel-text);
+}
+
+.ageaf-tool-indicator__input {
+  flex: 1;
+  color: var(--ageaf-panel-text);
+  opacity: 0.7;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+.ageaf-tool-indicator__spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(57, 185, 138, 0.3);
+  border-top-color: rgba(57, 185, 138, 0.9);
+  border-radius: 50%;
+  animation: ageaf-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes ageaf-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -1425,8 +1631,15 @@
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
+
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+
+  50% {
+    opacity: 1;
+  }
 }
 
 .ageaf-session-tab:disabled {
@@ -2328,7 +2541,7 @@
   letter-spacing: 0.2px;
 }
 
-.ageaf-settings__section h3 + .ageaf-settings__subhead {
+.ageaf-settings__section h3+.ageaf-settings__subhead {
   margin-top: 0;
 }
 
@@ -2472,4 +2685,127 @@
   color: #ffdf5d;
   background-color: #2d2400;
   border-color: #bb8009;
+}
+
+/* CoT Display */
+.ageaf-message__cot {
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--ageaf-panel-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--ageaf-panel-surface);
+}
+
+.ageaf-message__cot-header {
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  border-bottom: 1px solid transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  color: var(--ageaf-panel-text);
+  font-size: 12px;
+  font-family: inherit;
+  transition: background 0.1s ease;
+}
+
+.ageaf-message__cot-header:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ageaf-message__cot.is-active .ageaf-message__cot-header {
+  border-bottom-color: var(--ageaf-panel-border);
+}
+
+.ageaf-cot-arrow {
+  margin-right: 8px;
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.ageaf-cot-label {
+  font-weight: 500;
+  opacity: 0.9;
+}
+
+.ageaf-message__cot-body {
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.1);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ageaf-cot-thinking {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--ageaf-panel-muted);
+  line-height: 1.5;
+}
+
+.ageaf-cot-thinking-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ageaf-cot-thinking-content {
+  white-space: pre-wrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.ageaf-cot-tool {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 8px;
+  overflow: hidden;
+}
+
+.ageaf-cot-tool--started {
+  border-color: rgba(57, 185, 138, 0.3);
+  background: rgba(57, 185, 138, 0.05);
+}
+
+.ageaf-cot-tool--completed {
+  border-color: rgba(57, 185, 138, 0.15);
+}
+
+.ageaf-cot-tool--failed {
+  border-color: rgba(244, 100, 100, 0.3);
+  background: rgba(244, 100, 100, 0.05);
+}
+
+.ageaf-cot-tool-icon {
+  font-size: 14px;
+}
+
+.ageaf-cot-tool-status {
+  display: none;
+}
+
+.ageaf-cot-tool-name {
+  font-weight: 600;
+  color: var(--ageaf-panel-text);
+  flex-shrink: 0;
+}
+
+.ageaf-cot-tool-input {
+  opacity: 0.6;
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }

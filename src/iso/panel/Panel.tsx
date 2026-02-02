@@ -36,6 +36,9 @@ import {
   StoredConversation,
   StoredContextUsage,
   StoredMessage,
+  CoTItem,
+  CoTThinkingItem,
+  CoTToolItem,
   StoredPatchReview,
   StoredProjectChat,
   deleteConversation,
@@ -551,15 +554,21 @@ export function unmountPanel() {
   root.remove();
 }
 
+
+
 type Message = {
   id: string;
   role: 'system' | 'assistant' | 'user';
   content: string;
   statusLine?: string;
+  cot?: CoTItem[];
+  thinking?: string[];
   images?: ImageAttachment[];
   attachments?: FileAttachment[];
   patchReview?: StoredPatchReview;
 };
+
+
 
 type QueuedMessage = {
   text: string;
@@ -573,13 +582,13 @@ type Patch =
   | { kind: 'replaceSelection'; text: string }
   | { kind: 'insertAtCursor'; text: string }
   | {
-      kind: 'replaceRangeInFile';
-      filePath: string;
-      expectedOldText: string;
-      text: string;
-      from?: number;
-      to?: number;
-    };
+    kind: 'replaceRangeInFile';
+    filePath: string;
+    expectedOldText: string;
+    text: string;
+    from?: number;
+    to?: number;
+  };
 
 type SelectionSnapshot = {
   selection: string;
@@ -589,6 +598,7 @@ type SelectionSnapshot = {
   lineTo?: number;
   fileName?: string;
 };
+
 
 type ToolRequest = {
   kind: 'approval' | 'user_input';
@@ -644,11 +654,11 @@ type OverleafEntry = {
   kind: 'tex' | 'bib' | 'img' | 'other' | 'folder';
   /**
    * Overleaf entity id when available (docs + file refs).
-   * In the Overleaf file tree DOM, this is exposed via `data-file-id`.
+   * In the Overleaf file tree DOM, this is exposed via `data - file - id`.
    */
   id?: string;
   /**
-   * Overleaf entity type when available (`doc` or `file`), exposed via `data-file-type`.
+   * Overleaf entity type when available (`doc` or `file`), exposed via `data - file - type`.
    */
   entityType?: 'doc' | 'file' | string;
 };
@@ -714,6 +724,8 @@ const Panel = () => {
   const [sessionIds, setSessionIds] = useState<string[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [streamingText, setStreamingText] = useState('');
+  const [streamingThinking, setStreamingThinking] = useState('');
+  const [streamingCoT, setStreamingCoT] = useState<CoTItem[]>([]);
   const [patchActionBusyId, setPatchActionBusyId] = useState<string | null>(null);
   const [patchActionErrors, setPatchActionErrors] = useState<Record<string, string>>({});
   const [toolRequests, setToolRequests] = useState<ToolRequest[]>([]);
@@ -735,6 +747,7 @@ const Panel = () => {
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [streamingStatus, setStreamingStatus] = useState<string | null>(null);
   const [isStreamingActive, setIsStreamingActive] = useState(false);
+
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModel[]>([]);
   const [thinkingModes, setThinkingModes] = useState<ThinkingMode[]>([]);
   const [currentModel, setCurrentModel] = useState<string | null>(null);
@@ -768,6 +781,17 @@ const Panel = () => {
     hostConnected: false,
     runtimeWorking: false,
   });
+
+  // Tool execution visibility tracking
+  type ToolExecutionState = {
+    toolId: string;
+    toolName: string;
+    phase: 'started' | 'completed' | 'failed';
+    message: string;
+    input?: string;
+    timestamp: number;
+  };
+  const [activeTools, setActiveTools] = useState<Map<string, ToolExecutionState>>(new Map());
   const lastHostOkAtRef = useRef(0);
   const lastRuntimeOkAtRef = useRef(0);
   const lastCodexMetadataCheckAtRef = useRef(0);
@@ -811,6 +835,15 @@ const Panel = () => {
 
     // Patch proposals received while streaming a reply
     pendingPatchReviewMessages: StoredMessage[];
+
+    // Debug/trace (per in-flight message)
+    debugCliEventsEnabled: boolean;
+
+    // Thinking block tracking
+    thinkingBuffer: string;
+    inThinkingBlock: boolean;
+    thinkingBlocks: string[];
+    cotSequence: CoTItem[];
   };
 
   const sessionStates = useRef<Map<string, SessionRuntimeState>>(new Map());
@@ -832,6 +865,12 @@ const Panel = () => {
     lastActivity: Date.now(),
     pendingDone: null,
     pendingPatchReviewMessages: [],
+    debugCliEventsEnabled: false,
+
+    thinkingBuffer: '',
+    inThinkingBlock: false,
+    thinkingBlocks: [],
+    cotSequence: [],
   });
 
   // Get or create session state
@@ -840,6 +879,52 @@ const Panel = () => {
       sessionStates.current.set(conversationId, createInitialState());
     }
     return sessionStates.current.get(conversationId)!;
+  };
+
+  // Extract <thinking> blocks from streaming text
+  const extractThinkingBlocks = (
+    deltaText: string,
+    state: SessionRuntimeState
+  ): { visibleText: string; newBlocks: string[] } => {
+    state.thinkingBuffer += deltaText;
+    const newBlocks: string[] = [];
+    let visibleText = '';
+    let pos = 0;
+
+    while (pos < state.thinkingBuffer.length) {
+      if (state.inThinkingBlock) {
+        const closeIdx = state.thinkingBuffer.indexOf('</thinking>', pos);
+        if (closeIdx >= 0) {
+          const content = state.thinkingBuffer.slice(pos, closeIdx).trim();
+          if (content) newBlocks.push(content);
+          pos = closeIdx + '</thinking>'.length;
+          state.inThinkingBlock = false;
+        } else {
+          break; // Wait for more data
+        }
+      } else {
+        const openIdx = state.thinkingBuffer.indexOf('<thinking>', pos);
+        if (openIdx >= 0) {
+          visibleText += state.thinkingBuffer.slice(pos, openIdx);
+          pos = openIdx + '<thinking>'.length;
+          state.inThinkingBlock = true;
+        } else {
+          const remaining = state.thinkingBuffer.slice(pos);
+          // Hold back potential partial tags
+          const partial = remaining.match(/<(?:t(?:h(?:i(?:n(?:k(?:i(?:n(?:g)?)?)?)?)?)?)?)?$/i);
+          if (partial) {
+            visibleText += remaining.slice(0, partial.index);
+            break;
+          }
+          visibleText += remaining;
+          pos = state.thinkingBuffer.length;
+        }
+      }
+    }
+
+    state.thinkingBuffer = state.thinkingBuffer.slice(pos);
+    state.thinkingBlocks.push(...newBlocks);
+    return { visibleText, newBlocks };
   };
 
   // Get current active session state
@@ -865,6 +950,22 @@ const Panel = () => {
   const pendingWidthRef = useRef(DEFAULT_WIDTH);
   const resizeFrameRef = useRef<number | null>(null);
   const streamingTextRef = useRef('');
+  const streamingThinkingRef = useRef('');
+  const streamingCoTRef = useRef<CoTItem[]>([]);
+
+  const completeLastTool = (cot: CoTItem[]) => {
+    const last = cot[cot.length - 1];
+    if (last && last.type === 'tool' && last.phase === 'started') {
+      last.phase = 'completed';
+      return true;
+    }
+    return false;
+  };
+
+  const convertThinkingToCoT = (thinking?: string[]): CoTItem[] => {
+    if (!thinking) return [];
+    return thinking.map(content => ({ type: 'thinking', content }));
+  };
   const isSendingRef = useRef(false);
   const queueRef = useRef<QueuedMessage[]>([]);
   const chatRef = useRef<HTMLDivElement | null>(null);
@@ -904,7 +1005,7 @@ const Panel = () => {
       baseMessage = 'Host not running. Check if the host server is started.';
     } else if (!connectionHealth.runtimeWorking) {
       const cliName = chatProvider === 'codex' ? 'Codex CLI' : 'Claude Code CLI';
-      baseMessage = `${cliName} not working. Check if CLI is installed and you are logged in.`;
+      baseMessage = `${cliName} not working.Check if CLI is installed and you are logged in.`;
     } else {
       baseMessage = 'Connected';
     }
@@ -914,7 +1015,7 @@ const Panel = () => {
       const conversationId = chatConversationIdRef.current;
       const state = chatStateRef.current;
       const conversation = state ? findConversation(state, conversationId) : null;
-      
+
       let sessionId = '';
       if (conversation?.provider === 'codex' && conversation?.providerState?.codex?.threadId) {
         const threadId = conversation.providerState.codex.threadId;
@@ -929,7 +1030,7 @@ const Panel = () => {
       }
 
       if (sessionId) {
-        return `${baseMessage}\nSession: ${sessionId}`;
+        return `${baseMessage} \nSession: ${sessionId} `;
       }
     }
 
@@ -1088,61 +1189,61 @@ const Panel = () => {
     setConnectionHealth({ hostConnected, runtimeWorking });
   };
 
-	  const checkNativeHost = async () => {
-	    setNativeStatusError(null);
+  const checkNativeHost = async () => {
+    setNativeStatusError(null);
 
-	    const request: NativeHostRequest = {
-	      id: crypto.randomUUID(),
-	      kind: 'request',
-	      request: { method: 'GET', path: '/v1/health' },
-	    };
+    const request: NativeHostRequest = {
+      id: crypto.randomUUID(),
+      kind: 'request',
+      request: { method: 'GET', path: '/v1/health' },
+    };
 
-	    try {
-	      const response = await new Promise<NativeHostResponse>((resolve, reject) => {
-	        const timeoutMs = 10_000;
-	        const timeoutId = setTimeout(() => {
-	          reject(new Error('native check timed out'));
-	        }, timeoutMs);
+    try {
+      const response = await new Promise<NativeHostResponse>((resolve, reject) => {
+        const timeoutMs = 10_000;
+        const timeoutId = setTimeout(() => {
+          reject(new Error('native check timed out'));
+        }, timeoutMs);
 
-	        chrome.runtime.sendMessage({ type: 'ageaf:native-request', request }, (message) => {
-	          clearTimeout(timeoutId);
+        chrome.runtime.sendMessage({ type: 'ageaf:native-request', request }, (message) => {
+          clearTimeout(timeoutId);
 
-	          const runtimeError = chrome.runtime.lastError;
-	          if (runtimeError?.message) {
-	            reject(new Error(runtimeError.message));
-	            return;
-	          }
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError?.message) {
+            reject(new Error(runtimeError.message));
+            return;
+          }
 
-	          resolve(message as NativeHostResponse);
-	        });
-	      });
+          resolve(message as NativeHostResponse);
+        });
+      });
 
-	      if (response.kind === 'response' && response.status >= 200 && response.status < 300) {
-	        setNativeStatus('available');
-	        return;
-	      }
+      if (response.kind === 'response' && response.status >= 200 && response.status < 300) {
+        setNativeStatus('available');
+        return;
+      }
 
-	      setNativeStatus('unavailable');
-	      if (response.kind === 'error') {
-	        setNativeStatusError(response.message);
-	      } else if (response.kind === 'response') {
-	        const detail =
-	          typeof response.body === 'object' && response.body && 'message' in response.body
-	            ? String((response.body as { message: unknown }).message)
-	            : undefined;
-	        setNativeStatusError(
-	          detail
-	            ? `Health check failed (${response.status}): ${detail}`
-	            : `Health check failed (${response.status})`
-	        );
-	      } else {
-	        setNativeStatusError(`Unexpected response kind: ${response.kind}`);
-	      }
-	    } catch (error) {
-	      setNativeStatus('unavailable');
-	      setNativeStatusError(error instanceof Error ? error.message : 'native check failed');
-	    }
-	  };
+      setNativeStatus('unavailable');
+      if (response.kind === 'error') {
+        setNativeStatusError(response.message);
+      } else if (response.kind === 'response') {
+        const detail =
+          typeof response.body === 'object' && response.body && 'message' in response.body
+            ? String((response.body as { message: unknown }).message)
+            : undefined;
+        setNativeStatusError(
+          detail
+            ? `Health check failed(${response.status}): ${detail} `
+            : `Health check failed(${response.status})`
+        );
+      } else {
+        setNativeStatusError(`Unexpected response kind: ${response.kind} `);
+      }
+    } catch (error) {
+      setNativeStatus('unavailable');
+      setNativeStatusError(error instanceof Error ? error.message : 'native check failed');
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -1163,7 +1264,7 @@ const Panel = () => {
       const conversation = conversationId && state ? findConversation(state, conversationId) : null;
       setContextUsageFromStored(getCachedStoredUsage(conversation, chatProvider));
 
-	      if (options.transport !== 'native' && !options.hostUrl) {
+      if (options.transport !== 'native' && !options.hostUrl) {
         setRuntimeModels([]);
         if (chatProvider === 'codex') {
           setThinkingModes(
@@ -1198,10 +1299,10 @@ const Panel = () => {
           } else {
             // Fetch fresh metadata
             metadata = await fetchCodexRuntimeMetadata(options);
-          if (cancelled) return;
+            if (cancelled) return;
             models = (metadata.models ?? []).filter(
               (model: RuntimeModel) => !model.value.includes('gpt-5.1')
-          );
+            );
           }
 
           setRuntimeModels(models);
@@ -1209,12 +1310,12 @@ const Panel = () => {
           // Determine model selection
           const resolvedModel = metadata
             ? (metadata.currentModel ??
-               models.find((model: RuntimeModel) => model.isDefault)?.value ??
-            models[0]?.value ??
-               null)
+              models.find((model: RuntimeModel) => model.isDefault)?.value ??
+              models[0]?.value ??
+              null)
             : (models.find((model: RuntimeModel) => model.isDefault)?.value ??
-               models[0]?.value ??
-               null);
+              models[0]?.value ??
+              null);
           setCurrentModel(resolvedModel);
 
           const selectedModel =
@@ -1278,7 +1379,7 @@ const Panel = () => {
         } else {
           // Fetch fresh metadata
           metadata = await fetchClaudeRuntimeMetadata(options);
-        if (cancelled) return;
+          if (cancelled) return;
           models = metadata.models ?? [];
           thinkingModes = metadata.thinkingModes ?? FALLBACK_THINKING_MODES;
 
@@ -1361,6 +1462,8 @@ const Panel = () => {
     });
   }, [settingsOpen]);
 
+  // (Debug trace is rendered inline in the chat when enabled.)
+
   useEffect(() => {
     const onOpenSettings = () => setSettingsOpen(true);
     window.addEventListener('ageaf:settings:open', onOpenSettings as EventListener);
@@ -1421,14 +1524,175 @@ const Panel = () => {
 
   const formatTokenCount = (value: number) => {
     if (value >= 1000) {
-      return `${Math.floor(value / 1000)}k`;
+      return `${Math.floor(value / 1000)} k`;
     }
     return String(value);
   };
 
+
+
+
+
+  const THINKING_COLLAPSED_LINES = 3;
+  const [expandedThinkingMessages, setExpandedThinkingMessages] = useState<Set<string>>(
+    new Set()
+  );
+
+  const toggleThinkingExpanded = (messageId: string) => {
+    setExpandedThinkingMessages((prev) => {
+      const next = new Set(prev);
+      next.has(messageId) ? next.delete(messageId) : next.add(messageId);
+      return next;
+    });
+  };
+
+  const renderCoTBlock = (cot: CoTItem[], active: boolean, messageId?: string) => {
+    if (!cot || cot.length === 0) return null;
+    // Default expanded if active (streaming), otherwise check state
+    const isExpanded = active || (messageId ? expandedThinkingMessages.has(messageId) : false);
+
+    const toggle = (e: MouseEvent) => {
+      e.preventDefault();
+      if (messageId) toggleThinkingExpanded(messageId);
+    };
+
+    // Tool-specific icons for running state
+    const getToolIcon = (toolName: string, phase: string) => {
+      if (phase === 'failed') return '❌';
+      if (phase === 'completed') return '✅';
+      // Tool-specific icons for running state
+      const icons: Record<string, string> = {
+        Read: '📖',
+        Write: '✍️',
+        Edit: '✏️',
+        Bash: '🖥️',
+        Grep: '🔍',
+        Glob: '📁',
+        WebSearch: '🌐',
+        WebFetch: '🌐',
+        computer: '🖥️',
+        text_editor: '📝',
+        mcp: '🔌',
+        Compacting: '🔄',
+      };
+      return icons[toolName] ?? '🔧';
+    };
+
+    // Format tool name for display
+    const formatToolName = (toolName: string) => {
+      const names: Record<string, string> = {
+        Read: 'Read file',
+        Write: 'Write file',
+        Edit: 'Edit file',
+        Bash: 'Run command',
+        Grep: 'Search code',
+        Glob: 'Find files',
+        WebSearch: 'Web search',
+        WebFetch: 'Web browse',
+        computer: 'Computer use',
+        text_editor: 'Text editor',
+        mcp: 'MCP tool',
+        Compacting: 'Compacting context',
+      };
+      return names[toolName] ?? toolName;
+    };
+
+    return (
+      <div class={`ageaf-message__cot ${active ? 'is-active' : ''}`}>
+        <button class="ageaf-message__cot-header" onClick={toggle} type="button">
+          <span class="ageaf-cot-arrow">{isExpanded ? '▼' : '▶'}</span>
+          <span class="ageaf-cot-label">Thought Process</span>
+        </button>
+        {isExpanded && (
+          <div class="ageaf-message__cot-body">
+            {cot.map((item, idx) => {
+              if (item.type === 'thinking') {
+                return (
+                  <div key={idx} class="ageaf-cot-thinking">
+                    <span class="ageaf-cot-thinking-icon">🧠</span>
+                    <span class="ageaf-cot-thinking-content">{item.content}</span>
+                  </div>
+                );
+              }
+              // Tool
+              const icon = getToolIcon(item.toolName, item.phase);
+              return (
+                <div key={idx} class={`ageaf-cot-tool ageaf-cot-tool--${item.phase}`}>
+                  <span class="ageaf-cot-tool-icon">{icon}</span>
+                  <span class="ageaf-cot-tool-name">{formatToolName(item.toolName)}</span>
+                  {item.input && <span class="ageaf-cot-tool-input">{item.input}</span>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderToolIndicators = () => {
+    if (activeTools.size === 0) return null;
+
+    // Tool-specific icons
+    const getToolIcon = (toolName: string, phase: string) => {
+      if (phase === 'failed') return '❌';
+      if (phase === 'completed') return '✅';
+      // Tool-specific icons for running state
+      const icons: Record<string, string> = {
+        Read: '📖',
+        Write: '✍️',
+        Edit: '✏️',
+        Bash: '🖥️',
+        Grep: '🔍',
+        Glob: '📁',
+        WebSearch: '🌐',
+        WebFetch: '🌐',
+        computer: '🖥️',
+        text_editor: '📝',
+        mcp: '🔌',
+      };
+      return icons[toolName] ?? '🔧';
+    };
+
+    // Format tool name for display
+    const formatToolName = (toolName: string) => {
+      const names: Record<string, string> = {
+        Read: 'Read file',
+        Write: 'Write file',
+        Edit: 'Edit file',
+        Bash: 'Run command',
+        Grep: 'Search code',
+        Glob: 'Find files',
+        WebSearch: 'Web search',
+        WebFetch: 'Web browse',
+        computer: 'Computer use',
+        text_editor: 'Text editor',
+        mcp: 'MCP tool',
+      };
+      return names[toolName] ?? toolName;
+    };
+
+    return (
+      <div class="ageaf-tool-indicators">
+        {Array.from(activeTools.values()).map((tool) => (
+          <div key={tool.toolId} class={`ageaf - tool - indicator ageaf - tool - indicator--${tool.phase} `}>
+            <span class="ageaf-tool-indicator__icon">
+              {getToolIcon(tool.toolName, tool.phase)}
+            </span>
+            <span class="ageaf-tool-indicator__name">{formatToolName(tool.toolName)}</span>
+            {tool.input && (
+              <span class="ageaf-tool-indicator__input">{tool.input}</span>
+            )}
+            {tool.phase === 'started' && <span class="ageaf-tool-indicator__spinner" />}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const createMessageId = () => {
     messageCounterRef.current += 1;
-    return `msg-${Date.now()}-${messageCounterRef.current}`;
+    return `msg - ${Date.now()} -${messageCounterRef.current} `;
   };
 
   const createMessage = (message: Omit<Message, 'id'>): Message => ({
@@ -1441,6 +1705,8 @@ const Panel = () => {
       role: message.role,
       content: message.content,
       ...(message.statusLine ? { statusLine: message.statusLine } : {}),
+      ...(message.cot ? { cot: message.cot } : {}),
+      ...(message.thinking && message.thinking.length > 0 ? { thinking: message.thinking } : {}),
       ...(message.images && message.images.length > 0 ? { images: message.images } : {}),
       ...(message.attachments && message.attachments.length > 0
         ? { attachments: message.attachments }
@@ -1481,7 +1747,9 @@ const Panel = () => {
 
     setStreamingState(null, false);
     setStreamingText('');
+    setStreamingThinking('');
     streamingTextRef.current = '';
+    streamingThinkingRef.current = '';
     streamTokensRef.current = [];
     pendingDoneRef.current = null;
 
@@ -1627,7 +1895,7 @@ const Panel = () => {
     const units = ['B', 'KB', 'MB', 'GB'];
     const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
     const value = bytes / Math.pow(1024, index);
-    return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+    return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]} `;
   };
 
   const truncateName = (name: string, max = 24) => {
@@ -1635,7 +1903,7 @@ const Panel = () => {
     const extMatch = name.match(/\.[^/.]+$/);
     const ext = extMatch ? extMatch[0] : '';
     const base = name.slice(0, Math.max(0, max - ext.length - 1));
-    return `${base}…${ext}`;
+    return `${base}…${ext} `;
   };
 
   const getImageMediaType = (file: File): string | null => {
@@ -1668,7 +1936,7 @@ const Panel = () => {
     });
 
   const makeImageAttachmentId = () =>
-    `img-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    `img - ${Date.now()} -${Math.random().toString(16).slice(2)} `;
 
   const addImageFromFile = async (file: File, source: 'paste' | 'drop') => {
     if (file.size > MAX_IMAGE_BYTES) {
@@ -1717,7 +1985,7 @@ const Panel = () => {
   };
 
   const getImageDataUrl = (image: ImageAttachment) =>
-    `data:${image.mediaType};base64,${image.data}`;
+    `data:${image.mediaType}; base64, ${image.data} `;
 
   const getFileExtension = (name: string) => {
     const match = name.match(/\.[a-z0-9]+$/i);
@@ -1755,7 +2023,7 @@ const Panel = () => {
 
   const extractFilenamesFromText = (value: string): string[] => {
     const extPattern = MENTION_EXTENSIONS.map((ext) => ext.replace('.', '\\.')).join('|');
-    const regex = new RegExp(`([A-Za-z0-9_.-]+(?:${extPattern}))`, 'gi');
+    const regex = new RegExp(`([A - Za - z0 -9_. -] + (?: ${extPattern}))`, 'gi');
 
     const sanitizeLabel = (label: string) => {
       const trimmed = label.trim();
@@ -1827,9 +2095,9 @@ const Panel = () => {
     const getLabelText = (node: HTMLElement) =>
       sanitizeLabel(
         node.getAttribute('aria-label')?.trim() ||
-          node.getAttribute('title')?.trim() ||
-          node.textContent?.trim() ||
-          ''
+        node.getAttribute('title')?.trim() ||
+        node.textContent?.trim() ||
+        ''
       );
 
     const buildTreePath = (node: HTMLElement, name: string, kind: OverleafEntry['kind']) => {
@@ -1855,7 +2123,7 @@ const Panel = () => {
       for (const name of extractFilenamesFromText(text)) {
         const ext = getFileExtension(name);
         if (!ext) continue;
-        const key = `file:${name.toLowerCase()}`;
+        const key = `file:${name.toLowerCase()} `;
         const next: OverleafEntry = { name, path: name, ext, kind: classifyOverleafFile(name) };
 
         const existing = byKey.get(key);
@@ -1915,7 +2183,7 @@ const Panel = () => {
       const isFolder = isFolderNode(node);
       if (isFolder && label && !getFileExtension(label)) {
         const path = buildTreePath(node, label, 'folder');
-        const key = `folder:${path.toLowerCase()}`;
+        const key = `folder:${path.toLowerCase()} `;
         if (!byKey.has(key)) {
           byKey.set(key, { name: label, path, ext: '', kind: 'folder' });
         }
@@ -1924,7 +2192,7 @@ const Panel = () => {
       const ext = getFileExtension(label);
       if (ext) {
         const path = buildTreePath(node, label, classifyOverleafFile(label));
-        const key = `file:${path.toLowerCase()}`;
+        const key = `file:${path.toLowerCase()} `;
         if (!byKey.has(key)) {
           byKey.set(key, { name: label, path, ext, kind: classifyOverleafFile(label) });
         }
@@ -2042,7 +2310,7 @@ const Panel = () => {
     chip.dataset.mention = entry.kind === 'folder' ? 'folder' : 'file';
     chip.dataset.path = entry.path;
     chip.setAttribute('contenteditable', 'false');
-    chip.textContent = `@${entry.name}`;
+    chip.textContent = `@${entry.name} `;
     insertNodeAtCursor(chip);
     insertTextAtCursor(' ');
     setMentionOpen(false);
@@ -2119,7 +2387,7 @@ const Panel = () => {
       selection.addRange(range);
     }
 
-    insertTextAtCursor(`/${skill.name} `);
+    insertTextAtCursor(`/ ${skill.name} `);
     setSkillOpen(false);
     setSkillResults([]);
     skillRangeRef.current = null;
@@ -2161,7 +2429,7 @@ const Panel = () => {
         if (skill) {
           const markdown = await loadSkillMarkdown(skill);
           const contentLength = markdown.length;
-          skillContents.push(`\n\n# Skill: ${skill.name}\n\n${markdown}`);
+          skillContents.push(`\n\n# Skill: ${skill.name} \n\n${markdown} `);
           resolvedNames.add(name);
           console.log(`[processSkillDirectives] ✓ Loaded skill: /${name} (${contentLength} chars)`);
         } else {
@@ -2947,14 +3215,13 @@ const Panel = () => {
     chip.dataset.lines = String(lineCount);
     chip.setAttribute(
       'aria-label',
-      `${filename} ${
-        typeof lineFrom === 'number' && typeof lineTo === 'number'
-          ? lineFrom === lineTo
-            ? lineFrom
-            : `${lineFrom}-${lineTo}`
-          : lineCount > 1
-            ? `1-${lineCount}`
-            : '1'
+      `${filename} ${typeof lineFrom === 'number' && typeof lineTo === 'number'
+        ? lineFrom === lineTo
+          ? lineFrom
+          : `${lineFrom}-${lineTo}`
+        : lineCount > 1
+          ? `1-${lineCount}`
+          : '1'
       }`
     );
     chip.setAttribute('contenteditable', 'false');
@@ -3308,10 +3575,10 @@ const Panel = () => {
     const filteredQuotes =
       latestPatchText && message.role === 'assistant'
         ? quotes.filter((quote) => {
-            const copyText = extractCopyTextFromQuoteHtml(quote.html);
-            if (!copyText) return true;
-            return normalizeForCompare(copyText) !== normalizeForCompare(latestPatchText);
-          })
+          const copyText = extractCopyTextFromQuoteHtml(quote.html);
+          if (!copyText) return true;
+          return normalizeForCompare(copyText) !== normalizeForCompare(latestPatchText);
+        })
         : quotes;
 
     // If the assistant message is just the proposed patch text (as a LaTeX/code fence),
@@ -3516,7 +3783,7 @@ const Panel = () => {
     thinkingMode?: string | null;
   }) => {
     const options = settings ?? (await getOptions());
-	    if (options.transport !== 'native' && !options.hostUrl) return;
+    if (options.transport !== 'native' && !options.hostUrl) return;
 
     try {
       const response = await updateClaudeRuntimePreferences(options, payload);
@@ -3558,7 +3825,7 @@ const Panel = () => {
 
     if (contextRefreshInFlightRef.current) return;
     const options = settings ?? (await getOptions());
-	    if (options.transport !== 'native' && !options.hostUrl) return;
+    if (options.transport !== 'native' && !options.hostUrl) return;
     contextRefreshInFlightRef.current = true;
 
     try {
@@ -3725,9 +3992,9 @@ const Panel = () => {
       const codexEffort =
         codexModel
           ? getCodexEffortForThinkingMode(
-              currentThinkingMode as ThinkingMode['id'],
-              codexRuntimeModel ?? null
-            ) ?? codexRuntimeModel?.defaultReasoningEffort ?? null
+            currentThinkingMode as ThinkingMode['id'],
+            codexRuntimeModel ?? null
+          ) ?? codexRuntimeModel?.defaultReasoningEffort ?? null
           : null;
       return {
         codex: {
@@ -3791,10 +4058,10 @@ const Panel = () => {
 
     // Only update UI if this is the current session
     if (conversationId === chatConversationIdRef.current) {
-    if (!thinkingEnabled) {
-      setStreamingState('Working · ESC to interrupt', true);
+      if (!thinkingEnabled) {
+        setStreamingState('Working · ESC to interrupt', true);
       } else {
-    setStreamingState(`Thinking ${formatElapsed(0)} · ESC to interrupt`, true);
+        setStreamingState(`Thinking ${formatElapsed(0)} · ESC to interrupt`, true);
       }
     }
 
@@ -3828,8 +4095,8 @@ const Panel = () => {
 
     // Only update UI if this is the current session
     if (conversationId === chatConversationIdRef.current) {
-    if (!thinkingEnabled) {
-      setStreamingStatus('Responding · ESC to interrupt');
+      if (!thinkingEnabled) {
+        setStreamingStatus('Responding · ESC to interrupt');
       } else {
         setStreamingStatus(`Thought for ${thinkingSeconds}s · ESC to interrupt`);
       }
@@ -3873,13 +4140,33 @@ const Panel = () => {
       if (conversation) {
         let updatedMessages = [...conversation.messages];
 
-    if (pending.status === 'ok' && finalText) {
-          updatedMessages.push({
-            role: 'assistant' as const,
-          content: finalText,
+        // Capture streaming thinking before clearing        // If we have streaming thinking/cot, persist it
+        if (streamingCoTRef.current.length > 0) {
+          completeLastTool(streamingCoTRef.current);
+        }
+        const thinkingToPersist = streamingThinkingRef.current ? [streamingThinkingRef.current] : undefined;
+        const cotToPersist = streamingCoTRef.current.length > 0 ? [...streamingCoTRef.current] : undefined;
+
+        const fullContent = pending.status === 'ok' && finalText
+          ? finalText
+          : pending.message ?? 'Job failed';
+
+        updatedMessages.push({
+          role: pending.status === 'ok' ? 'assistant' : 'system',
+          content: fullContent,
           ...(statusLine ? { statusLine } : {}),
-          });
-    }
+          ...(thinkingToPersist ? { thinking: thinkingToPersist } : {}),
+          ...(cotToPersist ? { cot: cotToPersist } : {}),
+        });
+
+        // Reset
+        streamingThinkingRef.current = '';
+        streamingCoTRef.current = [];
+        const sessionConversationId = chatConversationIdRef.current; // Capture for stable closure
+        if (sessionConversationId === chatConversationIdRef.current) {
+          setStreamingThinking('');
+          setStreamingCoT([]);
+        }
 
         if (pending.status === 'ok') {
           if (sessionState.pendingPatchReviewMessages.length > 0) {
@@ -3906,14 +4193,16 @@ const Panel = () => {
         // Only update UI if this is the current session
         if (conversationId === chatConversationIdRef.current) {
           setMessages(updatedMessages.map(m => createMessage(m)));
-    setStreamingText('');
-    streamingTextRef.current = '';
+          setStreamingText('');
+          setStreamingThinking('');
+          streamingTextRef.current = '';
+          streamingThinkingRef.current = '';
           stopStreamTimer(conversationId);
-    setStreamingState(null, false);
+          setStreamingState(null, false);
 
           if (provider === 'claude') {
-      void refreshContextUsage();
-    }
+            void refreshContextUsage();
+          }
         }
       }
     }
@@ -3999,14 +4288,14 @@ const Panel = () => {
 
     // Update UI if this is the current session
     if (conversationId === chatConversationIdRef.current) {
-    abortControllerRef.current = null;
-    activeJobIdRef.current = null;
-    interruptedRef.current = false;
-    thinkingCompleteRef.current = false;
-    setToolRequests([]);
-    setToolRequestInputs({});
-    setToolRequestBusy(false);
-    setSending(false);
+      abortControllerRef.current = null;
+      activeJobIdRef.current = null;
+      interruptedRef.current = false;
+      thinkingCompleteRef.current = false;
+      setToolRequests([]);
+      setToolRequestInputs({});
+      setToolRequestBusy(false);
+      setSending(false);
     }
 
     // Process next queued message for this session
@@ -4073,7 +4362,9 @@ const Panel = () => {
     setMessages((prev) => [...prev, createMessage({ role: 'assistant', content })]);
 
     setStreamingText('');
+    setStreamingThinking('');
     streamingTextRef.current = '';
+    streamingThinkingRef.current = '';
     sessionState.streamingText = '';
     setStreamingState(null, false);
 
@@ -4144,7 +4435,9 @@ const Panel = () => {
     setSending(true);
     clearPatchActionState();
     setStreamingText('');
+    setStreamingThinking('');
     streamingTextRef.current = '';
+    streamingThinkingRef.current = '';
     streamTokensRef.current = [];
     pendingDoneRef.current = null;
     activityStartRef.current = Date.now();
@@ -4282,15 +4575,15 @@ const Panel = () => {
 
         const injection = ok
           ? (() => {
-              let body = content;
-              if (body.length > MAX_CHARS) {
-                const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
-                const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
-                body = `${head}\n\n… [truncated ${body.length - (head.length + tail.length)} chars] …\n\n${tail}`;
-              }
-              const lang = langForExt(requested);
-              return `\n\n[Overleaf file: ${requested}]\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
-            })()
+            let body = content;
+            if (body.length > MAX_CHARS) {
+              const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
+              const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
+              body = `${head}\n\n… [truncated ${body.length - (head.length + tail.length)} chars] …\n\n${tail}`;
+            }
+            const lang = langForExt(requested);
+            return `\n\n[Overleaf file: ${requested}]\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
+          })()
           : `\n\n[Overleaf file: ${requested}]\n(Unable to read file content from Overleaf editor.)\n`;
 
         return injection;
@@ -4351,144 +4644,148 @@ const Panel = () => {
         state
           ? findConversation(state, sessionConversationId)
           : null;
-	      const codexThreadId =
-	        provider === 'codex'
-	          ? conversation?.providerState?.codex?.threadId
-	          : undefined;
-	      const codexModelCandidate =
-	        provider === 'codex' ? currentModel ?? null : null;
-	      const codexRuntimeModel =
-	        provider === 'codex'
-	          ? (codexModelCandidate
-	              ? runtimeModels.find((entry) => entry.value === codexModelCandidate)
-	              : null) ??
-	            runtimeModels.find((entry) => entry.isDefault) ??
-	            runtimeModels.find((entry) => entry.supportedReasoningEfforts !== undefined) ??
-	            runtimeModels[0] ??
-	            null
-	          : null;
-	      const codexModel =
-	        provider === 'codex' && codexRuntimeModel?.supportedReasoningEfforts !== undefined
-	          ? codexRuntimeModel.value
-	          : null;
-	      const codexEffort =
-	        provider === 'codex' && codexModel
-	          ? getCodexEffortForThinkingMode(
-	              currentThinkingMode as ThinkingMode['id'],
-	              codexRuntimeModel
-	            ) ?? codexRuntimeModel?.defaultReasoningEffort ?? null
-	          : null;
-	      const payload =
-	        provider === 'codex'
-	          ? {
-	              provider: 'codex' as const,
-	              action,
-	              runtime: {
-	                codex: {
-	                  cliPath: options.openaiCodexCliPath,
-	                  envVars: options.openaiEnvVars,
-	                  approvalPolicy: options.openaiApprovalPolicy,
-	                  ...(codexModel ? { model: codexModel } : {}),
-	                  ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
-	                  ...(codexThreadId ? { threadId: codexThreadId } : {}),
-	                },
-	              },
-	              overleaf: { url: window.location.href },
-	              context: {
-                message: finalMessageText,
-                selection: selection?.selection ?? '',
-                surroundingBefore: selection?.before ?? '',
-                surroundingAfter: selection?.after ?? '',
-                ...(messageImages
-                  ? {
-                      images: messageImages.map((image) => ({
-                        id: image.id,
-                        name: image.name,
-                        mediaType: image.mediaType,
-                        data: image.data,
-                        size: image.size,
-                      })),
-                    }
-                  : {}),
-                ...(messageAttachments
-                  ? {
-                      attachments: messageAttachments.map((attachment) => ({
-                        id: attachment.id,
-                        path: attachment.path,
-                        name: attachment.name,
-                        ext: attachment.ext,
-                        sizeBytes: attachment.sizeBytes,
-                        lineCount: attachment.lineCount,
-                        content: attachment.content,
-                      })),
-                    }
-                  : {}),
+      const codexThreadId =
+        provider === 'codex'
+          ? conversation?.providerState?.codex?.threadId
+          : undefined;
+      const codexModelCandidate =
+        provider === 'codex' ? currentModel ?? null : null;
+      const codexRuntimeModel =
+        provider === 'codex'
+          ? (codexModelCandidate
+            ? runtimeModels.find((entry) => entry.value === codexModelCandidate)
+            : null) ??
+          runtimeModels.find((entry) => entry.isDefault) ??
+          runtimeModels.find((entry) => entry.supportedReasoningEfforts !== undefined) ??
+          runtimeModels[0] ??
+          null
+          : null;
+      const codexModel =
+        provider === 'codex' && codexRuntimeModel?.supportedReasoningEfforts !== undefined
+          ? codexRuntimeModel.value
+          : null;
+      const codexEffort =
+        provider === 'codex' && codexModel
+          ? getCodexEffortForThinkingMode(
+            currentThinkingMode as ThinkingMode['id'],
+            codexRuntimeModel
+          ) ?? codexRuntimeModel?.defaultReasoningEffort ?? null
+          : null;
+      const payload =
+        provider === 'codex'
+          ? {
+            provider: 'codex' as const,
+            action,
+            runtime: {
+              codex: {
+                cliPath: options.openaiCodexCliPath,
+                envVars: options.openaiEnvVars,
+                approvalPolicy: options.openaiApprovalPolicy,
+                ...(codexModel ? { model: codexModel } : {}),
+                ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
+                ...(codexThreadId ? { threadId: codexThreadId } : {}),
               },
-              policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
-              userSettings: {
-                displayName: options.displayName,
-                customSystemPrompt: skillsPrompt
-                  ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
-                  : options.customSystemPrompt,
-              },
-            }
+            },
+            overleaf: { url: window.location.href },
+            context: {
+              message: finalMessageText,
+              selection: selection?.selection ?? '',
+              surroundingBefore: selection?.before ?? '',
+              surroundingAfter: selection?.after ?? '',
+              ...(messageImages
+                ? {
+                  images: messageImages.map((image) => ({
+                    id: image.id,
+                    name: image.name,
+                    mediaType: image.mediaType,
+                    data: image.data,
+                    size: image.size,
+                  })),
+                }
+                : {}),
+              ...(messageAttachments
+                ? {
+                  attachments: messageAttachments.map((attachment) => ({
+                    id: attachment.id,
+                    path: attachment.path,
+                    name: attachment.name,
+                    ext: attachment.ext,
+                    sizeBytes: attachment.sizeBytes,
+                    lineCount: attachment.lineCount,
+                    content: attachment.content,
+                  })),
+                }
+                : {}),
+            },
+            policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
+            userSettings: {
+              displayName: options.displayName,
+              customSystemPrompt: skillsPrompt
+                ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
+                : options.customSystemPrompt,
+              autoCompactEnabled: options.autoCompactEnabled,
+              debugCliEvents: options.debugCliEvents,
+            },
+          }
           : {
-        provider: 'claude' as const,
-        action,
-        runtime: {
-          claude: {
-            cliPath: options.claudeCliPath,
-            envVars: options.claudeEnvVars,
-            loadUserSettings: options.claudeLoadUserSettings,
-                  model: runtimeModel ?? undefined,
-                  maxThinkingTokens: runtimeThinkingTokens ?? undefined,
-                  sessionScope: 'project' as const,
-                  yoloMode,
-                  conversationId: sessionConversationId,
-          },
-        },
-        overleaf: { url: window.location.href },
-        context: {
-                message: finalMessageText,
-          selection: selection?.selection ?? '',
-          surroundingBefore: selection?.before ?? '',
-          surroundingAfter: selection?.after ?? '',
-          ...(messageImages
-            ? {
-                images: messageImages.map((image) => ({
-                  id: image.id,
-                  name: image.name,
-                  mediaType: image.mediaType,
-                  data: image.data,
-                  size: image.size,
-                })),
-              }
-            : {}),
-          ...(messageAttachments
-            ? {
-                attachments: messageAttachments.map((attachment) => ({
-                  id: attachment.id,
-                  path: attachment.path,
-                  name: attachment.name,
-                  ext: attachment.ext,
-                  sizeBytes: attachment.sizeBytes,
-                  lineCount: attachment.lineCount,
-                  content: attachment.content,
-                })),
-              }
-            : {}),
-        },
-        policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
-              userSettings: {
-                displayName: options.displayName,
-                customSystemPrompt: skillsPrompt
-                  ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
-                  : options.customSystemPrompt,
-                enableTools: options.enableTools,
-                enableCommandBlocklist: options.enableCommandBlocklist,
-                blockedCommandsUnix: options.blockedCommandsUnix,
+            provider: 'claude' as const,
+            action,
+            runtime: {
+              claude: {
+                cliPath: options.claudeCliPath,
+                envVars: options.claudeEnvVars,
+                loadUserSettings: options.claudeLoadUserSettings,
+                model: runtimeModel ?? undefined,
+                maxThinkingTokens: runtimeThinkingTokens ?? undefined,
+                sessionScope: 'project' as const,
+                yoloMode,
+                conversationId: sessionConversationId,
               },
-            };
+            },
+            overleaf: { url: window.location.href },
+            context: {
+              message: finalMessageText,
+              selection: selection?.selection ?? '',
+              surroundingBefore: selection?.before ?? '',
+              surroundingAfter: selection?.after ?? '',
+              ...(messageImages
+                ? {
+                  images: messageImages.map((image) => ({
+                    id: image.id,
+                    name: image.name,
+                    mediaType: image.mediaType,
+                    data: image.data,
+                    size: image.size,
+                  })),
+                }
+                : {}),
+              ...(messageAttachments
+                ? {
+                  attachments: messageAttachments.map((attachment) => ({
+                    id: attachment.id,
+                    path: attachment.path,
+                    name: attachment.name,
+                    ext: attachment.ext,
+                    sizeBytes: attachment.sizeBytes,
+                    lineCount: attachment.lineCount,
+                    content: attachment.content,
+                  })),
+                }
+                : {}),
+            },
+            policy: { requireApproval: false, allowNetwork: false, maxFiles: 1 },
+            userSettings: {
+              displayName: options.displayName,
+              customSystemPrompt: skillsPrompt
+                ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
+                : options.customSystemPrompt,
+              enableTools: options.enableTools,
+              enableCommandBlocklist: options.enableCommandBlocklist,
+              blockedCommandsUnix: options.blockedCommandsUnix,
+              autoCompactEnabled: options.autoCompactEnabled,
+              debugCliEvents: options.debugCliEvents,
+            },
+          };
 
       const { jobId } = await createJob(options, payload, { signal: abortController.signal });
       const selectionSnapshot: SelectionSnapshot = {
@@ -4512,6 +4809,10 @@ const Panel = () => {
       setToolRequests([]);
       setToolRequestInputs({});
       setToolRequestBusy(false);
+      setStreamingCoT([]);
+      streamingCoTRef.current = [];
+      sessionState.debugCliEventsEnabled = Boolean(options.debugCliEvents);
+
 
       await streamJobEvents(options, jobId, (event: JobEvent) => {
         // Check if job was interrupted
@@ -4519,7 +4820,40 @@ const Panel = () => {
 
         if (event.event === 'delta') {
           const deltaText = event.data?.text ?? '';
+          const deltaType = (event.data as any)?.type;
+
+          // Handle thinking-type deltas separately (Claude extended thinking)
+          if (deltaType === 'thinking' && deltaText) {
+            // Accumulate thinking content into streamingThinking state and ref
+            streamingThinkingRef.current += deltaText;
+
+            // CoT Logic
+            const currentCoT = streamingCoTRef.current;
+            // If starting new thinking, ensure last tool is complete
+            completeLastTool(currentCoT);
+
+            const lastItem = currentCoT[currentCoT.length - 1];
+            if (lastItem && lastItem.type === 'thinking') {
+              lastItem.content += deltaText;
+            } else {
+              currentCoT.push({ type: 'thinking', content: deltaText });
+            }
+
+            if (sessionConversationId === chatConversationIdRef.current) {
+              setStreamingThinking((prev) => prev + deltaText);
+              setStreamingCoT([...currentCoT]);
+            }
+            return;
+          }
+
           if (deltaText) {
+
+            // For CoT: if normal text arrives, ensure last tool is complete
+            const currentCoT = streamingCoTRef.current;
+            if (completeLastTool(currentCoT) && sessionConversationId === chatConversationIdRef.current) {
+              setStreamingCoT([...currentCoT]);
+            }
+
             markThinkingComplete(sessionConversationId);
             // For non-chat actions (rewrite selection / fix error), deltas are typically
             // progress or accidental free-form text. Don't mix them into the chat transcript.
@@ -4539,13 +4873,99 @@ const Panel = () => {
               return;
             }
 
-            enqueueStreamTokens(sessionConversationId, provider, deltaText);
+            // Parse thinking blocks from streaming content (legacy XML-style)
+            const { visibleText, newBlocks } = extractThinkingBlocks(deltaText, sessionState);
+
+            // Update message with thinking blocks if any
+            if (newBlocks.length > 0) {
+              setMessages((prev) => {
+                const messages = [...prev];
+                const lastMsg = messages[messages.length - 1];
+                if (lastMsg?.role === 'assistant') {
+                  lastMsg.thinking = [...(lastMsg.thinking ?? []), ...newBlocks];
+                }
+                return messages;
+              });
+            }
+
+            // Only stream visible text (without thinking blocks)
+            if (visibleText) {
+              enqueueStreamTokens(sessionConversationId, provider, visibleText);
+            }
           }
         }
 
         if (event.event === 'plan') {
-          // Display compaction-related plan events in chat
           const message = (event.data as any)?.message;
+          const phase = (event.data as any)?.phase;
+          const toolId = (event.data as any)?.toolId;
+          const toolName = (event.data as any)?.toolName;
+
+          // Track tool execution states for visibility
+          if (phase === 'tool_start' && toolId) {
+            const toolInput = (event.data as any)?.input;
+
+            // CoT Logic
+            const currentCoT = streamingCoTRef.current;
+            completeLastTool(currentCoT); // Complete previous tool if any
+
+            if (!currentCoT.some(i => i.type === 'tool' && i.toolId === toolId)) {
+              currentCoT.push({
+                type: 'tool',
+                toolId,
+                toolName: toolName ?? 'Tool',
+                input: toolInput,
+                phase: 'started',
+                message: `Running ${toolName ?? 'tool'}...`
+              });
+              if (sessionConversationId === chatConversationIdRef.current) {
+                setStreamingCoT([...currentCoT]);
+              }
+            }
+            setActiveTools((prev) => {
+              const next = new Map(prev);
+              next.set(toolId, {
+                toolId,
+                toolName: toolName ?? 'Tool',
+                phase: 'started',
+                message: message ?? `Running ${toolName ?? 'tool'}`,
+                input: toolInput,
+                timestamp: Date.now(),
+              });
+              return next;
+            });
+
+            // Auto-timeout after 60s - mark as failed and schedule removal
+            setTimeout(() => {
+              setActiveTools((curr) => {
+                const tool = curr.get(toolId);
+                if (tool?.phase === 'started') {
+                  const next = new Map(curr);
+                  next.set(toolId, { ...tool, phase: 'failed', message: 'Timed out' });
+                  // Remove after 3 seconds
+                  setTimeout(() => {
+                    setActiveTools((c) => {
+                      const n = new Map(c);
+                      n.delete(toolId);
+                      return n;
+                    });
+                  }, 3000);
+                  return next;
+                }
+                return curr;
+              });
+            }, 60000);
+          }
+
+          // Always reflect plan/status updates in the live status line while streaming.
+          if (typeof message === 'string' && message.trim()) {
+            const status = `${message.trim()} · ESC to interrupt`;
+            if (sessionConversationId === chatConversationIdRef.current) {
+              setStreamingState(status, true);
+            }
+          }
+
+          // Display compaction-related plan events in chat
           if (typeof message === 'string' && message.toLowerCase().includes('compact')) {
             setMessages((prev) => [
               ...prev,
@@ -4554,6 +4974,8 @@ const Panel = () => {
           }
           return;
         }
+
+
 
         if (event.event === 'tool_call') {
           const kind = event.data?.kind;
@@ -4585,21 +5007,21 @@ const Panel = () => {
           const contextWindow = Number(event.data?.contextWindow ?? 0) || null;
           const normalized = normalizeContextUsage({ usedTokens, contextWindow });
           setContextUsage(normalized);
-            const state = chatStateRef.current;
-            if (state) {
-              const nextUsage: StoredContextUsage = {
-                usedTokens: normalized.usedTokens,
-                contextWindow: normalized.contextWindow,
+          const state = chatStateRef.current;
+          if (state) {
+            const nextUsage: StoredContextUsage = {
+              usedTokens: normalized.usedTokens,
+              contextWindow: normalized.contextWindow,
               percentage: normalized.percentage ?? null,
-                updatedAt: Date.now(),
-              };
-              chatStateRef.current = setConversationContextUsage(
-                state,
-                provider,
+              updatedAt: Date.now(),
+            };
+            chatStateRef.current = setConversationContextUsage(
+              state,
+              provider,
               sessionConversationId,
-                nextUsage
-              );
-              scheduleChatSave();
+              nextUsage
+            );
+            scheduleChatSave();
           }
           return;
         }
@@ -4737,16 +5159,18 @@ const Panel = () => {
 
         // Update UI if current session
         if (sessionConversationId === chatConversationIdRef.current) {
-        setStreamingState(null, false);
-        activityStartRef.current = null;
-        pendingDoneRef.current = null;
-        streamTokensRef.current = [];
-            setStreamingText('');
-            streamingTextRef.current = '';
+          setStreamingState(null, false);
+          activityStartRef.current = null;
+          pendingDoneRef.current = null;
+          streamTokensRef.current = [];
+          setStreamingText('');
+          setStreamingThinking('');
+          streamingTextRef.current = '';
+          streamingThinkingRef.current = '';
         }
         finishSessionJob(sessionConversationId);
-            return;
-          }
+        return;
+      }
 
       // Handle non-abort errors
       const message = error instanceof Error ? error.message : 'Request failed';
@@ -4761,13 +5185,15 @@ const Panel = () => {
 
       // Update UI if current session
       if (sessionConversationId === chatConversationIdRef.current) {
-      setMessages((prev) => [...prev, createMessage({ role: 'system', content: message })]);
-      setStreamingState(null, false);
-      activityStartRef.current = null;
-      pendingDoneRef.current = null;
-      streamTokensRef.current = [];
-      setStreamingText('');
-      streamingTextRef.current = '';
+        setMessages((prev) => [...prev, createMessage({ role: 'system', content: message })]);
+        setStreamingState(null, false);
+        activityStartRef.current = null;
+        pendingDoneRef.current = null;
+        streamTokensRef.current = [];
+        setStreamingText('');
+        setStreamingThinking('');
+        streamingTextRef.current = '';
+        streamingThinkingRef.current = '';
       }
       finishSessionJob(sessionConversationId);
     } finally {
@@ -5398,7 +5824,7 @@ const Panel = () => {
     const state = chatStateRef.current;
     if (!projectId || !state) return;
     const { state: nextState, conversation, evicted } = startNewConversation(state, provider);
-    
+
     // Clean up evicted session directories and runtime state
     if (evicted.length > 0) {
       const options = await getOptions();
@@ -5419,7 +5845,7 @@ const Panel = () => {
         }
       }
     }
-    
+
     chatStateRef.current = nextState;
     chatConversationIdRef.current = conversation.id;
     setSessionIds(getOrderedSessionIds(nextState));
@@ -5479,8 +5905,8 @@ const Panel = () => {
       const status = sessionState.thinkingTimerId && !sessionState.thinkingComplete
         ? 'Thinking · ESC to interrupt'
         : sessionState.streamTimerId
-        ? 'Streaming · ESC to interrupt'
-        : 'Working · ESC to interrupt';
+          ? 'Streaming · ESC to interrupt'
+          : 'Working · ESC to interrupt';
       setStreamingState(status, true);
     } else {
       setStreamingState(null, false);
@@ -5547,7 +5973,7 @@ const Panel = () => {
       nextState = created.state;
       nextActiveId = created.conversation.id;
       orderedAfter = getOrderedSessionIds(nextState);
-      
+
       // Clean up evicted sessions
       if (created.evicted.length > 0) {
         const options = await getOptions();
@@ -5584,7 +6010,9 @@ const Panel = () => {
     setToolRequestBusy(false);
     setStreamingState(null, false);
     setStreamingText('');
+    setStreamingThinking('');
     streamingTextRef.current = '';
+    streamingThinkingRef.current = '';
     streamTokensRef.current = [];
     pendingDoneRef.current = null;
 
@@ -5601,32 +6029,32 @@ const Panel = () => {
   const activeToolQuestions: ToolInputQuestion[] =
     activeToolRequest?.kind === 'user_input' && Array.isArray(activeToolRequest.params?.questions)
       ? (activeToolRequest.params.questions as unknown[])
-          .map((entry): ToolInputQuestion | null => {
-            if (!entry || typeof entry !== 'object') return null;
-            const id = String((entry as any).id ?? '').trim();
-            if (!id) return null;
-            const header = String((entry as any).header ?? '');
-            const question = String((entry as any).question ?? '');
-            const optionsRaw: unknown[] = Array.isArray((entry as any).options)
-              ? ((entry as any).options as unknown[])
-              : [];
-            const options = optionsRaw
-              .map((option): ToolInputOption | null => {
-                if (!option || typeof option !== 'object') return null;
-                const label = String((option as any).label ?? '').trim();
-                const description = String((option as any).description ?? '').trim();
-                if (!label && !description) return null;
-                return { label, description };
-              })
-              .filter((option): option is ToolInputOption => Boolean(option));
-            return {
-              id,
-              header,
-              question,
-              options: options.length ? options : null,
-            };
-          })
-          .filter((entry): entry is ToolInputQuestion => Boolean(entry))
+        .map((entry): ToolInputQuestion | null => {
+          if (!entry || typeof entry !== 'object') return null;
+          const id = String((entry as any).id ?? '').trim();
+          if (!id) return null;
+          const header = String((entry as any).header ?? '');
+          const question = String((entry as any).question ?? '');
+          const optionsRaw: unknown[] = Array.isArray((entry as any).options)
+            ? ((entry as any).options as unknown[])
+            : [];
+          const options = optionsRaw
+            .map((option): ToolInputOption | null => {
+              if (!option || typeof option !== 'object') return null;
+              const label = String((option as any).label ?? '').trim();
+              const description = String((option as any).description ?? '').trim();
+              if (!label && !description) return null;
+              return { label, description };
+            })
+            .filter((option): option is ToolInputOption => Boolean(option));
+          return {
+            id,
+            header,
+            question,
+            options: options.length ? options : null,
+          };
+        })
+        .filter((entry): entry is ToolInputQuestion => Boolean(entry))
       : [];
 
   return (
@@ -5660,7 +6088,7 @@ const Panel = () => {
         </button>
       </div>
       <div class="ageaf-panel__inner" id="ageaf-panel-inner">
-      <header class="ageaf-panel__header">
+        <header class="ageaf-panel__header">
           <img
             src={
               (() => {
@@ -5685,299 +6113,303 @@ const Panel = () => {
               Ask me to rewrite, explain, or fix LaTeX errors.
             </div>
           </div>
-	          <div
-	            class={`ageaf-provider ${providerIndicatorClass} ${
-	              !connectionHealth.hostConnected || !connectionHealth.runtimeWorking
-	                ? 'ageaf-provider--disconnected'
-	                : ''
-	            } ${
-	              !connectionHealth.hostConnected
-	                ? 'ageaf-provider--host-disconnected'
-	                : !connectionHealth.runtimeWorking
-	                  ? 'ageaf-provider--runtime-disconnected'
-	                  : ''
-	            }`}
-	            aria-label={`Provider: ${providerDisplay.label}`}
-	            data-tooltip={getConnectionHealthTooltip()}
-	          >
-	            <span class="ageaf-provider__dot" aria-hidden="true" />
-	            <span class="ageaf-provider__label">{providerDisplay.label}</span>
-	          </div>
-      </header>
-      <div class="ageaf-panel__body">
+          <div
+            class={`ageaf-provider ${providerIndicatorClass} ${!connectionHealth.hostConnected || !connectionHealth.runtimeWorking
+              ? 'ageaf-provider--disconnected'
+              : ''
+              } ${!connectionHealth.hostConnected
+                ? 'ageaf-provider--host-disconnected'
+                : !connectionHealth.runtimeWorking
+                  ? 'ageaf-provider--runtime-disconnected'
+                  : ''
+              }`}
+            aria-label={`Provider: ${providerDisplay.label}`}
+            data-tooltip={getConnectionHealthTooltip()}
+          >
+            <span class="ageaf-provider__dot" aria-hidden="true" />
+            <span class="ageaf-provider__label">{providerDisplay.label}</span>
+          </div>
+        </header>
+        <div class="ageaf-panel__body">
           <div class="ageaf-panel__chat" ref={chatRef}>
-          {messages.map((message) => {
-            const content = renderMessageContent(message);
-            if (!content) return null;
-            return (
-              <div class={`ageaf-message ageaf-message--${message.role}`} key={message.id}>
-                {message.role === 'assistant' && message.statusLine ? (
-                  <div class="ageaf-message__status">{message.statusLine}</div>
-                ) : null}
-                {content}
-                {message.role === 'assistant' ? (
-                  <div class="ageaf-message__response-actions">
-                    <button
-                      class="ageaf-message__copy-response"
-                      type="button"
-                      aria-label="Copy response"
-                      title="Copy response"
-                      onClick={() => {
-                        const copyId = `${message.id}-response`;
-                        void (async () => {
-                          const success = await copyToClipboard(message.content);
-                          if (success) markCopied(copyId);
-                        })();
-                      }}
-                    >
-                      {copiedItems[`${message.id}-response`] ? <CheckIcon /> : <CopyIcon />}
-                      <span>Copy response</span>
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
-          {streamingStatus ? (
-            <div class="ageaf-message ageaf-message--assistant">
-              <div class={`ageaf-message__status ${isStreamingActive ? 'is-active' : ''}`}>
-                {streamingStatus}
-              </div>
-              {streamingText ? (
-                <div
-                  class="ageaf-message__content"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(streamingText) }}
-                />
-              ) : null}
-            </div>
-          ) : null}
-          {DEBUG_DIFF ? (
-            <div class="ageaf-message ageaf-message--system">
-              <DiffReview
-                oldText={'\\section{Intro}\\nWe write the paper here.'}
-                newText={'\\section{Introduction}\\nWe write the paper here.'}
-              />
-            </div>
-          ) : null}
-          {activeToolRequest ? (
-            <div class="ageaf-message ageaf-message--system">
-              {activeToolRequest.kind === 'approval' ? (
-                <div class="ageaf-toolcall">
-                  <div class="ageaf-toolcall__title">Approval needed</div>
-                  <div class="ageaf-toolcall__detail">
-                    {activeToolRequest.params?.command
-                      ? String(activeToolRequest.params.command)
-                      : activeToolRequest.method}
-                  </div>
-                  <div class="ageaf-toolcall__actions">
-                    <button
-                      class="ageaf-panel__apply is-secondary"
-                      type="button"
-                      disabled={toolRequestBusy}
-                      onClick={() => {
-                        void respondToToolRequest(activeToolRequest, 'decline');
-                      }}
-                    >
-                      Decline
-                    </button>
-                    <button
-                      class="ageaf-panel__apply"
-                      type="button"
-                      disabled={toolRequestBusy}
-                      onClick={() => {
-                        void respondToToolRequest(activeToolRequest, 'accept');
-                      }}
-                    >
-                      Approve
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <form
-                  class="ageaf-toolcall"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const answers: Record<string, { answers: string[] }> = {};
-                    for (const question of activeToolQuestions) {
-                      const value = (toolRequestInputs[question.id] ?? '').trim();
-                      answers[question.id] = { answers: value ? [value] : [] };
-                    }
-                    void respondToToolRequest(activeToolRequest, { answers });
-                  }}
-                >
-                  <div class="ageaf-toolcall__title">Input needed</div>
-                  {activeToolQuestions.map((question) => (
-                    <div class="ageaf-toolcall__question" key={question.id}>
-                      {question.header ? (
-                        <div class="ageaf-toolcall__question-title">{question.header}</div>
-                      ) : null}
-                      {question.question ? (
-                        <div class="ageaf-toolcall__question-text">{question.question}</div>
-                      ) : null}
-                      {question.options ? (
-                        <div class="ageaf-toolcall__options">
-                          {question.options.map((option: any) => (
-                            <button
-                              class="ageaf-toolcall__option"
-                              type="button"
-                              key={option.label}
-                              onClick={() => {
-                                setToolRequestInputs((prev) => ({
-                                  ...prev,
-                                  [question.id]: option.label,
-                                }));
-                              }}
-                            >
-                              {option.label}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                      <textarea
-                        class="ageaf-toolcall__input"
-                        rows={2}
-                        value={toolRequestInputs[question.id] ?? ''}
-                        onInput={(e) => {
-                          const value = (e.currentTarget as HTMLTextAreaElement).value;
-                          setToolRequestInputs((prev) => ({ ...prev, [question.id]: value }));
+            {messages.map((message) => {
+              const content = renderMessageContent(message);
+              if (!content) return null;
+              return (
+                <div class={`ageaf-message ageaf-message--${message.role}`} key={message.id}>
+                  {message.role === 'assistant' && message.statusLine ? (
+                    <div class="ageaf-message__status">{message.statusLine}</div>
+                  ) : null}
+                  {settings?.debugCliEvents && message.role === 'assistant' && ((message.cot && message.cot.length > 0) || (message.thinking && message.thinking.length > 0))
+                    ? renderCoTBlock(message.cot || convertThinkingToCoT(message.thinking), false, message.id)
+                    : null}
+                  {content}
+                  {message.role === 'assistant' ? (
+                    <div class="ageaf-message__response-actions">
+                      <button
+                        class="ageaf-message__copy-response"
+                        type="button"
+                        aria-label="Copy response"
+                        title="Copy response"
+                        onClick={() => {
+                          const copyId = `${message.id}-response`;
+                          void (async () => {
+                            const success = await copyToClipboard(message.content);
+                            if (success) markCopied(copyId);
+                          })();
                         }}
-                        placeholder="Type your answer…"
-                      />
+                      >
+                        {copiedItems[`${message.id}-response`] ? <CheckIcon /> : <CopyIcon />}
+                        <span>Copy response</span>
+                      </button>
                     </div>
-                  ))}
-                  <div class="ageaf-toolcall__actions">
-                    <button
-                      class="ageaf-panel__apply is-secondary"
-                      type="button"
-                      disabled={toolRequestBusy}
-                      onClick={() => {
-                        void respondToToolRequest(activeToolRequest, {
-                          answers: Object.fromEntries(
-                            activeToolQuestions.map((question) => [question.id, { answers: [] }])
-                          ),
-                        });
-                      }}
-                    >
-                      Skip
-                    </button>
-                    <button class="ageaf-panel__apply" type="submit" disabled={toolRequestBusy}>
-                      Submit
-                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
+            {streamingStatus ? (
+              <div class="ageaf-message ageaf-message--assistant">
+                <div class={`ageaf-message__status ${isStreamingActive ? 'is-active' : ''}`}>
+                  {streamingStatus}
+                </div>
+                {settings?.debugCliEvents && streamingCoT.length > 0 ? (
+                  renderCoTBlock(streamingCoT, isStreamingActive, 'streaming-thinking')
+                ) : null}
+                {streamingText ? (
+                  <div
+                    class="ageaf-message__content"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(streamingText) }}
+                  />
+                ) : null}
+              </div>
+            ) : null}
+            {DEBUG_DIFF ? (
+              <div class="ageaf-message ageaf-message--system">
+                <DiffReview
+                  oldText={'\\section{Intro}\\nWe write the paper here.'}
+                  newText={'\\section{Introduction}\\nWe write the paper here.'}
+                />
+              </div>
+            ) : null}
+            {activeToolRequest ? (
+              <div class="ageaf-message ageaf-message--system">
+                {activeToolRequest.kind === 'approval' ? (
+                  <div class="ageaf-toolcall">
+                    <div class="ageaf-toolcall__title">Approval needed</div>
+                    <div class="ageaf-toolcall__detail">
+                      {activeToolRequest.params?.command
+                        ? String(activeToolRequest.params.command)
+                        : activeToolRequest.method}
+                    </div>
+                    <div class="ageaf-toolcall__actions">
+                      <button
+                        class="ageaf-panel__apply is-secondary"
+                        type="button"
+                        disabled={toolRequestBusy}
+                        onClick={() => {
+                          void respondToToolRequest(activeToolRequest, 'decline');
+                        }}
+                      >
+                        Decline
+                      </button>
+                      <button
+                        class="ageaf-panel__apply"
+                        type="button"
+                        disabled={toolRequestBusy}
+                        onClick={() => {
+                          void respondToToolRequest(activeToolRequest, 'accept');
+                        }}
+                      >
+                        Approve
+                      </button>
+                    </div>
                   </div>
-                </form>
-              )}
-            </div>
-          ) : null}
-          {!isAtBottom ? (
-            <button class="ageaf-panel__scroll" type="button" onClick={scrollToBottom}>
-              Scroll to bottom
-            </button>
-          ) : null}
+                ) : (
+                  <form
+                    class="ageaf-toolcall"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const answers: Record<string, { answers: string[] }> = {};
+                      for (const question of activeToolQuestions) {
+                        const value = (toolRequestInputs[question.id] ?? '').trim();
+                        answers[question.id] = { answers: value ? [value] : [] };
+                      }
+                      void respondToToolRequest(activeToolRequest, { answers });
+                    }}
+                  >
+                    <div class="ageaf-toolcall__title">Input needed</div>
+                    {activeToolQuestions.map((question) => (
+                      <div class="ageaf-toolcall__question" key={question.id}>
+                        {question.header ? (
+                          <div class="ageaf-toolcall__question-title">{question.header}</div>
+                        ) : null}
+                        {question.question ? (
+                          <div class="ageaf-toolcall__question-text">{question.question}</div>
+                        ) : null}
+                        {question.options ? (
+                          <div class="ageaf-toolcall__options">
+                            {question.options.map((option: any) => (
+                              <button
+                                class="ageaf-toolcall__option"
+                                type="button"
+                                key={option.label}
+                                onClick={() => {
+                                  setToolRequestInputs((prev) => ({
+                                    ...prev,
+                                    [question.id]: option.label,
+                                  }));
+                                }}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        <textarea
+                          class="ageaf-toolcall__input"
+                          rows={2}
+                          value={toolRequestInputs[question.id] ?? ''}
+                          onInput={(e) => {
+                            const value = (e.currentTarget as HTMLTextAreaElement).value;
+                            setToolRequestInputs((prev) => ({ ...prev, [question.id]: value }));
+                          }}
+                          placeholder="Type your answer…"
+                        />
+                      </div>
+                    ))}
+                    <div class="ageaf-toolcall__actions">
+                      <button
+                        class="ageaf-panel__apply is-secondary"
+                        type="button"
+                        disabled={toolRequestBusy}
+                        onClick={() => {
+                          void respondToToolRequest(activeToolRequest, {
+                            answers: Object.fromEntries(
+                              activeToolQuestions.map((question) => [question.id, { answers: [] }])
+                            ),
+                          });
+                        }}
+                      >
+                        Skip
+                      </button>
+                      <button class="ageaf-panel__apply" type="submit" disabled={toolRequestBusy}>
+                        Submit
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            ) : null}
+            {!isAtBottom ? (
+              <button class="ageaf-panel__scroll" type="button" onClick={scrollToBottom}>
+                Scroll to bottom
+              </button>
+            ) : null}
           </div>
           <div class="ageaf-runtime">
-          <div class="ageaf-runtime__picker">
-            <button class="ageaf-runtime__button" type="button" aria-haspopup="listbox">
-              <span class="ageaf-runtime__value">{getSelectedModelLabel()}</span>
-            </button>
-            <div class="ageaf-runtime__menu" role="listbox">
-              {getOrderedRuntimeModels().map((model) => (
-                <button
-                  class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''}`}
-                  type="button"
-                  onClick={() => onSelectModel(model.value)}
-                  key={model.value}
-                  aria-selected={isRuntimeModelSelected(model)}
-                >
-                  <div class="ageaf-runtime__option-title">{getRuntimeModelLabel(model)}</div>
-                  <div class="ageaf-runtime__option-description">
-                    {getRuntimeModelDescription(model)}
-                  </div>
-                </button>
-              ))}
+            <div class="ageaf-runtime__picker">
+              <button class="ageaf-runtime__button" type="button" aria-haspopup="listbox">
+                <span class="ageaf-runtime__value">{getSelectedModelLabel()}</span>
+              </button>
+              <div class="ageaf-runtime__menu" role="listbox">
+                {getOrderedRuntimeModels().map((model) => (
+                  <button
+                    class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''}`}
+                    type="button"
+                    onClick={() => onSelectModel(model.value)}
+                    key={model.value}
+                    aria-selected={isRuntimeModelSelected(model)}
+                  >
+                    <div class="ageaf-runtime__option-title">{getRuntimeModelLabel(model)}</div>
+                    <div class="ageaf-runtime__option-description">
+                      {getRuntimeModelDescription(model)}
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-          <div class="ageaf-runtime__picker">
-            <button class="ageaf-runtime__button" type="button" aria-haspopup="listbox">
-              <span class="ageaf-runtime__label">Thinking</span>
-              <span class="ageaf-runtime__value ageaf-runtime__value--accent">
-                {selectedThinkingMode.label}
+            <div class="ageaf-runtime__picker">
+              <button class="ageaf-runtime__button" type="button" aria-haspopup="listbox">
+                <span class="ageaf-runtime__label">Thinking</span>
+                <span class="ageaf-runtime__value ageaf-runtime__value--accent">
+                  {selectedThinkingMode.label}
+                </span>
+              </button>
+              <div class="ageaf-runtime__menu" role="listbox">
+                {thinkingModes.map((mode) => (
+                  <button
+                    class={`ageaf-runtime__option ${mode.id === currentThinkingMode ? 'is-selected' : ''}`}
+                    type="button"
+                    onClick={() => onSelectThinkingMode(mode.id)}
+                    key={mode.id}
+                    aria-selected={mode.id === currentThinkingMode}
+                  >
+                    <div class="ageaf-runtime__option-title">{mode.label}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div class="ageaf-runtime__usage" data-tooltip={usageLabel}>
+              <svg
+                class="ageaf-runtime__ring"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <title>{usageLabel}</title>
+                <circle
+                  class="ageaf-runtime__ring-track"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  strokeWidth="3"
+                />
+                <circle
+                  class="ageaf-runtime__ring-value"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  strokeWidth="3"
+                  ref={contextRingRef}
+                  strokeDasharray={ringCircumference}
+                  strokeDashoffset={ringCircumference}
+                />
+              </svg>
+              <span class="ageaf-runtime__value">{usagePercent}%</span>
+            </div>
+            <button
+              class={`ageaf-runtime__yolo ${yoloMode ? 'is-on' : ''}`}
+              type="button"
+              role="switch"
+              aria-checked={yoloMode}
+              aria-label={
+                chatProvider === 'codex'
+                  ? yoloMode
+                    ? 'Codex YOLO mode enabled'
+                    : 'Codex safe mode enabled'
+                  : yoloMode
+                    ? 'YOLO mode enabled'
+                    : 'Safe mode enabled'
+              }
+              data-tooltip={yoloMode ? 'YOLO mode' : 'Safe mode'}
+              onClick={() => {
+                void onToggleYoloMode();
+              }}
+            >
+              <span class="ageaf-runtime__yolo-text">{yoloMode ? 'YOLO' : 'Safe'}</span>
+              <span class="ageaf-runtime__yolo-switch" aria-hidden="true">
+                <span class="ageaf-runtime__yolo-thumb" />
               </span>
             </button>
-            <div class="ageaf-runtime__menu" role="listbox">
-              {thinkingModes.map((mode) => (
-                <button
-                  class={`ageaf-runtime__option ${mode.id === currentThinkingMode ? 'is-selected' : ''}`}
-                  type="button"
-                  onClick={() => onSelectThinkingMode(mode.id)}
-                  key={mode.id}
-                  aria-selected={mode.id === currentThinkingMode}
-                >
-                  <div class="ageaf-runtime__option-title">{mode.label}</div>
-                </button>
-              ))}
-            </div>
           </div>
-	          <div class="ageaf-runtime__usage" data-tooltip={usageLabel}>
-	            <svg
-	              class="ageaf-runtime__ring"
-	              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <title>{usageLabel}</title>
-              <circle
-                class="ageaf-runtime__ring-track"
-                cx="12"
-                cy="12"
-                r="10"
-                strokeWidth="3"
-              />
-              <circle
-                class="ageaf-runtime__ring-value"
-                cx="12"
-                cy="12"
-                r="10"
-                strokeWidth="3"
-                ref={contextRingRef}
-                strokeDasharray={ringCircumference}
-                strokeDashoffset={ringCircumference}
-              />
-            </svg>
-            <span class="ageaf-runtime__value">{usagePercent}%</span>
-          </div>
-	          <button
-	            class={`ageaf-runtime__yolo ${yoloMode ? 'is-on' : ''}`}
-	            type="button"
-	            role="switch"
-	            aria-checked={yoloMode}
-	            aria-label={
-	              chatProvider === 'codex'
-	                ? yoloMode
-	                  ? 'Codex YOLO mode enabled'
-	                  : 'Codex safe mode enabled'
-	                : yoloMode
-	                  ? 'YOLO mode enabled'
-	                  : 'Safe mode enabled'
-	            }
-	            data-tooltip={yoloMode ? 'YOLO mode' : 'Safe mode'}
-	            onClick={() => {
-	              void onToggleYoloMode();
-	            }}
-	          >
-	            <span class="ageaf-runtime__yolo-text">{yoloMode ? 'YOLO' : 'Safe'}</span>
-	            <span class="ageaf-runtime__yolo-switch" aria-hidden="true">
-	              <span class="ageaf-runtime__yolo-thumb" />
-	            </span>
-	          </button>
         </div>
-      </div>
-      <div
-        class="ageaf-panel__input"
-        onDragEnter={(event) => handleDragEnter(event as DragEvent)}
-        onDragOver={(event) => handleDragOver(event as DragEvent)}
-        onDragLeave={(event) => handleDragLeave(event as DragEvent)}
-        onDrop={(event) => handleDrop(event as DragEvent)}
-      >
-	        <div class="ageaf-panel__toolbar">
+        <div
+          class="ageaf-panel__input"
+          onDragEnter={(event) => handleDragEnter(event as DragEvent)}
+          onDragOver={(event) => handleDragOver(event as DragEvent)}
+          onDragLeave={(event) => handleDragLeave(event as DragEvent)}
+          onDrop={(event) => handleDrop(event as DragEvent)}
+        >
+          <div class="ageaf-panel__toolbar">
             <div class="ageaf-session-tabs" role="tablist" aria-label="Sessions">
               {sessionIds.map((id, index) => {
                 const state = chatStateRef.current;
@@ -5990,11 +6422,11 @@ const Panel = () => {
                 const statusIcon = sessionState?.isSending
                   ? '⟳' // spinning/thinking
                   : (sessionState?.queue.length ?? 0) > 0
-                  ? `${sessionState?.queue.length ?? 0}` // queue count
-                  : null;
+                    ? `${sessionState?.queue.length ?? 0}` // queue count
+                    : null;
 
                 return (
-        <button
+                  <button
                     class={`ageaf-session-tab ${id === activeSessionId ? 'is-active' : ''} ${isActive ? 'is-busy' : ''}`}
                     type="button"
                     role="tab"
@@ -6076,218 +6508,218 @@ const Panel = () => {
               >
                 ×
               </button>
-          <button
+              <button
                 class="ageaf-panel__settings ageaf-toolbar-button"
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          aria-label="Open settings"
+                type="button"
+                onClick={() => setSettingsOpen(true)}
+                aria-label="Open settings"
                 data-tooltip="Settings"
-        >
-          ⚙
-        </button>
+              >
+                ⚙
+              </button>
             </div>
           </div>
-        {fileAttachments.length > 0 ? (
-          <div class="ageaf-panel__file-attachments" aria-label="Attached files">
-            {fileAttachments.map((attachment) => (
-              <div
-                class="ageaf-panel__file-chip"
-                key={attachment.id}
-                title={attachment.path ?? attachment.name}
-              >
-                <span class="ageaf-panel__file-chip-name">
-                  {truncateName(attachment.name)}
-                </span>
-                <span class="ageaf-panel__file-chip-meta">
-                  {attachment.ext.replace('.', '').toUpperCase()} ·{' '}
-                  {formatLineCount(attachment.lineCount)} lines
-                </span>
-                <button
-                  class="ageaf-panel__file-chip-remove"
-                  type="button"
-                  aria-label={`Remove ${attachment.name}`}
-                  onClick={() =>
-                    updateFileAttachments(
-                      fileAttachmentsRef.current.filter(
-                        (item) => item.id !== attachment.id
-                      )
-                    )
-                  }
+          {fileAttachments.length > 0 ? (
+            <div class="ageaf-panel__file-attachments" aria-label="Attached files">
+              {fileAttachments.map((attachment) => (
+                <div
+                  class="ageaf-panel__file-chip"
+                  key={attachment.id}
+                  title={attachment.path ?? attachment.name}
                 >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-        {imageAttachments.length > 0 ? (
-          <div class="ageaf-panel__attachments" aria-label="Attached images">
-            {imageAttachments.map((image) => (
-              <div class="ageaf-panel__attachment" key={image.id}>
-                <img
-                  class="ageaf-panel__attachment-thumb"
-                  src={getImageDataUrl(image)}
-                  alt={image.name}
-                  loading="lazy"
-                />
-                <div class="ageaf-panel__attachment-meta">
-                  <div class="ageaf-panel__attachment-name">
-                    {truncateName(image.name)}
-                  </div>
-                  <div class="ageaf-panel__attachment-size">{formatBytes(image.size)}</div>
-                </div>
-                <button
-                  class="ageaf-panel__attachment-remove"
-                  type="button"
-                  aria-label={`Remove ${image.name}`}
-                  onClick={() => removeImageAttachment(image.id)}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-        {attachmentError ? (
-          <div class="ageaf-panel__attachment-error">{attachmentError}</div>
-        ) : null}
-        <div
-          class={`ageaf-panel__editor ${editorEmpty ? 'is-empty' : ''}`}
-          contentEditable="true"
-          role="textbox"
-          aria-multiline="true"
-          aria-label="Message input"
-          data-placeholder="Tell Ageaf what to do…"
-          ref={editorRef}
-          onInput={() => {
-            syncEditorEmpty();
-            updateMentionState();
-            void updateSkillState();
-          }}
-          onPaste={(event) => handlePaste(event as ClipboardEvent)}
-          onKeyDown={(event) => onInputKeyDown(event as KeyboardEvent)}
-          onCompositionStart={() => {
-            isComposingRef.current = true;
-          }}
-          onCompositionEnd={() => {
-            isComposingRef.current = false;
-            updateMentionState();
-            void updateSkillState();
-          }}
-        />
-        {mentionOpen ? (
-          <div
-            class="ageaf-mention"
-            onWheel={(event) => {
-              // Ensure the dropdown itself scrolls (trackpad wheel often scrolls the chat instead).
-              // We scroll manually to be robust across browsers' passive wheel defaults.
-              const el = event.currentTarget as HTMLElement | null;
-              if (!el) return;
-              if (el.scrollHeight <= el.clientHeight) return;
-              el.scrollTop += (event as unknown as WheelEvent).deltaY;
-              event.preventDefault();
-              event.stopPropagation();
-            }}
-          >
-            {mentionResults.length > 0 ? (
-              mentionResults.map((file, index) => (
-                <button
-                  key={file.path}
-                  type="button"
-                  class={`ageaf-mention__option ${index === mentionIndex ? 'is-active' : ''}`}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    insertMentionEntry(file);
-                  }}
-                  title={file.path}
-                >
-                  <span class={`ageaf-mention__icon is-${file.kind}`}>
-                    {file.kind === 'folder'
-                      ? 'Dir'
-                      : file.kind === 'tex'
-                      ? 'TeX'
-                      : file.kind === 'bib'
-                        ? 'Bib'
-                        : file.kind === 'img'
-                          ? 'Img'
-                          : 'File'}
+                  <span class="ageaf-panel__file-chip-name">
+                    {truncateName(attachment.name)}
                   </span>
-                  <span class="ageaf-mention__name">{file.name}</span>
-                </button>
-              ))
-            ) : (
-              <div class="ageaf-mention__empty">No project files found.</div>
-            )}
-          </div>
-        ) : null}
-        {skillOpen ? (
+                  <span class="ageaf-panel__file-chip-meta">
+                    {attachment.ext.replace('.', '').toUpperCase()} ·{' '}
+                    {formatLineCount(attachment.lineCount)} lines
+                  </span>
+                  <button
+                    class="ageaf-panel__file-chip-remove"
+                    type="button"
+                    aria-label={`Remove ${attachment.name}`}
+                    onClick={() =>
+                      updateFileAttachments(
+                        fileAttachmentsRef.current.filter(
+                          (item) => item.id !== attachment.id
+                        )
+                      )
+                    }
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {imageAttachments.length > 0 ? (
+            <div class="ageaf-panel__attachments" aria-label="Attached images">
+              {imageAttachments.map((image) => (
+                <div class="ageaf-panel__attachment" key={image.id}>
+                  <img
+                    class="ageaf-panel__attachment-thumb"
+                    src={getImageDataUrl(image)}
+                    alt={image.name}
+                    loading="lazy"
+                  />
+                  <div class="ageaf-panel__attachment-meta">
+                    <div class="ageaf-panel__attachment-name">
+                      {truncateName(image.name)}
+                    </div>
+                    <div class="ageaf-panel__attachment-size">{formatBytes(image.size)}</div>
+                  </div>
+                  <button
+                    class="ageaf-panel__attachment-remove"
+                    type="button"
+                    aria-label={`Remove ${image.name}`}
+                    onClick={() => removeImageAttachment(image.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {attachmentError ? (
+            <div class="ageaf-panel__attachment-error">{attachmentError}</div>
+          ) : null}
           <div
-            class="ageaf-skill"
-            onWheel={(event) => {
-              const el = event.currentTarget as HTMLElement | null;
-              if (!el) return;
-              if (el.scrollHeight <= el.clientHeight) return;
-              el.scrollTop += (event as unknown as WheelEvent).deltaY;
-              event.preventDefault();
-              event.stopPropagation();
+            class={`ageaf-panel__editor ${editorEmpty ? 'is-empty' : ''}`}
+            contentEditable="true"
+            role="textbox"
+            aria-multiline="true"
+            aria-label="Message input"
+            data-placeholder="Tell Ageaf what to do…"
+            ref={editorRef}
+            onInput={() => {
+              syncEditorEmpty();
+              updateMentionState();
+              void updateSkillState();
             }}
-          >
-            {skillResults.length > 0 ? (
-              skillResults.map((skill, index) => (
-                <button
-                  key={skill.id}
-                  type="button"
-                  class={`ageaf-skill__option ${index === skillIndex ? 'is-active' : ''}`}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    insertSkill(skill);
-                  }}
-                  title={skill.description}
-                >
-                  <div class="ageaf-skill__name">/{skill.name}</div>
-                  <div class="ageaf-skill__description">{skill.description}</div>
-                </button>
-              ))
-            ) : (
-              <div class="ageaf-skill__empty">No skills found.</div>
-            )}
-          </div>
-        ) : null}
-        {isDropActive ? (
-          <div class="ageaf-panel__dropzone" aria-hidden="true">
-            <svg
-              class="ageaf-panel__dropzone-icon"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-              focusable="false"
+            onPaste={(event) => handlePaste(event as ClipboardEvent)}
+            onKeyDown={(event) => onInputKeyDown(event as KeyboardEvent)}
+            onCompositionStart={() => {
+              isComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              isComposingRef.current = false;
+              updateMentionState();
+              void updateSkillState();
+            }}
+          />
+          {mentionOpen ? (
+            <div
+              class="ageaf-mention"
+              onWheel={(event) => {
+                // Ensure the dropdown itself scrolls (trackpad wheel often scrolls the chat instead).
+                // We scroll manually to be robust across browsers' passive wheel defaults.
+                const el = event.currentTarget as HTMLElement | null;
+                if (!el) return;
+                if (el.scrollHeight <= el.clientHeight) return;
+                el.scrollTop += (event as unknown as WheelEvent).deltaY;
+                event.preventDefault();
+                event.stopPropagation();
+              }}
             >
-              <path
-                d="M12 16V7M8.5 10.5L12 7l3.5 3.5"
-                fill="none"
-                stroke="currentColor"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="1.6"
-              />
-              <path
-                d="M5 17.5c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2"
-                fill="none"
-                stroke="currentColor"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="1.6"
-              />
-            </svg>
-            <div class="ageaf-panel__dropzone-label">Drop files to attach</div>
-          </div>
-        ) : null}
-        {isSending || queueCount > 0 ? (
-          <div class="ageaf-panel__queue">
-            {isSending ? 'Sending…' : 'Queued'}
-            {queueCount > 0 ? ` (${queueCount})` : ''}
-          </div>
-        ) : null}
-      </div>
+              {mentionResults.length > 0 ? (
+                mentionResults.map((file, index) => (
+                  <button
+                    key={file.path}
+                    type="button"
+                    class={`ageaf-mention__option ${index === mentionIndex ? 'is-active' : ''}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      insertMentionEntry(file);
+                    }}
+                    title={file.path}
+                  >
+                    <span class={`ageaf-mention__icon is-${file.kind}`}>
+                      {file.kind === 'folder'
+                        ? 'Dir'
+                        : file.kind === 'tex'
+                          ? 'TeX'
+                          : file.kind === 'bib'
+                            ? 'Bib'
+                            : file.kind === 'img'
+                              ? 'Img'
+                              : 'File'}
+                    </span>
+                    <span class="ageaf-mention__name">{file.name}</span>
+                  </button>
+                ))
+              ) : (
+                <div class="ageaf-mention__empty">No project files found.</div>
+              )}
+            </div>
+          ) : null}
+          {skillOpen ? (
+            <div
+              class="ageaf-skill"
+              onWheel={(event) => {
+                const el = event.currentTarget as HTMLElement | null;
+                if (!el) return;
+                if (el.scrollHeight <= el.clientHeight) return;
+                el.scrollTop += (event as unknown as WheelEvent).deltaY;
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
+              {skillResults.length > 0 ? (
+                skillResults.map((skill, index) => (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    class={`ageaf-skill__option ${index === skillIndex ? 'is-active' : ''}`}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      insertSkill(skill);
+                    }}
+                    title={skill.description}
+                  >
+                    <div class="ageaf-skill__name">/{skill.name}</div>
+                    <div class="ageaf-skill__description">{skill.description}</div>
+                  </button>
+                ))
+              ) : (
+                <div class="ageaf-skill__empty">No skills found.</div>
+              )}
+            </div>
+          ) : null}
+          {isDropActive ? (
+            <div class="ageaf-panel__dropzone" aria-hidden="true">
+              <svg
+                class="ageaf-panel__dropzone-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path
+                  d="M12 16V7M8.5 10.5L12 7l3.5 3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.6"
+                />
+                <path
+                  d="M5 17.5c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.6"
+                />
+              </svg>
+              <div class="ageaf-panel__dropzone-label">Drop files to attach</div>
+            </div>
+          ) : null}
+          {isSending || queueCount > 0 ? (
+            <div class="ageaf-panel__queue">
+              {isSending ? 'Sending…' : 'Queued'}
+              {queueCount > 0 ? ` (${queueCount})` : ''}
+            </div>
+          ) : null}
+        </div>
       </div>
       {settingsOpen ? (
         <div class="ageaf-settings">
@@ -6355,10 +6787,10 @@ const Panel = () => {
                               | 'native',
                           })
                         }
-	                      >
-	                        <option value="http">HTTP</option>
-	                        <option value="native">Native Messaging (prod)</option>
-	                      </select>
+                      >
+                        <option value="http">HTTP</option>
+                        <option value="native">Native Messaging (prod)</option>
+                      </select>
                       {settings.transport !== 'native' ? (
                         <>
                           <label class="ageaf-settings__label" for="ageaf-host-url">
@@ -6400,10 +6832,10 @@ const Panel = () => {
                   {settingsTab === 'authentication' ? (
                     <div class="ageaf-settings__section">
                       <h3>Authentication</h3>
-	                      <h4 class="ageaf-settings__subhead">Anthropic</h4>
+                      <h4 class="ageaf-settings__subhead">Anthropic</h4>
                       <p class="ageaf-settings__hint">
-	                        If you already logged into Claude Code in your terminal, you can leave the API key blank.
-	                        Otherwise set it via environment variables below.
+                        If you already logged into Claude Code in your terminal, you can leave the API key blank.
+                        Otherwise set it via environment variables below.
                       </p>
                       <label class="ageaf-settings__label" for="ageaf-claude-cli">
                         Claude CLI path (optional)
@@ -6433,7 +6865,7 @@ const Panel = () => {
                         onInput={(event) =>
                           updateSettings({ claudeEnvVars: (event.target as HTMLTextAreaElement).value })
                         }
-	                        placeholder={'ANTHROPIC_API_KEY=your-key\nANTHROPIC_BASE_URL=https://api.anthropic.com\nANTHROPIC_MODEL=claude-sonnet-4-5'}
+                        placeholder={'ANTHROPIC_API_KEY=your-key\nANTHROPIC_BASE_URL=https://api.anthropic.com\nANTHROPIC_MODEL=claude-sonnet-4-5'}
                       />
                       <label class="ageaf-settings__checkbox">
                         <input
@@ -6445,40 +6877,40 @@ const Panel = () => {
                         />
                         Load ~/.claude/settings.json (user permissions)
                       </label>
-	                      <h4 class="ageaf-settings__subhead">OpenAI</h4>
-	                      <p class="ageaf-settings__hint">
-	                        If you already logged into the Codex CLI in your terminal, you can leave the API key blank.
-	                        Otherwise set it via environment variables below.
-	                      </p>
-	                      <label class="ageaf-settings__label" for="ageaf-codex-cli">
-	                        Codex CLI path (optional)
-	                      </label>
-	                      <input
-	                        id="ageaf-codex-cli"
-	                        class="ageaf-settings__input"
-	                        type="text"
-	                        value={settings.openaiCodexCliPath ?? ''}
-	                        onInput={(event) =>
-	                          updateSettings({ openaiCodexCliPath: (event.target as HTMLInputElement).value })
-	                        }
-	                        placeholder="Leave empty to auto-detect"
-	                      />
-	                      <label class="ageaf-settings__label" for="ageaf-openai-env">
-	                        Environment variables (KEY=VALUE)
-	                      </label>
-	                      <p class="ageaf-settings__hint">
-	                        Optional: you can set OPENAI_BASE_URL (proxy) here in addition to OPENAI_API_KEY.
-	                      </p>
-	                      <textarea
-	                        id="ageaf-openai-env"
-	                        class="ageaf-settings__textarea"
-	                        rows={6}
-	                        value={settings.openaiEnvVars ?? ''}
-	                        onInput={(event) =>
-	                          updateSettings({ openaiEnvVars: (event.target as HTMLTextAreaElement).value })
-	                        }
-	                        placeholder={'OPENAI_API_KEY=your-key\nOPENAI_BASE_URL=https://api.openai.com'}
-	                      />
+                      <h4 class="ageaf-settings__subhead">OpenAI</h4>
+                      <p class="ageaf-settings__hint">
+                        If you already logged into the Codex CLI in your terminal, you can leave the API key blank.
+                        Otherwise set it via environment variables below.
+                      </p>
+                      <label class="ageaf-settings__label" for="ageaf-codex-cli">
+                        Codex CLI path (optional)
+                      </label>
+                      <input
+                        id="ageaf-codex-cli"
+                        class="ageaf-settings__input"
+                        type="text"
+                        value={settings.openaiCodexCliPath ?? ''}
+                        onInput={(event) =>
+                          updateSettings({ openaiCodexCliPath: (event.target as HTMLInputElement).value })
+                        }
+                        placeholder="Leave empty to auto-detect"
+                      />
+                      <label class="ageaf-settings__label" for="ageaf-openai-env">
+                        Environment variables (KEY=VALUE)
+                      </label>
+                      <p class="ageaf-settings__hint">
+                        Optional: you can set OPENAI_BASE_URL (proxy) here in addition to OPENAI_API_KEY.
+                      </p>
+                      <textarea
+                        id="ageaf-openai-env"
+                        class="ageaf-settings__textarea"
+                        rows={6}
+                        value={settings.openaiEnvVars ?? ''}
+                        onInput={(event) =>
+                          updateSettings({ openaiEnvVars: (event.target as HTMLTextAreaElement).value })
+                        }
+                        placeholder={'OPENAI_API_KEY=your-key\nOPENAI_BASE_URL=https://api.openai.com'}
+                      />
                     </div>
                   ) : null}
                   {settingsTab === 'customization' ? (
@@ -6487,7 +6919,7 @@ const Panel = () => {
                       <label class="ageaf-settings__label" for="ageaf-display-name">
                         What should Ageaf call you?
                       </label>
-                        <input
+                      <input
                         id="ageaf-display-name"
                         class="ageaf-settings__input"
                         type="text"
@@ -6557,9 +6989,8 @@ const Panel = () => {
                       <p class="ageaf-settings__hint">
                         Host status:{' '}
                         {hostToolsStatus
-                          ? `tools=${hostToolsStatus.toolsEnabled ? 'on' : 'off'}, remote-toggle=${
-                              hostToolsStatus.remoteToggleAllowed ? 'allowed' : 'blocked'
-                            }, available=${hostToolsStatus.toolsAvailable ? 'yes' : 'no'}`
+                          ? `tools=${hostToolsStatus.toolsEnabled ? 'on' : 'off'}, remote-toggle=${hostToolsStatus.remoteToggleAllowed ? 'allowed' : 'blocked'
+                          }, available=${hostToolsStatus.toolsAvailable ? 'yes' : 'no'}`
                           : 'unavailable'}
                       </p>
                       {!hostToolsStatus?.remoteToggleAllowed ? (
@@ -6598,6 +7029,36 @@ const Panel = () => {
                       </select>
                       <p class="ageaf-settings__hint">
                         Controls Codex CLI command approvals (approvalPolicy). Use "never" only if you trust the agent to run commands without prompting.
+                      </p>
+
+                      <h4 class="ageaf-settings__subhead">Compaction</h4>
+                      <label class="ageaf-settings__checkbox">
+                        <input
+                          type="checkbox"
+                          checked={settings.autoCompactEnabled ?? true}
+                          onChange={(event) =>
+                            updateSettings({ autoCompactEnabled: event.currentTarget.checked })
+                          }
+                        />
+                        Auto-compact when context usage is high
+                      </label>
+                      <p class="ageaf-settings__hint">
+                        When enabled, the host will check context usage and may issue /compact before sending your request.
+                      </p>
+
+                      <h4 class="ageaf-settings__subhead">Chain-of-Thought Display</h4>
+                      <label class="ageaf-settings__checkbox">
+                        <input
+                          type="checkbox"
+                          checked={settings.debugCliEvents ?? false}
+                          onChange={(event) =>
+                            updateSettings({ debugCliEvents: event.currentTarget.checked })
+                          }
+                        />
+                        Show thinking and tool activity
+                      </label>
+                      <p class="ageaf-settings__hint">
+                        When enabled, displays Claude's thinking process and tool calls (Read, Web Browse, etc.) during responses.
                       </p>
                     </div>
                   ) : null}

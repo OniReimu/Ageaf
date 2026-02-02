@@ -135,7 +135,11 @@ export class CodexAppServer {
     }
   }
 
-  async request(method: string, params: unknown): Promise<JsonRpcMessage> {
+  async request(
+    method: string,
+    params: unknown,
+    options?: { timeoutMs?: number }
+  ): Promise<JsonRpcMessage> {
     await this.start();
     const child = this.child;
     if (!child?.stdin) {
@@ -149,8 +153,23 @@ export class CodexAppServer {
       this.pending.set(id, { resolve, reject });
     });
 
+    const timeoutMs = Number(options?.timeoutMs ?? 60000);
+    let timeoutId: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return;
+      timeoutId = setTimeout(() => {
+        // Remove from pending so a late response doesn't leak memory.
+        this.pending.delete(id);
+        reject(new Error(`Codex app-server request timed out after ${timeoutMs}ms (${method})`));
+      }, timeoutMs);
+    });
+
     child.stdin.write(`${JSON.stringify(payload)}\n`);
-    return promise;
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
   }
 
   async notify(method: string, params?: unknown) {

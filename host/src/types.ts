@@ -1,17 +1,17 @@
 export type Patch =
   | {
-      kind: 'replaceRangeInFile';
-      filePath: string;
-      expectedOldText: string;
-      text: string;
-      from?: number;
-      to?: number;
-    }
+    kind: 'replaceRangeInFile';
+    filePath: string;
+    expectedOldText: string;
+    text: string;
+    from?: number;
+    to?: number;
+  }
   | { kind: 'replaceSelection'; text: string }
   | { kind: 'insertAtCursor'; text: string };
 
 export type JobEvent = {
-  event: 'plan' | 'delta' | 'tool_call' | 'patch' | 'usage' | 'done';
+  event: 'plan' | 'delta' | 'tool_call' | 'tool_result' | 'trace' | 'patch' | 'usage' | 'done';
   data: unknown;
 };
 
