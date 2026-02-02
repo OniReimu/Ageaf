@@ -65,6 +65,25 @@ const EDITOR_OVERLAY_CLEAR_EVENT = 'ageaf:editor:overlay:clear';
 const EDITOR_OVERLAY_READY_EVENT = 'ageaf:editor:overlay:ready';
 const PANEL_OVERLAY_ACTION_EVENT = 'ageaf:panel:patch-review-action';
 
+/**
+ * Helper to close any unclosed code fences in partial streaming text.
+ * Returns the text with closing fences added if needed.
+ */
+function closeUnfinishedCodeFences(text: string): string {
+  if (!text) return text;
+
+  // Count code fence markers (```)
+  const fenceMatches = text.match(/```/g);
+  const fenceCount = fenceMatches ? fenceMatches.length : 0;
+
+  // If odd number of fences, there's an unclosed code block
+  if (fenceCount % 2 !== 0) {
+    return text + '\n```';
+  }
+
+  return text;
+}
+
 const CopyIcon = () => (
   <svg
     class="ageaf-message__copy-icon"
@@ -2500,13 +2519,14 @@ const Panel = () => {
 
   const extractQuotesFromHtml = (html: string) => {
     if (typeof document === 'undefined') {
-      return { mainHtml: html, quotes: [] as QuoteData[] };
+      return { mainHtml: html, quotes: [] as QuoteData[], interrupted: false };
     }
 
     const container = document.createElement('div');
     container.innerHTML = html;
     const mainContainer = document.createElement('div');
     const quotes: QuoteData[] = [];
+    let interrupted = false;
     const nodes = Array.from(container.childNodes);
 
     const isWhitespaceText = (node: Node) =>
@@ -2548,7 +2568,9 @@ const Panel = () => {
         if (element.tagName === 'P') {
           const text = element.textContent?.trim() ?? '';
           if (text === INTERRUPTED_BY_USER_MARKER) {
-            element.classList.add('ageaf-message__interrupt');
+            // Render the interrupt marker as a footer after quotes/blocks, not inline.
+            interrupted = true;
+            continue;
           }
           if (
             text.includes('[Attachment:') &&
@@ -2570,7 +2592,7 @@ const Panel = () => {
       mainContainer.appendChild(node.cloneNode(true));
     }
 
-    return { mainHtml: mainContainer.innerHTML, quotes };
+    return { mainHtml: mainContainer.innerHTML, quotes, interrupted };
   };
 
   const extractCopyTextFromQuoteHtml = (html: string): string => {
@@ -3279,7 +3301,7 @@ const Panel = () => {
         .replace(/[ \t]+/g, ' ')
         .replace(/\n{3,}/g, '\n\n');
 
-    const { mainHtml: rawMainHtml, quotes } = extractQuotesFromHtml(renderMarkdown(message.content));
+    const { mainHtml: rawMainHtml, quotes, interrupted } = extractQuotesFromHtml(renderMarkdown(message.content));
     const mainHtml = decorateMentionsHtml(decorateAttachmentLabelsHtml(rawMainHtml));
     const hasMain = mainHtml.trim().length > 0;
 
@@ -3387,6 +3409,9 @@ const Panel = () => {
               })}
             </div>
           </div>
+        ) : null}
+        {interrupted ? (
+          <div class="ageaf-message__interrupt">{INTERRUPTED_BY_USER_MARKER}</div>
         ) : null}
       </>
     );
@@ -4019,6 +4044,11 @@ const Panel = () => {
     // Cleanup timers
     stopThinkingTimer(conversationId);
     stopStreamTimer(conversationId);
+
+    // IMPORTANT: Flush any remaining buffered tokens before clearing
+    // (tokens are buffered and flushed every 30ms, so there may be unflushed tokens)
+    const remainingTokens = sessionState.streamTokens.join('');
+    sessionState.streamingText += remainingTokens;
     sessionState.streamTokens = [];
     sessionState.pendingDone = null;
     sessionState.pendingPatchReviewMessages = [];
@@ -4035,7 +4065,8 @@ const Panel = () => {
     activeJobIdRef.current = null;
     sessionState.activeJobId = null;
 
-    const partial = sessionState.streamingText.trim();
+    // Close any unclosed code fences before adding the interruption marker
+    const partial = closeUnfinishedCodeFences(sessionState.streamingText.trim());
     const content = partial
       ? `${partial}\n\n${INTERRUPTED_BY_USER_MARKER}`
       : INTERRUPTED_BY_USER_MARKER;
