@@ -1,6 +1,6 @@
 import { getCmView } from './helpers';
 import { initCitationDecorations, type Cm6ExportsLite, type CitationDecorations } from './citations/citationDecorations';
-import { analyzeCitations } from './citations/citationAnalyzer';
+import { analyzeCitations, warmTexCitationCache } from './citations/citationAnalyzer';
 import { generateCacheKey, getCachedAnalysis, setCachedAnalysis } from './citations/citationCache';
 import { parseBibTeXFile } from './citations/bibTeXParser';
 
@@ -10,6 +10,7 @@ let lastInstallAttemptAt = 0;
 let lastActiveFile: string | null = null;
 let lastBibUpdateAt = 0;
 let lastBibHash: string | null = null;
+let lastBibActive = false;
 
 const STYLE_ID = 'ageaf-citation-indicator-style';
 
@@ -266,6 +267,11 @@ export function registerCitationIndicator() {
     tryAdoptGlobalCm6();
   });
 
+  // Warm the .tex citation cache shortly after page load so opening a .bib feels instant.
+  window.setTimeout(() => {
+    void warmTexCitationCache();
+  }, 1500);
+
   // We intentionally do not rely on a custom "editor ready" event (none is emitted).
   // Instead we poll for a CM6 view and inject once per view, like inlineDiffOverlay does.
   window.setInterval(() => {
@@ -273,8 +279,9 @@ export function registerCitationIndicator() {
     if (!view) return;
     if (!decorations || !cm6) return;
 
-    // Install extension once per view (guarded + throttled)
-    if (!installedViews!.has(view) && !isCitationFieldInstalled(view)) {
+    // Ensure extension is installed (Overleaf can replace editor state on file switch,
+    // which may drop our field even if the underlying view object is stable).
+    if (!isCitationFieldInstalled(view)) {
       const now = Date.now();
       if (now - lastInstallAttemptAt > 500) {
         lastInstallAttemptAt = now;
@@ -292,9 +299,7 @@ export function registerCitationIndicator() {
       }
     }
 
-    if (isCitationFieldInstalled(view)) {
-      installedViews!.add(view);
-    }
+    if (isCitationFieldInstalled(view)) installedViews!.add(view);
 
     // While we're scanning citations, Overleaf tab changes are expected (we read .tex files).
     // Don't treat those as "user switched away", and don't run competing updates.
@@ -304,6 +309,15 @@ export function registerCitationIndicator() {
     const docText = view.state.doc.toString();
     const isBibActive =
       !!normalizeTabFileName(activeFile)?.toLowerCase().endsWith('.bib') || looksLikeBibText(docText);
+
+    // If we switched away from a bib, assume decorations were cleared; force refresh when we come back.
+    if (isBibActive !== lastBibActive) {
+      lastBibActive = isBibActive;
+      lastBibHash = null;
+      if (isBibActive) {
+        window.setTimeout(() => void updateCitationIndicators(), 250);
+      }
+    }
 
     // Trigger analysis when switching into a .bib tab
     if (activeFile !== lastActiveFile) {
