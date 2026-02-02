@@ -54,15 +54,18 @@ export async function sendCompactCommand(
   emitEvent: EmitEvent
 ): Promise<void> {
   if (provider === 'claude') {
-    await sendClaudeCompact(payload.runtime?.claude, emitEvent);
+    const debugCliEvents = Boolean(payload?.userSettings?.debugCliEvents);
+    await sendClaudeCompact(payload.runtime?.claude, emitEvent, debugCliEvents);
   } else {
-    await sendCodexCompact(payload.runtime?.codex, emitEvent);
+    const debugCliEvents = Boolean(payload?.userSettings?.debugCliEvents);
+    await sendCodexCompact(payload.runtime?.codex, emitEvent, debugCliEvents);
   }
 }
 
 async function sendClaudeCompact(
   runtime: ClaudeRuntimeConfig | undefined,
-  emitEvent: EmitEvent
+  emitEvent: EmitEvent,
+  debugCliEvents: boolean
 ): Promise<void> {
   const conversationId = runtime?.conversationId ?? 'unknown';
 
@@ -101,6 +104,7 @@ async function sendClaudeCompact(
       runtime,
       safety: { enabled: false },
       enableTools: false,
+      debugCliEvents,
     });
 
     await Promise.race([compactPromise, timeoutPromise]);
@@ -119,7 +123,8 @@ async function sendClaudeCompact(
 
 async function sendCodexCompact(
   runtime: CodexRuntimeConfig | undefined,
-  emitEvent: EmitEvent
+  emitEvent: EmitEvent,
+  debugCliEvents: boolean
 ): Promise<void> {
   const threadId = typeof runtime?.threadId === 'string' ? runtime.threadId.trim() : '';
   if (!threadId) {
@@ -140,6 +145,9 @@ async function sendCodexCompact(
   const compactStartTime = Date.now();
 
   try {
+    if (debugCliEvents) {
+      emitEvent({ event: 'trace', data: { message: 'Compacting history (Codex)…' } });
+    }
     const cwd = getCodexSessionCwd(threadId);
     const appServer = await getCodexAppServer({
       cliPath: runtime?.cliPath,
@@ -177,6 +185,18 @@ async function sendCodexCompact(
 
         if (msgThreadId !== threadId) return;
 
+        if (debugCliEvents) {
+          if (method === 'thread/tokenUsage/updated') {
+            emitEvent({ event: 'trace', data: { message: 'Codex: usage updated (during compaction)' } });
+          }
+          if (method === 'turn/completed') {
+            emitEvent({ event: 'trace', data: { message: 'Compaction completed (Codex)' } });
+          }
+          if (method === 'error' || method === 'turn/error') {
+            emitEvent({ event: 'trace', data: { message: 'Compaction error (Codex)' } });
+          }
+        }
+
         // Track that CLI is responding
         lastMessageTime = Date.now();
         if (!cliAcknowledged) {
@@ -190,6 +210,9 @@ async function sendCodexCompact(
         if (hasRequestId && method.includes('requestApproval')) {
           console.log(`[Codex Compact] Auto-accepting approval request: ${method}`);
           void appServer.respond(requestId as any, 'accept');
+          if (debugCliEvents) {
+            emitEvent({ event: 'trace', data: { message: 'Codex: auto-accepted approval (during compaction)' } });
+          }
           return;
         }
 
@@ -197,6 +220,9 @@ async function sendCodexCompact(
         if (hasRequestId && (method.includes('prompt') || method.includes('select') || method.includes('confirm'))) {
           console.log(`[Codex Compact] Auto-accepting interactive prompt: ${method}`);
           void appServer.respond(requestId as any, 'accept');
+          if (debugCliEvents) {
+            emitEvent({ event: 'trace', data: { message: 'Codex: auto-accepted prompt (during compaction)' } });
+          }
           return;
         }
 
@@ -236,19 +262,23 @@ async function sendCodexCompact(
 
     // Try to resume the thread first in case it's not in Codex's active memory
     try {
-      await appServer.request('thread/resume', {
-        threadId,
-        history: null,
-        path: null,
-        model,
-        modelProvider: null,
-        cwd,
-        approvalPolicy,
-        sandbox: 'read-only',
-        config: null,
-        baseInstructions: null,
-        developerInstructions: null,
-      });
+      await appServer.request(
+        'thread/resume',
+        {
+          threadId,
+          history: null,
+          path: null,
+          model,
+          modelProvider: null,
+          cwd,
+          approvalPolicy,
+          sandbox: 'read-only',
+          config: null,
+          baseInstructions: null,
+          developerInstructions: null,
+        },
+        { timeoutMs: 30000 }
+      );
     } catch (resumeError) {
       // If resume fails with "thread not found", the thread is truly gone
       const errorMsg = String((resumeError as any)?.message ?? resumeError ?? '');
@@ -266,18 +296,22 @@ async function sendCodexCompact(
       data: { message: 'Sending compact command to Codex CLI...' },
     });
 
-    const turnResponse = await appServer.request('turn/start', {
-      threadId,
-      input: [{ type: 'text', text: '/compact' }],
-      cwd,
-      approvalPolicy,
-      sandboxPolicy: { type: 'readOnly' },
-      model,
-      effort,
-      summary: null,
-      outputSchema: null,
-      collaborationMode: null,
-    });
+    const turnResponse = await appServer.request(
+      'turn/start',
+      {
+        threadId,
+        input: [{ type: 'text', text: '/compact' }],
+        cwd,
+        approvalPolicy,
+        sandboxPolicy: { type: 'readOnly' },
+        model,
+        effort,
+        summary: null,
+        outputSchema: null,
+        collaborationMode: null,
+      },
+      { timeoutMs: 30000 }
+    );
 
     if (!done && turnResponse && Object.prototype.hasOwnProperty.call(turnResponse, 'error')) {
       done = true;

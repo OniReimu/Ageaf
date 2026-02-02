@@ -10,6 +10,13 @@ import { validatePatch } from '../../validate.js';
 import { getCodexAppServer } from './appServer.js';
 import { parseCodexTokenUsage } from './tokenUsage.js';
 
+// Debug logging to console (enabled via AGEAF_CODEX_DEBUG=true)
+const debugToConsole = process.env.AGEAF_CODEX_DEBUG === 'true';
+function debugLog(message: string, data?: Record<string, unknown>) {
+  if (!debugToConsole) return;
+  console.log(`[CODEX DEBUG] ${message}`, data ?? '');
+}
+
 type EmitEvent = (event: JobEvent) => void;
 
 export type CodexApprovalPolicy = 'untrusted' | 'on-request' | 'on-failure' | 'never';
@@ -38,6 +45,7 @@ type CodexJobPayload = {
   userSettings?: {
     customSystemPrompt?: string;
     displayName?: string;
+    debugCliEvents?: boolean;
   };
 };
 
@@ -209,10 +217,10 @@ function buildPrompt(
 
   const selectionPatchGuidance = hasSelection
     ? [
-        'Selection edits:',
-        '- If `Context.selection` is present and the user is asking you to proofread/rewrite/edit the selection, prefer emitting a `ageaf-patch` with { "kind":"replaceSelection", "text":"..." }.',
-        '- Keep the visible response short (change notes only).',
-      ].join('\n')
+      'Selection edits:',
+      '- If `Context.selection` is present and the user is asking you to proofread/rewrite/edit the selection, prefer emitting a `ageaf-patch` with { "kind":"replaceSelection", "text":"..." }.',
+      '- Keep the visible response short (change notes only).',
+    ].join('\n')
     : '';
 
   const fileUpdateInstructions = [
@@ -258,6 +266,11 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
   }
 
   const runtime = payload.runtime?.codex ?? {};
+  const debugCliEvents = payload.userSettings?.debugCliEvents ?? false;
+  const emitTrace = (message: string, data?: Record<string, unknown>) => {
+    if (!debugCliEvents) return;
+    emitEvent({ event: 'trace', data: { message, ...(data ?? {}) } });
+  };
   const images = getContextImages(payload.context);
   const attachments = getContextAttachments(payload.context);
   const { block: attachmentBlock } = await buildAttachmentBlock(
@@ -289,17 +302,22 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
   });
 
   if (!threadId) {
-    const threadResponse = await appServer.request('thread/start', {
-      model,
-      modelProvider: null,
-      cwd,
-      approvalPolicy,
-      sandbox: 'read-only',
-      config: null,
-      baseInstructions: null,
-      developerInstructions: null,
-      experimentalRawEvents: false,
-    });
+    emitTrace('Starting Codex thread…');
+    const threadResponse = await appServer.request(
+      'thread/start',
+      {
+        model,
+        modelProvider: null,
+        cwd,
+        approvalPolicy,
+        sandbox: 'read-only',
+        config: null,
+        baseInstructions: null,
+        developerInstructions: null,
+        experimentalRawEvents: false,
+      },
+      { timeoutMs: 30000 }
+    );
     const extracted = extractThreadId(threadResponse);
     if (!extracted) {
       emitEvent({
@@ -309,20 +327,26 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
       return;
     }
     threadId = extracted;
+    emitTrace('Codex thread ready', { threadId });
   } else {
-    const resumeResponse = await appServer.request('thread/resume', {
-      threadId,
-      history: null,
-      path: null,
-      model,
-      modelProvider: null,
-      cwd,
-      approvalPolicy,
-      sandbox: 'read-only',
-      config: null,
-      baseInstructions: null,
-      developerInstructions: null,
-    });
+    emitTrace('Resuming Codex thread…', { threadId });
+    const resumeResponse = await appServer.request(
+      'thread/resume',
+      {
+        threadId,
+        history: null,
+        path: null,
+        model,
+        modelProvider: null,
+        cwd,
+        approvalPolicy,
+        sandbox: 'read-only',
+        config: null,
+        baseInstructions: null,
+        developerInstructions: null,
+      },
+      { timeoutMs: 30000 }
+    );
     const extracted = extractThreadId(resumeResponse);
     if (!extracted) {
       emitEvent({
@@ -332,6 +356,7 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
       return;
     }
     threadId = extracted;
+    emitTrace('Codex thread resumed', { threadId });
   }
 
   const prompt = buildPrompt(payload, contextForPrompt);
@@ -352,7 +377,12 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
   // Filled synchronously by the Promise executor below.
   // (Promise executors run immediately.)
   let resolveDone!: () => void;
-  let unsubscribe = () => {};
+  let unsubscribe = () => { };
+  const turnStartTime = Date.now();
+  let lastMessageTime = Date.now();
+  const TURN_TIMEOUT_MS = Number(process.env.AGEAF_CODEX_TURN_TIMEOUT_MS ?? 0);
+  const HEARTBEAT_MS = 10000;
+  let lastHeartbeatAt = 0;
 
   const donePromise = new Promise<void>((resolve) => {
     resolveDone = () => resolve();
@@ -365,10 +395,52 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
         typeof requestId === 'number' || typeof requestId === 'string';
 
       if (msgThreadId !== threadId) return;
+      lastMessageTime = Date.now();
+
+      // Log ALL events when debug mode is enabled (helps discover event names)
+      if (debugCliEvents && method) {
+        const eventSummary = {
+          method,
+          ...(params?.itemId ? { itemId: params.itemId } : {}),
+          ...(params?.name ? { name: params.name } : {}),
+          ...(params?.toolName ? { toolName: params.toolName } : {}),
+          ...(params?.command ? { command: String(params.command).slice(0, 100) } : {}),
+          ...(params?.type ? { type: params.type } : {}),
+        };
+        emitEvent({ event: 'trace', data: { message: `[Codex Event] ${method}`, ...eventSummary } });
+      }
+
+      // Handle thread/compacted events - ALWAYS show (critical operation)
+      if (method === 'thread/compacted' || method === 'compaction/started' || method === 'compaction/completed') {
+        const phase = method.includes('completed') ? 'compaction_complete' : 'tool_start';
+        const message = method.includes('completed')
+          ? 'Context compaction complete'
+          : 'Compacting context... (reducing context window usage)';
+
+        emitEvent({
+          event: 'plan',
+          data: {
+            phase,
+            toolId: 'compaction-' + Date.now(),
+            toolName: 'Compacting',
+            message,
+          },
+        });
+        return;
+      }
+
+      // Human-readable trace (toggle-controlled)
+      if (method === 'turn/started') emitTrace('Codex: turn started');
+      if (method === 'turn/completed') emitTrace('Codex: turn completed');
+      if (method === 'thread/tokenUsage/updated') emitTrace('Codex: usage updated');
+      if (method === 'error' || method === 'turn/error') {
+        emitTrace('Codex: error', { message: String(params?.error?.message ?? params?.error ?? '') });
+      }
 
       if (hasRequestId && method.includes('requestApproval')) {
         if (approvalPolicy === 'never') {
           void appServer.respond(requestId as any, 'accept');
+          emitTrace('Codex: auto-accepted approval');
           return;
         }
         emitEvent({
@@ -380,6 +452,7 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
             params: params ?? {},
           },
         });
+        emitTrace('Codex: approval required');
         return;
       }
 
@@ -393,6 +466,7 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
             params: params ?? {},
           },
         });
+        emitTrace('Codex: user input required');
         return;
       }
 
@@ -429,6 +503,274 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
               emitEvent({ event: 'delta', data: { text: flush } });
             }
           }
+        }
+        return;
+      }
+
+      // Helper function to process Codex items and emit plan events
+      const processCodexItem = (item: any, itemType: string, itemId: string) => {
+        // Web search
+        if (itemType === 'web_search' || itemType === 'webSearch' || itemType === 'web.run') {
+          const query = item?.query ?? item?.input?.query ?? item?.arguments?.query ?? '';
+          emitEvent({
+            event: 'plan',
+            data: {
+              phase: 'tool_start',
+              toolId: itemId,
+              toolName: 'WebSearch',
+              ...(query ? { input: String(query) } : {}),
+              message: 'Searching the web...',
+            },
+          });
+          emitTrace('Codex: web search', { query });
+          return true;
+        }
+
+        // MCP tool calls
+        if (itemType === 'mcp_tool_call' || itemType === 'mcpToolCall' || itemType === 'mcp_call' || itemType.startsWith('mcp')) {
+          const toolName = String(item?.name ?? item?.toolName ?? item?.tool ?? 'MCP Tool');
+          const toolInput = item?.input ?? item?.arguments;
+          emitEvent({
+            event: 'plan',
+            data: {
+              phase: 'tool_start',
+              toolId: itemId,
+              toolName,
+              ...(toolInput ? { input: typeof toolInput === 'string' ? toolInput : JSON.stringify(toolInput) } : {}),
+              message: `Running ${toolName}...`,
+            },
+          });
+          emitTrace('Codex: MCP tool call', { toolName });
+          return true;
+        }
+
+        // Function calls / tool calls
+        if (itemType === 'function_call' || itemType === 'functionCall' || itemType === 'tool_call' || itemType === 'toolCall') {
+          const toolName = String(item?.name ?? item?.function?.name ?? item?.toolName ?? 'Tool');
+          const toolInput = item?.arguments ?? item?.input ?? item?.function?.arguments;
+          emitEvent({
+            event: 'plan',
+            data: {
+              phase: 'tool_start',
+              toolId: itemId,
+              toolName,
+              ...(toolInput ? { input: typeof toolInput === 'string' ? toolInput : JSON.stringify(toolInput) } : {}),
+              message: `Running ${toolName}...`,
+            },
+          });
+          emitTrace('Codex: function call', { toolName });
+          return true;
+        }
+
+        // Command execution / shell
+        if (itemType === 'command_execution' || itemType === 'commandExecution' || itemType === 'shell' || itemType === 'CommandExecution') {
+          const command = String(item?.command ?? item?.input ?? '');
+          emitEvent({
+            event: 'plan',
+            data: {
+              phase: 'tool_start',
+              toolId: itemId,
+              toolName: 'Bash',
+              ...(command ? { input: command.slice(0, 100) } : {}),
+              message: 'Running command...',
+            },
+          });
+          emitTrace('Codex: command execution', { command: command.slice(0, 100) });
+          return true;
+        }
+
+        // File changes
+        if (itemType === 'file_change' || itemType === 'fileChange' || itemType === 'FileChange' || itemType === 'apply_patch') {
+          const filePath = String(item?.path ?? item?.filePath ?? item?.file ?? '');
+          emitEvent({
+            event: 'plan',
+            data: {
+              phase: 'tool_start',
+              toolId: itemId,
+              toolName: 'Edit',
+              ...(filePath ? { input: filePath } : {}),
+              message: 'Editing file...',
+            },
+          });
+          return true;
+        }
+
+        // Context compaction (ALWAYS show - critical operation)
+        if (itemType === 'contextCompaction' || itemType === 'context_compaction' || itemType === 'compaction') {
+          emitEvent({
+            event: 'plan',
+            data: {
+              phase: 'tool_start',
+              toolId: itemId,
+              toolName: 'Compacting',
+              message: 'Compacting context... (reducing context window usage)',
+            },
+          });
+          // Also emit as trace for visibility
+          emitEvent({ event: 'trace', data: { message: 'Context compaction in progress' } });
+          return true;
+        }
+
+        return false;
+      };
+
+      // Handle reasoning summary deltas (streamed thinking)
+      if (method === 'item/reasoning/summaryTextDelta') {
+        const delta = String(params?.delta ?? '');
+        if (delta) {
+          emitEvent({ event: 'delta', data: { text: delta, type: 'thinking' } });
+        }
+        return;
+      }
+
+      // Handle item/started events - detect tool/web search items
+      if (method === 'item/started') {
+        const item = params?.item ?? params;
+        const itemType = String(item?.type ?? '');
+        const itemId = String(item?.id ?? item?.itemId ?? Date.now());
+
+        // Process known item types using our helper
+        if (processCodexItem(item, itemType, itemId)) {
+          return;
+        }
+
+        // Also try direct params if item is not nested
+        if (!item?.type && params?.type) {
+          if (processCodexItem(params, String(params.type), itemId)) {
+            return;
+          }
+        }
+
+        return;
+      }
+
+      // Handle raw reasoning text deltas
+      if (method === 'item/reasoning/textDelta') {
+        const delta = String(params?.delta ?? '');
+        if (delta) {
+          emitEvent({ event: 'delta', data: { text: delta, type: 'thinking' } });
+        }
+        return;
+      }
+
+
+
+      // Handle turn/item events - Codex streams tool items here
+      if (method === 'turn/item') {
+        const item = params?.item ?? params;
+        const itemType = String(item?.type ?? item?.itemType ?? '');
+        const itemId = String(item?.id ?? item?.itemId ?? Date.now());
+
+        if (processCodexItem(item, itemType, itemId)) {
+          return;
+        }
+
+        // Log unhandled item types for debugging
+        if (itemType && debugCliEvents) {
+          emitTrace(`Codex: unhandled turn/item type`, { itemType, itemId });
+        }
+        return;
+      }
+
+      // Handle conversation.item.created / conversation.item.added events
+      if (method === 'conversation.item.created' || method === 'conversation.item.added') {
+        const item = params?.item ?? params;
+        const itemType = String(item?.type ?? item?.itemType ?? '');
+        const itemId = String(item?.id ?? item?.itemId ?? Date.now());
+
+        if (processCodexItem(item, itemType, itemId)) {
+          return;
+        }
+
+        if (itemType && debugCliEvents) {
+          emitTrace(`Codex: unhandled conversation.item type`, { itemType, itemId });
+        }
+        return;
+      }
+
+      // Handle ItemStarted events (alternative naming convention)
+      if (method === 'ItemStarted' || method === 'item.started') {
+        const item = params?.item ?? params;
+        const itemType = String(item?.type ?? item?.itemType ?? '');
+        const itemId = String(item?.id ?? item?.itemId ?? Date.now());
+
+        if (processCodexItem(item, itemType, itemId)) {
+          return;
+        }
+        return;
+      }
+
+      // Handle tool call / command execution start
+      if (
+        method === 'item/toolCall/started' ||
+        method === 'item/commandExecution/started' ||
+        method === 'item/tool/started'
+      ) {
+        const toolId = String(params?.itemId ?? params?.id ?? params?.toolCallId ?? '');
+        const toolName = String(params?.name ?? params?.toolName ?? params?.command ?? 'Tool');
+        const toolInput = params?.input
+          ? (typeof params.input === 'string' ? params.input : JSON.stringify(params.input))
+          : (typeof params?.command === 'string' ? params.command : undefined);
+
+        emitEvent({
+          event: 'plan',
+          data: {
+            phase: 'tool_start',
+            toolId,
+            toolName,
+            ...(toolInput ? { input: toolInput } : {}),
+            message: `Running ${toolName}...`,
+          },
+        });
+        emitTrace(`Codex: tool started - ${toolName}`);
+        return;
+      }
+
+      // Handle command execution output (optional trace)
+      if (method === 'item/commandExecution/outputDelta') {
+        const output = String(params?.delta ?? '');
+        if (output) {
+          emitTrace('Codex: command output', { output: output.slice(0, 200) });
+        }
+        return;
+      }
+
+      // Catch-all for item/* events that might be tool-related (web, MCP, etc.)
+      // This helps capture web.run, mcp tools, and other operations
+      if (method.startsWith('item/') && (
+        method.includes('/started') ||
+        method.includes('/added') ||
+        method.includes('web') ||
+        method.includes('mcp') ||
+        method.includes('tool')
+      )) {
+        // Check if this looks like a tool start event
+        const hasToolIndicators = params?.name || params?.toolName || params?.type || params?.command;
+        if (hasToolIndicators && !method.includes('delta') && !method.includes('output')) {
+          const toolId = String(params?.itemId ?? params?.id ?? params?.toolCallId ?? Date.now());
+          const toolName = String(
+            params?.name ??
+            params?.toolName ??
+            params?.type ??
+            params?.command ??
+            method.split('/').pop() ??
+            'Tool'
+          );
+          const toolInput = params?.input
+            ? (typeof params.input === 'string' ? params.input : JSON.stringify(params.input))
+            : (params?.query ? String(params.query) : undefined);
+
+          emitEvent({
+            event: 'plan',
+            data: {
+              phase: 'tool_start',
+              toolId,
+              toolName,
+              ...(toolInput ? { input: toolInput } : {}),
+              message: `Running ${toolName}...`,
+            },
+          });
+          emitTrace(`Codex: item event captured as tool - ${method}`, { toolName });
         }
         return;
       }
@@ -528,18 +870,23 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
     { type: 'text', text: prompt },
   ];
 
-  const turnResponse = await appServer.request('turn/start', {
-    threadId,
-    input,
-    cwd,
-    approvalPolicy,
-    sandboxPolicy: { type: 'readOnly' },
-    model,
-    effort,
-    summary: null,
-    outputSchema: null,
-    collaborationMode: null,
-  });
+  const turnResponse = await appServer.request(
+    'turn/start',
+    {
+      threadId,
+      input,
+      cwd,
+      approvalPolicy,
+      sandboxPolicy: { type: 'readOnly' },
+      model,
+      effort,
+      summary: null,
+      outputSchema: null,
+      collaborationMode: null,
+    },
+    { timeoutMs: 30000 }
+  );
+  emitTrace('Sending prompt to Codex…');
 
   if (!done && turnResponse && Object.prototype.hasOwnProperty.call(turnResponse, 'error')) {
     done = true;
@@ -552,5 +899,36 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
     resolveDone();
   }
 
-  await donePromise;
+  // Ensure the job never hangs forever if the Codex CLI stalls (common near 100% context).
+  let heartbeatId: NodeJS.Timeout | null = null;
+  let timeoutId: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<void>((resolve) => {
+    if (!Number.isFinite(TURN_TIMEOUT_MS) || TURN_TIMEOUT_MS <= 0) return;
+    timeoutId = setTimeout(() => resolve(), TURN_TIMEOUT_MS);
+  });
+
+  heartbeatId = setInterval(() => {
+    if (done) return;
+    const now = Date.now();
+    if (now - lastHeartbeatAt < HEARTBEAT_MS) return;
+    lastHeartbeatAt = now;
+    const totalSec = Math.round((now - turnStartTime) / 1000);
+    const idleSec = Math.round((now - lastMessageTime) / 1000);
+    emitEvent({
+      event: 'plan',
+      data: { message: `Waiting for Codex… (${totalSec}s, last event ${idleSec}s ago)` },
+    });
+  }, HEARTBEAT_MS);
+
+  await Promise.race([donePromise, timeoutPromise]);
+  if (!done) {
+    done = true;
+    emitEvent({
+      event: 'done',
+      data: { status: 'error', message: `Codex timed out after ${Math.round(TURN_TIMEOUT_MS / 1000)}s`, threadId },
+    });
+  }
+  unsubscribe();
+  if (timeoutId) clearTimeout(timeoutId);
+  if (heartbeatId) clearInterval(heartbeatId);
 }

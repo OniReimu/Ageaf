@@ -58,6 +58,8 @@ export interface Options {
   customSystemPrompt?: string;
   enableCommandBlocklist?: boolean;
   blockedCommandsUnix?: string;
+  autoCompactEnabled?: boolean;
+  debugCliEvents?: boolean;
 }
 export interface StreamChunk {
   kind: "token" | "error",

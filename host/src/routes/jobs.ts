@@ -66,11 +66,24 @@ type JobRequestPayload = {
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
     autoCompactEnabled?: boolean;
+    debugCliEvents?: boolean;
   };
   compaction?: {
     requestCompaction: boolean;
   };
 };
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  const ms = Number(timeoutMs);
+  if (!Number.isFinite(ms) || ms <= 0) return promise as any;
+  let timeoutId: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<null>((resolve) => {
+    timeoutId = setTimeout(() => resolve(null), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
+}
 
 function ensureAgeafWorkspaceCwd(): string {
   const workspace = path.join(os.homedir(), '.ageaf');
@@ -146,7 +159,14 @@ export function registerJobs(server: FastifyInstance) {
         const autoCompactEnabled = payload.userSettings?.autoCompactEnabled ?? false;
         if (autoCompactEnabled && payload.compaction?.requestCompaction !== true) {
           try {
-            const usage = await getContextUsage(provider, payload);
+            emitEvent({ event: 'plan', data: { message: 'Checking context usage…' } });
+            const usage = await withTimeout(getContextUsage(provider, payload), 5000);
+            if (!usage) {
+              emitEvent({
+                event: 'plan',
+                data: { message: 'Auto-compact skipped: context usage check timed out.' },
+              });
+            }
             if (usage && usage.percentage && usage.percentage >= 85) {
               emitEvent({
                 event: 'plan',

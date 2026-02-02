@@ -35,6 +35,7 @@ type ClaudeJobPayload = {
     enableTools?: boolean;
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
+    debugCliEvents?: boolean;
   };
 };
 
@@ -245,6 +246,11 @@ If asked about the model/runtime, use this note and do not guess.`;
   };
 
   const enableTools = payload.userSettings?.enableTools ?? false;
+  const debugCliEvents = payload.userSettings?.debugCliEvents ?? false;
+  const emitTrace = (message: string, data?: Record<string, unknown>) => {
+    if (!debugCliEvents) return;
+    emitEvent({ event: 'trace', data: { message, ...(data ?? {}) } });
+  };
 
   let doneEvent: JobEvent | null = null;
   let patchEmitted = false;
@@ -259,13 +265,18 @@ If asked about the model/runtime, use this note and do not guess.`;
     emitEvent(event);
   };
 
+  emitTrace('Sending request to Claude…', {
+    runtime: runtimeStatus.cliPath ? 'Claude Code CLI' : 'Anthropic API',
+  });
   const resultText = await runClaudeText({
     prompt: images.length > 0 ? buildImagePromptStream(promptText, images) : promptText,
     emitEvent: wrappedEmit,
     runtime: payload.runtime?.claude,
     safety,
     enableTools,
+    debugCliEvents,
   });
+  emitTrace('Claude: reply completed');
 
   const status = (doneEvent as any)?.data?.status;
   if (status && status !== 'ok') {

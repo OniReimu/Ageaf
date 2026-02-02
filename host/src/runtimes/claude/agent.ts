@@ -23,6 +23,7 @@ type StructuredPatchInput = {
   runtime?: ClaudeRuntimeConfig;
   safety?: CommandBlocklistConfig;
   enableTools?: boolean;
+  debugCliEvents?: boolean;
 };
 
 type TextRunInput = {
@@ -31,6 +32,7 @@ type TextRunInput = {
   runtime?: ClaudeRuntimeConfig;
   safety?: CommandBlocklistConfig;
   enableTools?: boolean;
+  debugCliEvents?: boolean;
 };
 
 export type ClaudeRuntimeConfig = {
@@ -190,8 +192,8 @@ async function runQuery(
   const blockedPatterns =
     safety?.enabled
       ? compileBlockedCommandPatterns(
-          parseBlockedCommandPatterns(safety.patternsText)
-        )
+        parseBlockedCommandPatterns(safety.patternsText)
+      )
       : [];
 
   const outputFormat = structuredOutput
@@ -317,6 +319,7 @@ async function runQuery(
   };
 
   for await (const message of response) {
+
     switch (message.type) {
       case 'assistant': {
         // When includePartialMessages=true, we may receive both 'assistant' messages and
@@ -326,10 +329,24 @@ async function runQuery(
         const blocks = (message as { message?: { content?: unknown } }).message?.content;
         if (Array.isArray(blocks)) {
           for (const block of blocks) {
-            if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text') {
-              const text = (block as { text?: unknown }).text;
-              if (typeof text === 'string' && text) {
-                emitVisibleDelta(text);
+            if (block && typeof block === 'object') {
+              const blockType = (block as { type?: unknown }).type;
+              // Handle text blocks
+              if (blockType === 'text') {
+                const text = (block as { text?: unknown }).text;
+                if (typeof text === 'string' && text) {
+                  emitVisibleDelta(text);
+                }
+              }
+              // Handle thinking blocks (extended thinking feature)
+              if (blockType === 'thinking') {
+                const thinkingContent = (block as { thinking?: unknown }).thinking;
+                if (typeof thinkingContent === 'string' && thinkingContent) {
+                  emitEvent({
+                    event: 'delta',
+                    data: { text: thinkingContent, type: 'thinking' },
+                  });
+                }
               }
             }
           }
@@ -338,6 +355,70 @@ async function runQuery(
       }
       case 'stream_event': {
         const event = (message as { event?: any }).event;
+
+        // Detect tool_use content blocks starting - emit plan event for frontend visibility
+        if (event?.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+          const toolName = event.content_block?.name ?? 'unknown';
+          const toolId = event.content_block?.id;
+          const toolInput = event.content_block?.input;
+          const toolMessages: Record<string, string> = {
+            Read: 'Reading file',
+            Write: 'Writing file',
+            Edit: 'Editing file',
+            Bash: 'Running command',
+            Grep: 'Searching code',
+            Glob: 'Finding files',
+            WebSearch: 'Searching web',
+            WebFetch: 'Fetching URL',
+          };
+          const message = toolMessages[toolName] ?? `Running ${toolName}`;
+
+          // Extract displayable input (file path, URL, command, etc.)
+          let inputDisplay: string | undefined;
+          if (typeof toolInput === 'object' && toolInput !== null) {
+            const input = toolInput as Record<string, unknown>;
+            inputDisplay =
+              (typeof input.file_path === 'string' ? input.file_path : undefined) ??
+              (typeof input.path === 'string' ? input.path : undefined) ??
+              (typeof input.url === 'string' ? input.url : undefined) ??
+              (typeof input.command === 'string' ? input.command : undefined) ??
+              (typeof input.query === 'string' ? input.query : undefined) ??
+              (typeof input.pattern === 'string' ? input.pattern : undefined);
+          }
+
+          emitEvent({
+            event: 'plan',
+            data: {
+              message,
+              toolId,
+              toolName,
+              ...(inputDisplay ? { input: inputDisplay } : {}),
+              phase: 'tool_start',
+            },
+          });
+        }
+
+
+
+        // Capture thinking deltas (extended thinking content)
+        if (event?.type === 'content_block_delta') {
+          if (event.delta?.type === 'thinking_delta') {
+            // Try multiple possible property names for thinking content
+            const thinkingText = String(
+              event.delta.thinking ??
+              event.delta.text ??
+              event.delta.content ??
+              ''
+            );
+            if (thinkingText) {
+              emitEvent({
+                event: 'delta',
+                data: { text: thinkingText, type: 'thinking' },
+              });
+            }
+          }
+        }
+
         if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
           sawStreamText = true;
           emitVisibleDelta(String(event.delta.text ?? ''));

@@ -1,5 +1,21 @@
 export type ProviderId = 'claude' | 'codex';
 
+export type CoTThinkingItem = {
+  type: 'thinking';
+  content: string;
+};
+
+export type CoTToolItem = {
+  type: 'tool';
+  toolId: string;
+  toolName: string;
+  input?: string;
+  phase: 'started' | 'completed' | 'failed';
+  message?: string;
+};
+
+export type CoTItem = CoTThinkingItem | CoTToolItem;
+
 export type StoredImageAttachment = {
   id: string;
   name: string;
@@ -22,38 +38,40 @@ export type StoredPatchReviewStatus = 'pending' | 'accepted' | 'rejected';
 
 export type StoredPatchReview =
   | {
-      kind: 'replaceSelection';
-      selection: string;
-      from: number;
-      to: number;
-      lineFrom?: number;
-      lineTo?: number;
-      text: string;
-      status?: StoredPatchReviewStatus;
-      fileName?: string;
-      hasAnimated?: boolean;
-    }
+    kind: 'replaceSelection';
+    selection: string;
+    from: number;
+    to: number;
+    lineFrom?: number;
+    lineTo?: number;
+    text: string;
+    status?: StoredPatchReviewStatus;
+    fileName?: string;
+    hasAnimated?: boolean;
+  }
   | {
-      kind: 'insertAtCursor';
-      text: string;
-      status?: StoredPatchReviewStatus;
-      hasAnimated?: boolean;
-    }
+    kind: 'insertAtCursor';
+    text: string;
+    status?: StoredPatchReviewStatus;
+    hasAnimated?: boolean;
+  }
   | {
-      kind: 'replaceRangeInFile';
-      filePath: string;
-      expectedOldText: string;
-      text: string;
-      from?: number;
-      to?: number;
-      status?: StoredPatchReviewStatus;
-      hasAnimated?: boolean;
-    };
+    kind: 'replaceRangeInFile';
+    filePath: string;
+    expectedOldText: string;
+    text: string;
+    from?: number;
+    to?: number;
+    status?: StoredPatchReviewStatus;
+    hasAnimated?: boolean;
+  };
 
 export type StoredMessage = {
   role: 'system' | 'assistant' | 'user';
   content: string;
   statusLine?: string;
+  cot?: CoTItem[];
+  thinking?: string[];
   images?: StoredImageAttachment[];
   attachments?: StoredFileAttachment[];
   patchReview?: StoredPatchReview;
@@ -180,6 +198,31 @@ function normalizeStoredFileAttachment(raw: any): StoredFileAttachment | null {
   return { id, name, ext, sizeBytes, lineCount, ...(pathValue ? { path: pathValue } : {}), ...(mime ? { mime } : {}) };
 }
 
+function normalizeCoTItem(raw: any): CoTItem | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const type = raw.type;
+  if (type === 'thinking') {
+    const content = typeof raw.content === 'string' ? raw.content : null;
+    if (!content) return null;
+    return { type: 'thinking', content };
+  }
+  if (type === 'tool') {
+    const toolId = typeof raw.toolId === 'string' ? raw.toolId : null;
+    const toolName = typeof raw.toolName === 'string' ? raw.toolName : null;
+    const phase = raw.phase;
+    if (!toolId || !toolName || !phase) return null;
+    return {
+      type: 'tool',
+      toolId,
+      toolName,
+      input: typeof raw.input === 'string' ? raw.input : undefined,
+      phase,
+      message: typeof raw.message === 'string' ? raw.message : undefined,
+    };
+  }
+  return null;
+}
+
 function normalizeStoredMessage(raw: any): StoredMessage | null {
   if (!raw || typeof raw !== 'object') return null;
   const role = raw.role;
@@ -187,6 +230,12 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
   const content = typeof raw.content === 'string' ? raw.content : null;
   if (content == null) return null;
   const statusLine = typeof raw.statusLine === 'string' ? raw.statusLine : undefined;
+
+  const cotRaw = Array.isArray(raw.cot) ? raw.cot : [];
+  const cot = cotRaw
+    .map((entry: unknown) => normalizeCoTItem(entry))
+    .filter((entry: CoTItem | null): entry is CoTItem => Boolean(entry));
+
   const imagesRaw = Array.isArray(raw.images) ? raw.images : [];
   const images = imagesRaw
     .map((entry: unknown) => normalizeStoredImageAttachment(entry))
@@ -207,6 +256,7 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
     role,
     content,
     ...(statusLine ? { statusLine } : {}),
+    ...(cot.length > 0 ? { cot } : {}),
     ...(images.length > 0 ? { images } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(patchReview ? { patchReview } : {}),
@@ -351,14 +401,14 @@ function normalizeConversation(raw: any, provider: ProviderId): StoredConversati
   const codexUsage =
     provider === 'codex'
       ? normalizeStoredContextUsage(
-          providerStateRaw?.codex?.lastUsage ?? providerStateRaw?.codex?.last_usage
-        )
+        providerStateRaw?.codex?.lastUsage ?? providerStateRaw?.codex?.last_usage
+      )
       : null;
   const claudeUsage =
     provider === 'claude'
       ? normalizeStoredContextUsage(
-          providerStateRaw?.claude?.lastUsage ?? providerStateRaw?.claude?.last_usage
-        )
+        providerStateRaw?.claude?.lastUsage ?? providerStateRaw?.claude?.last_usage
+      )
       : null;
   const threadId =
     provider === 'codex'
@@ -432,9 +482,9 @@ export function ensureActiveConversation(
       state.activeProvider === provider
         ? state
         : {
-            ...state,
-            activeProvider: provider,
-          };
+          ...state,
+          activeProvider: provider,
+        };
     return { state: nextState, conversation: existing };
   }
 
@@ -465,12 +515,12 @@ export function startNewConversation(
   const conversation = createConversation(provider);
   const allConversations = [conversation, ...providerState.conversations];
   const nextConversations = allConversations.slice(0, MAX_CONVERSATIONS_PER_PROVIDER);
-  
+
   // Track conversations that were evicted (beyond the max limit)
   const evictedIds = allConversations
     .slice(MAX_CONVERSATIONS_PER_PROVIDER)
     .map((conv) => conv.id);
-  
+
   const nextProviderState: StoredProviderState = {
     activeConversationId: conversation.id,
     conversations: nextConversations,

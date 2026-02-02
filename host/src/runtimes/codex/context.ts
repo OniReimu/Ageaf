@@ -77,7 +77,7 @@ export async function getCodexContextUsage(config: {
 
   for (const candidate of candidates) {
     try {
-      const response = await appServer.request(candidate.method, candidate.params);
+      const response = await appServer.request(candidate.method, candidate.params, { timeoutMs: 2500 });
       if ((response as any).error) continue;
       const usage =
         parseCodexTokenUsage((response as any).result) ??

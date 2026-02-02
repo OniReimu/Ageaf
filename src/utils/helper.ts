@@ -31,6 +31,8 @@ function applyOptionDefaults(input: Options): Options {
   }
   if (options.enableTools === undefined) options.enableTools = false;
   if (!options.openaiApprovalPolicy) options.openaiApprovalPolicy = 'never';
+  if (options.autoCompactEnabled === undefined) options.autoCompactEnabled = true;
+  if (options.debugCliEvents === undefined) options.debugCliEvents = false;
 
   return options;
 }
