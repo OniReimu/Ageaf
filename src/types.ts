@@ -60,6 +60,7 @@ export interface Options {
   blockedCommandsUnix?: string;
   autoCompactEnabled?: boolean;
   debugCliEvents?: boolean;
+  surroundingContextLimit?: number;
 }
 export interface StreamChunk {
   kind: "token" | "error",

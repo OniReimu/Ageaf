@@ -36,6 +36,7 @@ type ClaudeJobPayload = {
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
     debugCliEvents?: boolean;
+    surroundingContextLimit?: number;
   };
 };
 
@@ -84,22 +85,33 @@ function getContextImages(context: unknown): ClaudeImageAttachment[] {
 
 function getContextForPrompt(
   context: unknown,
-  images: ClaudeImageAttachment[]
+  images: ClaudeImageAttachment[],
+  limit: number = 0
 ): Record<string, unknown> | null {
   const base: Record<string, unknown> = {};
   if (context && typeof context === 'object') {
     const raw = context as Record<string, unknown>;
-    const pickString = (key: string) => {
+    const pickString = (key: string, truncateMode?: 'start' | 'end') => {
       const value = raw[key];
       if (typeof value === 'string' && value.trim()) {
-        base[key] = value;
+        if (!truncateMode || limit <= 0 || value.length <= limit) {
+          base[key] = value;
+        } else {
+          // Truncate if limit > 0
+          base[key] = truncateMode === 'start'
+            ? `...${value.slice(-limit)}` // Keep end (for before)
+            : `${value.slice(0, limit)}...`; // Keep start (for after)
+        }
       }
     };
     pickString('message');
     pickString('selection');
-    pickString('surroundingBefore');
-    pickString('surroundingAfter');
-    pickString('compileLog');
+
+    // Only send surrounding context if limit > 0
+    if (limit > 0) {
+      pickString('surroundingBefore', 'start');
+      pickString('surroundingAfter', 'end');
+    }
   }
 
   if (images.length > 0) {
@@ -176,17 +188,16 @@ export async function runClaudeJob(
     payload.context && typeof payload.context === 'object'
       ? { ...(payload.context as Record<string, unknown>), message: messageWithAttachments }
       : { message: messageWithAttachments };
-  const contextForPrompt = getContextForPrompt(contextWithAttachments, images);
+  const surroundingContextLimit = payload.userSettings?.surroundingContextLimit ?? 0;
+  const contextForPrompt = getContextForPrompt(contextWithAttachments, images, surroundingContextLimit);
   const greetingMode = isShortGreeting(message);
   const displayName = payload.userSettings?.displayName?.trim();
   const customSystemPrompt = payload.userSettings?.customSystemPrompt?.trim();
-  
-  const runtimeNote = `Runtime note: This request is executed via ${
-    runtimeStatus.cliPath ? 'Claude Code CLI' : 'Anthropic API'
-  }.
-Model setting: ${runtimeStatus.model ?? 'default'} (source: ${
-    runtimeStatus.modelSource
-  }).
+
+  const runtimeNote = `Runtime note: This request is executed via ${runtimeStatus.cliPath ? 'Claude Code CLI' : 'Anthropic API'
+    }.
+Model setting: ${runtimeStatus.model ?? 'default'} (source: ${runtimeStatus.modelSource
+    }).
 If asked about the model/runtime, use this note and do not guess.`;
   const responseGuidance = [
     'Response style:',
@@ -222,7 +233,7 @@ If asked about the model/runtime, use this note and do not guess.`;
     '- End with: "What would you like to work on?"',
     '- Do not summarize the document or infer project details unless asked.',
   ].filter(line => line).join('\n');
-  
+
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     responseGuidance,
@@ -230,11 +241,11 @@ If asked about the model/runtime, use this note and do not guess.`;
     hasOverleafFileBlocks ? fileUpdateGuidance : '',
     greetingMode ? greetingGuidance : 'If the user message is not a greeting, respond normally but stay concise.',
   ];
-  
+
   if (customSystemPrompt) {
     baseParts.push(`\nAdditional instructions:\n${customSystemPrompt}`);
   }
-  
+
   const basePrompt = baseParts.join('\n\n');
   const promptText = contextForPrompt
     ? `${basePrompt}\\n\\n${runtimeNote}\\n\\nAction: ${action}\\nContext:\\n${JSON.stringify(contextForPrompt, null, 2)}`
