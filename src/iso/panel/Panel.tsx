@@ -56,6 +56,13 @@ import {
 import './panel.css';
 import 'katex/dist/katex.min.css';
 
+import './ageaf-complete-redesign.css';
+
+
+import './ageaf-toolbar-components.css';
+import Icons from './ageaf-icons';
+import { AgeafLogo, SettingsIcon, RewriteIcon, AttachFilesIcon, NewChatIconAlt, CloseSessionIcon, ClearChatIcon } from './ageaf-icons';
+
 const DEFAULT_WIDTH = 360;
 const MIN_WIDTH = 280;
 const MAX_WIDTH = 560;
@@ -67,6 +74,16 @@ const EDITOR_OVERLAY_SHOW_EVENT = 'ageaf:editor:overlay:show';
 const EDITOR_OVERLAY_CLEAR_EVENT = 'ageaf:editor:overlay:clear';
 const EDITOR_OVERLAY_READY_EVENT = 'ageaf:editor:overlay:ready';
 const PANEL_OVERLAY_ACTION_EVENT = 'ageaf:panel:patch-review-action';
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripInterruptedByUserSuffix(text: string) {
+  const normalized = String(text ?? '').replace(/\r\n/g, '\n');
+  const marker = escapeRegExp(INTERRUPTED_BY_USER_MARKER);
+  return normalized.replace(new RegExp(`\\n*${marker}\\s*$`), '').trimEnd();
+}
 
 /**
  * Helper to close any unclosed code fences in partial streaming text.
@@ -449,38 +466,9 @@ const PatchReviewCard = ({
   );
 };
 
-const RewriteIcon = () => (
-  <svg
-    class="ageaf-toolbar-icon"
-    viewBox="0 0 20 20"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.8"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-    focusable="false"
-  >
-    <path d="M3 14.5h8M3 10.5h11M3 6.5h7" />
-    <path d="M15.5 13.5l3 3-3 3" />
-  </svg>
-);
 
-const AttachIcon = () => (
-  <svg
-    class="ageaf-toolbar-icon"
-    viewBox="0 0 20 20"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.8"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-    focusable="false"
-  >
-    <path d="M10.5 4v8.5a3 3 0 01-6 0V4.5a2 2 0 014 0V12" />
-  </svg>
-);
+
+
 
 const PROVIDER_DISPLAY = {
   claude: { label: 'Anthropic' },
@@ -498,7 +486,7 @@ type KnownModelToken = keyof typeof MODEL_DISPLAY;
 const FALLBACK_THINKING_MODES: ThinkingMode[] = [
   { id: 'off', label: 'Off', maxThinkingTokens: null },
   { id: 'low', label: 'Low', maxThinkingTokens: 1024 },
-  { id: 'medium', label: 'Medium', maxThinkingTokens: 4096 },
+  { id: 'medium', label: 'Med', maxThinkingTokens: 4096 },
   { id: 'high', label: 'High', maxThinkingTokens: 8192 },
   { id: 'ultra', label: 'Ultra', maxThinkingTokens: 16384 },
 ];
@@ -1120,6 +1108,17 @@ const Panel = () => {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Focus input on Cmd+K / Ctrl+K
+      if ((event.metaKey || event.ctrlKey) && event.code === 'KeyK') {
+        event.preventDefault();
+        setCollapsed(false);
+        // Use setTimeout to allow any layout changes (like expanding) to settle
+        requestAnimationFrame(() => {
+          editorRef.current?.focus();
+        });
+        return;
+      }
+
       if (event.key === 'Escape') {
         // Check current session state, not global refs
         const conversationId = chatConversationIdRef.current;
@@ -1386,7 +1385,10 @@ const Panel = () => {
           metadata = await fetchClaudeRuntimeMetadata(options);
           if (cancelled) return;
           models = metadata.models ?? [];
-          thinkingModes = metadata.thinkingModes ?? FALLBACK_THINKING_MODES;
+          thinkingModes = (metadata.thinkingModes ?? FALLBACK_THINKING_MODES).map((mode) => ({
+            ...mode,
+            label: mode.label === 'Medium' ? 'Med' : mode.label,
+          }));
 
           // Store in cache
           metadataCacheRef.current.claude = {
@@ -1551,10 +1553,19 @@ const Panel = () => {
     });
   };
 
-  const renderCoTBlock = (cot: CoTItem[], active: boolean, messageId?: string) => {
+  const renderCoTBlock = (
+    cot: CoTItem[],
+    active: boolean,
+    messageId?: string,
+    options?: { hideHeader?: boolean }
+  ) => {
     if (!cot || cot.length === 0) return null;
-    // Default expanded if active (streaming), otherwise check state
-    const isExpanded = active || (messageId ? expandedThinkingMessages.has(messageId) : false);
+    // When we have a stable messageId, let user control expanded/collapsed even during streaming.
+    // Otherwise, default to expanded while active (streaming).
+    const isExpanded = messageId ? expandedThinkingMessages.has(messageId) : active;
+    const hideHeader = Boolean(options?.hideHeader);
+
+    if (hideHeader && !isExpanded) return null;
 
     const toggle = (e: MouseEvent) => {
       e.preventDefault();
@@ -1604,10 +1615,12 @@ const Panel = () => {
 
     return (
       <div class={`ageaf-message__cot ${active ? 'is-active' : ''}`}>
-        <button class="ageaf-message__cot-header" onClick={toggle} type="button">
-          <span class="ageaf-cot-arrow">{isExpanded ? '▼' : '▶'}</span>
-          <span class="ageaf-cot-label">Thought Process</span>
-        </button>
+        {!hideHeader ? (
+          <button class="ageaf-message__cot-header" onClick={toggle} type="button">
+            <span class="ageaf-cot-arrow">{isExpanded ? '▼' : '▶'}</span>
+            <span class="ageaf-cot-label">Thought Process</span>
+          </button>
+        ) : null}
         {isExpanded && (
           <div class="ageaf-message__cot-body">
             {cot.map((item, idx) => {
@@ -6118,14 +6131,15 @@ const Panel = () => {
               (() => {
                 try {
                   if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
-                    const url = chrome.runtime.getURL('icons/icon_128.png');
+                    // Use icon_48.png as it was the source for our crop
+                    const url = chrome.runtime.getURL('icons/icon_48.png');
                     const version = chrome.runtime.getManifest?.()?.version ?? 'dev';
                     return `${url}?v=${version}`;
                   }
                 } catch {
                   // Extension context invalidated - fall back to relative path
                 }
-                return 'icons/icon_128.png';
+                return 'icons/icon_48.png';
               })()
             }
             class="ageaf-panel__logo"
@@ -6134,7 +6148,7 @@ const Panel = () => {
           <div class="ageaf-panel__title">
             <div class="ageaf-panel__name">Ageaf</div>
             <div class="ageaf-panel__intro">
-              Ask me to rewrite, explain, or fix LaTeX errors.
+              Ask me to rewrite, explain, or fix LaTeX errors
             </div>
           </div>
           <div
@@ -6159,16 +6173,45 @@ const Panel = () => {
             {messages.map((message) => {
               const content = renderMessageContent(message);
               if (!content) return null;
+              const copyResponseText =
+                message.role === 'assistant' ? stripInterruptedByUserSuffix(message.content) : '';
+              const canCopyResponse =
+                message.role === 'assistant' && copyResponseText.trim().length > 0;
+              const cotForMessage =
+                message.role === 'assistant' && settings?.debugCliEvents
+                  ? message.cot || convertThinkingToCoT(message.thinking)
+                  : null;
+              const hasCoTForMessage = Boolean(cotForMessage && cotForMessage.length > 0);
+              const isStatusCoTToggle =
+                Boolean(message.role === 'assistant' && message.statusLine && hasCoTForMessage && message.id);
+              const isStatusCoTExpanded =
+                isStatusCoTToggle ? expandedThinkingMessages.has(message.id) : false;
               return (
                 <div class={`ageaf-message ageaf-message--${message.role}`} key={message.id}>
                   {message.role === 'assistant' && message.statusLine ? (
-                    <div class="ageaf-message__status">{message.statusLine}</div>
+                    isStatusCoTToggle ? (
+                      <button
+                        class="ageaf-message__status ageaf-message__status--toggle"
+                        type="button"
+                        aria-expanded={isStatusCoTExpanded}
+                        onClick={() => toggleThinkingExpanded(message.id)}
+                      >
+                        <span class="ageaf-message__status-toggle-arrow">
+                          {isStatusCoTExpanded ? '▼' : '▶'}
+                        </span>
+                        <span class="ageaf-message__status-toggle-text">{message.statusLine}</span>
+                      </button>
+                    ) : (
+                      <div class="ageaf-message__status">{message.statusLine}</div>
+                    )
                   ) : null}
-                  {settings?.debugCliEvents && message.role === 'assistant' && ((message.cot && message.cot.length > 0) || (message.thinking && message.thinking.length > 0))
-                    ? renderCoTBlock(message.cot || convertThinkingToCoT(message.thinking), false, message.id)
+                  {hasCoTForMessage
+                    ? renderCoTBlock(cotForMessage!, false, message.role === 'assistant' ? message.id : undefined, {
+                      hideHeader: isStatusCoTToggle,
+                    })
                     : null}
                   {content}
-                  {message.role === 'assistant' ? (
+                  {canCopyResponse ? (
                     <div class="ageaf-message__response-actions">
                       <button
                         class="ageaf-message__copy-response"
@@ -6178,7 +6221,7 @@ const Panel = () => {
                         onClick={() => {
                           const copyId = `${message.id}-response`;
                           void (async () => {
-                            const success = await copyToClipboard(message.content);
+                            const success = await copyToClipboard(copyResponseText);
                             if (success) markCopied(copyId);
                           })();
                         }}
@@ -6193,12 +6236,40 @@ const Panel = () => {
             })}
             {streamingStatus ? (
               <div class="ageaf-message ageaf-message--assistant">
-                <div class={`ageaf-message__status ${isStreamingActive ? 'is-active' : ''}`}>
-                  {streamingStatus}
-                </div>
-                {settings?.debugCliEvents && streamingCoT.length > 0 ? (
-                  renderCoTBlock(streamingCoT, isStreamingActive, 'streaming-thinking')
-                ) : null}
+                {(() => {
+                  const hasStreamingCoT = Boolean(settings?.debugCliEvents && streamingCoT.length > 0);
+                  const isStreamingCoTToggle = Boolean(hasStreamingCoT);
+                  const isStreamingCoTExpanded = isStreamingCoTToggle
+                    ? expandedThinkingMessages.has('streaming-thinking')
+                    : false;
+
+                  return (
+                    <>
+                      {isStreamingCoTToggle ? (
+                        <button
+                          class={`ageaf-message__status ageaf-message__status--toggle ${isStreamingActive ? 'is-active' : ''}`}
+                          type="button"
+                          aria-expanded={isStreamingCoTExpanded}
+                          onClick={() => toggleThinkingExpanded('streaming-thinking')}
+                        >
+                          <span class="ageaf-message__status-toggle-arrow">
+                            {isStreamingCoTExpanded ? '▼' : '▶'}
+                          </span>
+                          <span class="ageaf-message__status-toggle-text">{streamingStatus}</span>
+                        </button>
+                      ) : (
+                        <div class={`ageaf-message__status ${isStreamingActive ? 'is-active' : ''}`}>
+                          {streamingStatus}
+                        </div>
+                      )}
+                      {hasStreamingCoT
+                        ? renderCoTBlock(streamingCoT, isStreamingActive, 'streaming-thinking', {
+                          hideHeader: isStreamingCoTToggle,
+                        })
+                        : null}
+                    </>
+                  );
+                })()}
                 {streamingText ? (
                   <div
                     class="ageaf-message__content"
@@ -6483,7 +6554,7 @@ const Panel = () => {
                 aria-label="Attach files"
                 data-tooltip="Attach files"
               >
-                <AttachIcon />
+                <AttachFilesIcon />
               </button>
               <div class="ageaf-toolbar-menu">
                 <button
@@ -6493,7 +6564,7 @@ const Panel = () => {
                   aria-label="New chat"
                   data-tooltip="New chat"
                 >
-                  ＋
+                  <NewChatIconAlt />
                 </button>
                 <div class="ageaf-toolbar-menu__list" role="menu" aria-label="Select provider">
                   <button
@@ -6521,7 +6592,7 @@ const Panel = () => {
                 aria-label="Clear chat"
                 data-tooltip="Clear chat"
               >
-                ⌫
+                <ClearChatIcon />
               </button>
               <button
                 class="ageaf-toolbar-button"
@@ -6530,7 +6601,7 @@ const Panel = () => {
                 aria-label="Close session"
                 data-tooltip="Close session"
               >
-                ×
+                <CloseSessionIcon />
               </button>
               <button
                 class="ageaf-panel__settings ageaf-toolbar-button"
@@ -6539,7 +6610,7 @@ const Panel = () => {
                 aria-label="Open settings"
                 data-tooltip="Settings"
               >
-                ⚙
+                <SettingsIcon />
               </button>
             </div>
           </div>
@@ -6613,7 +6684,7 @@ const Panel = () => {
             role="textbox"
             aria-multiline="true"
             aria-label="Message input"
-            data-placeholder="Tell Ageaf what to do…"
+            data-placeholder="Ask anything (⌘K), @ to mention, / for workflows"
             ref={editorRef}
             onInput={() => {
               syncEditorEmpty();
