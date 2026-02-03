@@ -209,29 +209,49 @@ rl.on("line", (line) => {
     const effort = typeof msg.params?.effort === "string" ? msg.params.effort : null;
     write({ id: msg.id, result: { ok: true } });
     write({ method: "turn/started", params: { threadId, turn: { id: turnId } } });
-    write({
-      method: "item/agentMessage/delta",
-      params: { threadId, itemId: "item-1", delta: "Hello from Codex" },
-    });
-    write({
-      method: "item/agentMessage/delta",
-      params: {
-        threadId,
-        itemId: "item-1",
-        delta: ` [model=${model ?? "null"} effort=${effort ?? "null"}]`,
-      },
-    });
-    write({
-      method: "thread/tokenUsage/updated",
-      params: {
-        threadId,
-        tokenUsage: {
-          total: { totalTokens: 22 },
-          modelContextWindow: 200000,
+
+    const sendOutput = () => {
+      write({
+        method: "item/agentMessage/delta",
+        params: { threadId, itemId: "item-1", delta: "Hello from Codex" },
+      });
+      write({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId,
+          itemId: "item-1",
+          delta: ` [model=${model ?? "null"} effort=${effort ?? "null"}]`,
         },
-      },
-    });
-    write({ method: "turn/completed", params: { threadId, turn: { id: turnId } } });
+      });
+      write({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId,
+          tokenUsage: {
+            total: { totalTokens: 22 },
+            modelContextWindow: 200000,
+          },
+        },
+      });
+      write({ method: "turn/completed", params: { threadId, turn: { id: turnId } } });
+    };
+
+    if (process.env.CODEX_TEST_STDERR === "true") {
+      process.stderr.write("Test stderr line from fixture\n");
+    }
+
+    const delayMsRaw =
+      typeof process.env.CODEX_TEST_DELAY_MS === "string"
+        ? process.env.CODEX_TEST_DELAY_MS
+        : null;
+    const defaultDelayMs = process.env.CODEX_TEST_STDERR === "true" ? 25 : 0;
+    const delayMs = delayMsRaw != null ? Number(delayMsRaw) : defaultDelayMs;
+
+    if (Number.isFinite(delayMs) && delayMs > 0) {
+      setTimeout(sendOutput, delayMs);
+    } else {
+      sendOutput();
+    }
     return;
   }
 

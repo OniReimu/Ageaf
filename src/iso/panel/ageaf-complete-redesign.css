@@ -358,7 +358,8 @@
 
 .ageaf-panel__body {
   position: relative;
-  overflow: hidden;
+  /* Allow dropdown menus/tooltips (positioned absolutely) to escape their parents. */
+  overflow: visible;
   background: transparent;
 }
 
@@ -961,10 +962,11 @@
 
 .ageaf-runtime__menu {
   position: absolute;
-  bottom: 100%;
+  /* Keep consistent with panel.css hover-bridge (::before) behavior. */
+  bottom: calc(100% + 8px);
   left: 0;
-  right: 0;
-  margin-bottom: var(--ageaf-space-sm);
+  min-width: fit-content;
+  width: max-content;
   background: var(--ageaf-charcoal);
   border: 1px solid var(--ageaf-border);
   border-radius: var(--ageaf-radius-lg);
