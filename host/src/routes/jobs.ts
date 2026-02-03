@@ -158,9 +158,11 @@ export function registerJobs(server: FastifyInstance) {
         // Auto-compaction check
         const autoCompactEnabled = payload.userSettings?.autoCompactEnabled ?? false;
         if (autoCompactEnabled && payload.compaction?.requestCompaction !== true) {
+          let observedUsage: any | null = null;
           try {
             emitEvent({ event: 'plan', data: { message: 'Checking context usage…' } });
             const usage = await withTimeout(getContextUsage(provider, payload), 5000);
+            observedUsage = usage;
             if (!usage) {
               emitEvent({
                 event: 'plan',
@@ -199,8 +201,26 @@ export function registerJobs(server: FastifyInstance) {
               });
             }
           } catch (error) {
-            // Log error but continue with request
+            const errorMessage = error instanceof Error ? error.message : 'Auto-compaction failed';
+            emitEvent({
+              event: 'plan',
+              data: { message: `Auto-compaction failed: ${errorMessage}` },
+            });
             console.error('Auto-compaction failed:', error);
+
+            // At very high context usage, continuing is likely to stall without a successful compaction.
+            if (provider === 'codex' && Number(observedUsage?.percentage ?? 0) >= 95) {
+              emitEvent({
+                event: 'done',
+                data: {
+                  status: 'error',
+                  message:
+                    `Auto-compaction failed at ${observedUsage?.percentage}%. ` +
+                    'Please try manual compaction or start a new conversation.',
+                },
+              });
+              return;
+            }
           }
         }
 

@@ -46,6 +46,7 @@ type CodexJobPayload = {
     customSystemPrompt?: string;
     displayName?: string;
     debugCliEvents?: boolean;
+    surroundingContextLimit?: number;
   };
 };
 
@@ -94,22 +95,33 @@ function getContextImages(context: unknown): CodexImageAttachment[] {
 
 function getContextForPrompt(
   context: unknown,
-  images: CodexImageAttachment[]
+  images: CodexImageAttachment[],
+  limit: number = 0
 ): Record<string, unknown> | null {
   const base: Record<string, unknown> = {};
   if (context && typeof context === 'object') {
     const raw = context as Record<string, unknown>;
-    const pickString = (key: string) => {
+    const pickString = (key: string, truncateMode?: 'start' | 'end') => {
       const value = raw[key];
       if (typeof value === 'string' && value.trim()) {
-        base[key] = value;
+        if (!truncateMode || limit <= 0 || value.length <= limit) {
+          base[key] = value;
+        } else {
+          // Truncate if limit > 0
+          base[key] = truncateMode === 'start'
+            ? `...${value.slice(-limit)}` // Keep end (for before)
+            : `${value.slice(0, limit)}...`; // Keep start (for after)
+        }
       }
     };
     pickString('message');
     pickString('selection');
-    pickString('surroundingBefore');
-    pickString('surroundingAfter');
-    pickString('compileLog');
+
+    // Only send surrounding context if limit > 0
+    if (limit > 0) {
+      pickString('surroundingBefore', 'start'); // Keep end of "before" (closest to cursor)
+      pickString('surroundingAfter', 'end');    // Keep start of "after" (closest to cursor)
+    }
   }
 
   if (images.length > 0) {
@@ -285,7 +297,29 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
     payload.context && typeof payload.context === 'object'
       ? { ...(payload.context as Record<string, unknown>), message: messageWithAttachments }
       : { message: messageWithAttachments };
-  const contextForPrompt = getContextForPrompt(contextWithAttachments, images);
+  const surroundingContextLimit = payload.userSettings?.surroundingContextLimit ?? 0;
+  const contextForPrompt = getContextForPrompt(contextWithAttachments, images, surroundingContextLimit);
+
+  // Debug: Log what we're sending to Codex (console only, not frontend)
+  if (debugCliEvents) {
+    const contextSummary: Record<string, any> = {};
+    if (contextForPrompt) {
+      for (const [key, value] of Object.entries(contextForPrompt)) {
+        if (typeof value === 'string') {
+          contextSummary[key] = `${value.length} chars`;
+        } else {
+          contextSummary[key] = value;
+        }
+      }
+    }
+    console.log('[CODEX INPUT CONTEXT]', JSON.stringify({
+      attachmentBlockSize: attachmentBlock.length,
+      contextFields: contextSummary,
+      hasImages: images.length > 0,
+      imageCount: images.length,
+    }, null, 2));
+  }
+
   let threadId = typeof runtime.threadId === 'string' ? runtime.threadId.trim() : '';
   const cwd = getCodexSessionCwd(threadId);
   const approvalPolicy = normalizeApprovalPolicy(runtime.approvalPolicy);
@@ -360,6 +394,15 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
   }
 
   const prompt = buildPrompt(payload, contextForPrompt);
+
+  // Debug: Log the final prompt (console only, not frontend)
+  if (debugCliEvents) {
+    console.log('[CODEX PROMPT]', JSON.stringify({
+      promptLength: prompt.length,
+      promptPreview: prompt.substring(0, 500) + (prompt.length > 500 ? '...' : ''),
+    }, null, 2));
+  }
+
   let done = false;
   const action = payload.action ?? 'chat';
   const shouldHidePatchPayload = true;
@@ -776,6 +819,10 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
       }
 
       if (method === 'thread/tokenUsage/updated') {
+        // Debug: Log raw token usage from Codex
+        if (debugCliEvents) {
+          console.log('[CODEX TOKEN USAGE RAW]', JSON.stringify(params, null, 2));
+        }
         const usage = parseCodexTokenUsage(params);
         if (usage) {
           emitEvent({
@@ -869,6 +916,16 @@ export async function runCodexJob(payload: CodexJobPayload, emitEvent: EmitEvent
     })),
     { type: 'text', text: prompt },
   ];
+
+  // Debug: Log turn/start input (console only, not frontend)
+  if (debugCliEvents) {
+    const textInput = input.find(i => i.type === 'text');
+    console.log('[CODEX TURN/START INPUT]', JSON.stringify({
+      imageCount: images.length,
+      textLength: textInput && 'text' in textInput ? textInput.text.length : 0,
+      totalInputItems: input.length,
+    }, null, 2));
+  }
 
   const turnResponse = await appServer.request(
     'turn/start',

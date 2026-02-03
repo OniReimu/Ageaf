@@ -844,6 +844,9 @@ const Panel = () => {
     inThinkingBlock: boolean;
     thinkingBlocks: string[];
     cotSequence: CoTItem[];
+
+    // Streaming status prefix (plan/tool/trace) to display during thinking timer
+    statusPrefix: string | null;
   };
 
   const sessionStates = useRef<Map<string, SessionRuntimeState>>(new Map());
@@ -871,6 +874,8 @@ const Panel = () => {
     inThinkingBlock: false,
     thinkingBlocks: [],
     cotSequence: [],
+
+    statusPrefix: null,
   });
 
   // Get or create session state
@@ -4042,6 +4047,19 @@ const Panel = () => {
     return `${secs}s`;
   };
 
+  const formatStreamingStatusLine = (prefix: string, seconds: number | null) => {
+    const trimmed = prefix.trim();
+    if (!trimmed) return null;
+    if (!thinkingEnabled || seconds === null) {
+      return `${trimmed} · ESC to interrupt`;
+    }
+    const elapsed = formatElapsed(seconds);
+    if (trimmed.toLowerCase() === 'thinking') {
+      return `Thinking ${elapsed} · ESC to interrupt`;
+    }
+    return `${trimmed} · ${elapsed} · ESC to interrupt`;
+  };
+
   const stopThinkingTimer = (conversationId: string) => {
     const sessionState = getSessionState(conversationId);
     if (sessionState.thinkingTimerId !== null) {
@@ -4055,14 +4073,12 @@ const Panel = () => {
     const sessionState = getSessionState(conversationId);
     sessionState.thinkingStartTime = Date.now();
     sessionState.thinkingComplete = false;
+    sessionState.statusPrefix = thinkingEnabled ? 'Thinking' : 'Working';
 
     // Only update UI if this is the current session
     if (conversationId === chatConversationIdRef.current) {
-      if (!thinkingEnabled) {
-        setStreamingState('Working · ESC to interrupt', true);
-      } else {
-        setStreamingState(`Thinking ${formatElapsed(0)} · ESC to interrupt`, true);
-      }
+      const status = formatStreamingStatusLine(sessionState.statusPrefix, thinkingEnabled ? 0 : null);
+      if (status) setStreamingState(status, true);
     }
 
     if (!thinkingEnabled) return;
@@ -4073,7 +4089,9 @@ const Panel = () => {
 
       // Only update UI if this is still the current session
       if (conversationId === chatConversationIdRef.current) {
-        setStreamingStatus(`Thinking ${formatElapsed(seconds)} · ESC to interrupt`);
+        const prefix = sessionState.statusPrefix ?? 'Thinking';
+        const status = formatStreamingStatusLine(prefix, seconds);
+        if (status) setStreamingStatus(status);
       }
     }, 250);
   };
@@ -4959,9 +4977,15 @@ const Panel = () => {
 
           // Always reflect plan/status updates in the live status line while streaming.
           if (typeof message === 'string' && message.trim()) {
-            const status = `${message.trim()} · ESC to interrupt`;
+            const trimmed = message.trim();
+            sessionState.statusPrefix = trimmed;
+            const elapsedSeconds =
+              sessionState.activityStartTime
+                ? Math.max(0, Math.floor((Date.now() - sessionState.activityStartTime) / 1000))
+                : null;
+            const status = formatStreamingStatusLine(trimmed, elapsedSeconds);
             if (sessionConversationId === chatConversationIdRef.current) {
-              setStreamingState(status, true);
+              if (status) setStreamingState(status, true);
             }
           }
 
@@ -7029,6 +7053,26 @@ const Panel = () => {
                       </select>
                       <p class="ageaf-settings__hint">
                         Controls Codex CLI command approvals (approvalPolicy). Use "never" only if you trust the agent to run commands without prompting.
+                      </p>
+
+                      <label class="ageaf-settings__label" for="ageaf-surrounding-context-limit">
+                        Surrounding context limit (chars)
+                      </label>
+                      <input
+                        type="number"
+                        id="ageaf-surrounding-context-limit"
+                        class="ageaf-settings__input"
+                        value={settings.surroundingContextLimit ?? 0}
+                        min="0"
+                        step="100"
+                        onChange={(event) =>
+                          updateSettings({
+                            surroundingContextLimit: Math.max(0, parseInt(event.currentTarget.value) || 0),
+                          })
+                        }
+                      />
+                      <p class="ageaf-settings__hint">
+                        Max characters of surrounding context (before/after selection) to send to agents. 0 disables it (recommended for CLI agents).
                       </p>
 
                       <h4 class="ageaf-settings__subhead">Compaction</h4>
