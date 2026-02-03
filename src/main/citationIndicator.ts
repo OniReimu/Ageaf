@@ -47,7 +47,7 @@ function logDebug(...args: any[]) {
   console.log('[Ageaf Citations]', ...args);
 }
 
-function looksLikeBibText(text: string): boolean {
+function looksLikeBibContent(text: string): boolean {
   try {
     return parseBibTeXFile(text).length > 0;
   } catch {
@@ -55,7 +55,12 @@ function looksLikeBibText(text: string): boolean {
   }
 }
 
-function safeGetCmView(): ReturnType<typeof getCmView> | null {
+function isBibFile(fileName: string | null, content: string): boolean {
+  const hasBibExtension = !!fileName?.toLowerCase().endsWith('.bib');
+  return hasBibExtension || looksLikeBibContent(content);
+}
+
+function safeGetCmView(): any | null {
   try {
     return getCmView();
   } catch {
@@ -177,10 +182,8 @@ export async function updateCitationIndicators() {
   const bibContent = view.state.doc.toString();
 
   // Check if current file is a .bib file (robust: tab name OR content heuristic)
-  const looksLikeBibByName = !!activeFileName?.toLowerCase().endsWith('.bib');
-  const looksLikeBibByContent = parseBibTeXFile(bibContent).length > 0;
-  if (!looksLikeBibByName && !looksLikeBibByContent) {
-    logDebug('skip (not bib)', { activeTabRaw, activeFileName, looksLikeBibByContent });
+  if (!isBibFile(activeFileName, bibContent)) {
+    logDebug('skip (not bib)', { activeTabRaw, activeFileName });
     return;
   }
 
@@ -206,12 +209,9 @@ export async function updateCitationIndicators() {
       while (true) {
         const current = safeGetCmView();
         if (current) {
-          const raw = getActiveTabName();
-          const normalized = normalizeTabFileName(raw);
+          const normalized = normalizeTabFileName(getActiveTabName());
           const docText = current.state.doc.toString();
-          const byName = !!normalized?.toLowerCase().endsWith('.bib');
-          const byContent = parseBibTeXFile(docText).length > 0;
-          if (byName || byContent) return current;
+          if (isBibFile(normalized, docText)) return current;
         }
         if (Date.now() - start > 2500) return null;
         // eslint-disable-next-line no-await-in-loop
@@ -307,8 +307,7 @@ export function registerCitationIndicator() {
 
     const activeFile = getActiveTabName();
     const docText = view.state.doc.toString();
-    const isBibActive =
-      !!normalizeTabFileName(activeFile)?.toLowerCase().endsWith('.bib') || looksLikeBibText(docText);
+    const isBibActive = isBibFile(normalizeTabFileName(activeFile), docText);
 
     // If we switched away from a bib, assume decorations were cleared; force refresh when we come back.
     if (isBibActive !== lastBibActive) {
@@ -322,13 +321,10 @@ export function registerCitationIndicator() {
     // Trigger analysis when switching into a .bib tab
     if (activeFile !== lastActiveFile) {
       lastActiveFile = activeFile;
-      // Reset per-open state
       lastBibHash = null;
       if (isBibActive) {
-        // small delay to let Overleaf update the CM6 doc
+        // Small delay to let Overleaf update the CM6 doc
         window.setTimeout(() => void updateCitationIndicators(), 250);
-      } else {
-        // no-op
       }
     }
 
