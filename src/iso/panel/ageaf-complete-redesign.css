@@ -1,0 +1,1681 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * AGEAF PANEL - COMPLETE REDESIGN
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Design Concept: "Emerald Studio" - Editorial meets Technical Excellence
+ *
+ * Core Aesthetic:
+ * - Signature emerald green (#39b98a) as primary accent
+ * - Layered depth with refined shadows
+ * - Editorial typography (Newsreader italic + Work Sans)
+ * - Semi-transparent overlays for context preservation
+ * - Custom iconography throughout
+ * - Professional tool-like refinement
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,600;1,6..72,400&family=JetBrains+Mono:wght@400;500;600&family=Work+Sans:wght@400;500;600;700&display=swap');
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DESIGN TOKENS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Brand Colors - Emerald Green Theme */
+  --ageaf-emerald: #39b98a;
+  --ageaf-emerald-light: #4dd4a4;
+  --ageaf-emerald-dark: #2a9970;
+  --ageaf-emerald-soft: rgba(57, 185, 138, 0.12);
+  --ageaf-emerald-glow: rgba(57, 185, 138, 0.25);
+
+  /* Neutrals - Deep Greens */
+  --ageaf-black: #0a0e0c;
+  --ageaf-charcoal: #0f1411;
+  --ageaf-slate: #141b17;
+  --ageaf-surface: #1a2420;
+  --ageaf-border: #27322a;
+
+  /* Text Colors */
+  --ageaf-text-primary: #f7fbf9;
+  --ageaf-text-secondary: #dbe6e0;
+  --ageaf-text-muted: #a8bfb3;
+  --ageaf-text-dim: #6b7d73;
+
+  /* Semantic Colors */
+  --ageaf-success: #39b98a;
+  --ageaf-warning: #ffb357;
+  --ageaf-error: #ff6b6b;
+  --ageaf-info: #4db8e8;
+
+  /* Typography */
+  --ageaf-font-display: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --ageaf-font-body: 'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --ageaf-font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+
+  /* Spacing Scale */
+  --ageaf-space-xs: 4px;
+  --ageaf-space-sm: 8px;
+  --ageaf-space-md: 12px;
+  --ageaf-space-lg: 16px;
+  --ageaf-space-xl: 24px;
+  --ageaf-space-2xl: 32px;
+  --ageaf-space-3xl: 48px;
+
+  /* Elevation System */
+  --ageaf-shadow-sm:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 2px 8px rgba(0, 0, 0, 0.15);
+  --ageaf-shadow-md:
+    0 2px 4px rgba(0, 0, 0, 0.35),
+    0 8px 24px rgba(0, 0, 0, 0.2);
+  --ageaf-shadow-lg:
+    0 4px 8px rgba(0, 0, 0, 0.4),
+    0 16px 48px rgba(0, 0, 0, 0.25);
+  --ageaf-shadow-xl:
+    0 8px 16px rgba(0, 0, 0, 0.45),
+    0 24px 64px rgba(0, 0, 0, 0.3);
+
+  /* Border Radius */
+  --ageaf-radius-sm: 4px;
+  --ageaf-radius-md: 8px;
+  --ageaf-radius-lg: 12px;
+  --ageaf-radius-xl: 16px;
+  --ageaf-radius-full: 9999px;
+
+  /* Transitions */
+  --ageaf-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ageaf-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ageaf-transition-fast: 150ms var(--ageaf-ease-in-out);
+  --ageaf-transition-base: 250ms var(--ageaf-ease-out);
+  --ageaf-transition-slow: 400ms var(--ageaf-ease-out);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MAIN PANEL STRUCTURE
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-panel {
+  --ageaf-panel-width: 360px;
+
+  pointer-events: auto;
+  height: 100vh;
+  width: var(--ageaf-panel-width);
+  flex: 0 0 var(--ageaf-panel-width);
+  position: relative;
+
+  /* Refined gradient background */
+  background: linear-gradient(168deg,
+      var(--ageaf-charcoal) 0%,
+      var(--ageaf-slate) 45%,
+      var(--ageaf-charcoal) 100%);
+
+  box-shadow: var(--ageaf-shadow-xl);
+  color: var(--ageaf-text-primary);
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+
+  animation: ageaf-panel-slide-in var(--ageaf-transition-slow);
+  overflow: visible;
+  transition:
+    width 0.5s cubic-bezier(0.16, 1, 0.3, 1),
+    flex-basis 0.5s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.5s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ageaf-panel.ageaf-panel--collapsed {
+  width: 0 !important;
+  flex-basis: 0 !important;
+  box-shadow: none;
+  overflow: visible !important;
+}
+
+.ageaf-panel.ageaf-panel--collapsed .ageaf-panel__inner,
+.ageaf-panel.ageaf-panel--collapsed .ageaf-panel__header,
+.ageaf-panel.ageaf-panel--collapsed .ageaf-panel__body {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+/* Atmospheric texture overlay */
+.ageaf-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 25% 20%,
+      var(--ageaf-emerald-soft) 0%,
+      transparent 45%),
+    radial-gradient(circle at 75% 80%,
+      rgba(57, 185, 138, 0.08) 0%,
+      transparent 45%);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.6;
+}
+
+@keyframes ageaf-panel-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.ageaf-panel__inner {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100%;
+  width: 100%;
+  min-width: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HEADER & TOOLBAR
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-panel__header {
+  background: var(--ageaf-black);
+  border-bottom: 1px solid var(--ageaf-border);
+  padding: var(--ageaf-space-lg);
+  box-shadow: 0 1px 0 rgba(57, 185, 138, 0.08);
+}
+
+.ageaf-panel__logo {
+  width: 28px;
+  height: 28px;
+  margin-right: var(--ageaf-space-md);
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+
+/* Custom Ageaf Logo Icon */
+.ageaf-panel__logo svg {
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 2px 6px rgba(57, 185, 138, 0.3));
+}
+
+.ageaf-panel__title {
+  flex: 1;
+  min-width: 0;
+}
+
+.ageaf-panel__name {
+  font-family: var(--ageaf-font-display);
+  font-size: 20px;
+  font-weight: 600;
+  font-style: italic;
+  letter-spacing: -0.02em;
+  color: var(--ageaf-text-primary);
+  line-height: 1.2;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.ageaf-panel__intro {
+  font-size: 11px;
+  color: var(--ageaf-emerald);
+  margin-top: 2px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  opacity: 0.9;
+}
+
+/* Provider Badge */
+.ageaf-provider__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ageaf-emerald);
+  box-shadow: 0 0 8px var(--ageaf-emerald-glow);
+  animation: ageaf-provider-pulse 2s ease-in-out infinite;
+}
+
+@keyframes ageaf-provider-pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 8px var(--ageaf-emerald-glow);
+  }
+
+  50% {
+    opacity: 0.7;
+    box-shadow: 0 0 12px var(--ageaf-emerald-glow);
+  }
+}
+
+.ageaf-provider__label {
+  font-size: 12px;
+  color: var(--ageaf-text-secondary);
+  font-weight: 500;
+}
+
+/* Toolbar Buttons */
+.ageaf-toolbar-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--ageaf-space-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--ageaf-radius-md);
+  color: var(--ageaf-text-secondary);
+  cursor: pointer;
+  transition: all var(--ageaf-transition-fast);
+  /* Tooltips are rendered via ::after (panel.css). Don't clip them. */
+  overflow: visible;
+}
+
+.ageaf-toolbar-button::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--ageaf-emerald);
+  opacity: 0;
+  transition: opacity var(--ageaf-transition-fast);
+  border-radius: inherit;
+}
+
+.ageaf-toolbar-button:hover::before {
+  opacity: 0.08;
+}
+
+.ageaf-toolbar-button:hover {
+  border-color: var(--ageaf-emerald-soft);
+  color: var(--ageaf-emerald-light);
+  transform: translateY(-1px);
+}
+
+.ageaf-toolbar-button:active {
+  transform: translateY(0);
+}
+
+.ageaf-toolbar-button.is-active {
+  background: var(--ageaf-emerald-soft);
+  border-color: var(--ageaf-emerald);
+  color: var(--ageaf-emerald-light);
+}
+
+/* Custom SVG Icons */
+.ageaf-toolbar-icon {
+  width: 18px;
+  height: 18px;
+  position: relative;
+  z-index: 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CHAT AREA & MESSAGES
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-panel__body {
+  position: relative;
+  overflow: hidden;
+  background: transparent;
+}
+
+.ageaf-panel__chat {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--ageaf-space-lg);
+
+  /* Custom scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--ageaf-emerald-soft) transparent;
+}
+
+.ageaf-panel__chat::-webkit-scrollbar {
+  width: 8px;
+}
+
+.ageaf-panel__chat::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ageaf-panel__chat::-webkit-scrollbar-thumb {
+  background: var(--ageaf-emerald-soft);
+  border-radius: var(--ageaf-radius-full);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background var(--ageaf-transition-fast);
+}
+
+.ageaf-panel__chat::-webkit-scrollbar-thumb:hover {
+  background: var(--ageaf-emerald-glow);
+  background-clip: padding-box;
+}
+
+/* Message Bubbles */
+.ageaf-message {
+  margin-bottom: var(--ageaf-space-xl);
+  animation: ageaf-message-fade-in 0.4s var(--ageaf-ease-out) backwards;
+}
+
+@keyframes ageaf-message-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ageaf-message--assistant {
+  /* Assistant messages stay left-aligned */
+}
+
+.ageaf-message--user {
+  /* User messages could be right-aligned if needed */
+}
+
+.ageaf-message--system {
+  opacity: 0.85;
+}
+
+.ageaf-message__content {
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--ageaf-text-primary);
+  letter-spacing: 0.01em;
+  padding-top: 0;
+  /* Ensure no top padding */
+}
+
+/* User message specific compactness */
+.ageaf-message--user .ageaf-message__content p:first-child {
+  margin-top: 0;
+  /* Remove top margin from first paragraph */
+}
+
+
+
+/* Typography within messages */
+.ageaf-message__content h1,
+.ageaf-message__content h2,
+.ageaf-message__content h3,
+.ageaf-message__content h4 {
+  font-family: var(--ageaf-font-display);
+  font-style: italic;
+  letter-spacing: -0.02em;
+  color: var(--ageaf-text-primary);
+  margin-top: 1.2em;
+  margin-bottom: 0.6em;
+}
+
+.ageaf-message__content h1 {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.ageaf-message__content h2 {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.ageaf-message__content h3 {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.ageaf-message__content h4 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ageaf-message__content p {
+  margin: 0.8em 0;
+}
+
+.ageaf-message__content a {
+  color: var(--ageaf-emerald-light);
+  text-decoration: none;
+  border-bottom: 1px solid var(--ageaf-emerald-soft);
+  transition: all var(--ageaf-transition-fast);
+}
+
+.ageaf-message__content a:hover {
+  border-bottom-color: var(--ageaf-emerald);
+  color: var(--ageaf-emerald);
+}
+
+/* Inline code */
+.ageaf-message__content code {
+  font-family: var(--ageaf-font-mono);
+  font-size: 0.9em;
+  background: var(--ageaf-emerald-soft);
+  border: 1px solid rgba(57, 185, 138, 0.2);
+  padding: 2px 6px;
+  border-radius: var(--ageaf-radius-sm);
+  color: var(--ageaf-emerald-light);
+}
+
+/* Code blocks */
+.ageaf-message__content pre {
+  margin: var(--ageaf-space-lg) 0;
+  border-radius: var(--ageaf-radius-lg);
+  overflow: hidden;
+  box-shadow: var(--ageaf-shadow-md);
+  background: var(--ageaf-black);
+  border: 1px solid var(--ageaf-border);
+}
+
+.ageaf-message__content pre code {
+  display: block;
+  padding: var(--ageaf-space-lg);
+  overflow-x: auto;
+  line-height: 1.6;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--ageaf-text-primary);
+}
+
+/* Lists */
+.ageaf-message__content ul,
+.ageaf-message__content ol {
+  margin: 0.8em 0;
+  padding-left: 1.5em;
+}
+
+.ageaf-message__content li {
+  margin: 0.4em 0;
+}
+
+.ageaf-message__content ul li::marker {
+  color: var(--ageaf-emerald);
+}
+
+/* Blockquotes */
+.ageaf-message__content blockquote {
+  margin: var(--ageaf-space-lg) 0;
+  padding-left: var(--ageaf-space-lg);
+  border-left: 3px solid var(--ageaf-emerald);
+  color: var(--ageaf-text-secondary);
+  font-style: italic;
+}
+
+/* Message Actions */
+.ageaf-message__response-actions {
+  display: flex;
+  gap: var(--ageaf-space-sm);
+  margin-top: var(--ageaf-space-md);
+  opacity: 0;
+  transition: opacity var(--ageaf-transition-fast);
+}
+
+.ageaf-message:hover .ageaf-message__response-actions {
+  opacity: 1;
+}
+
+.ageaf-message__copy-response {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--ageaf-border);
+  border-radius: var(--ageaf-radius-md);
+  color: var(--ageaf-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--ageaf-transition-fast);
+}
+
+.ageaf-message__copy-response:hover {
+  background: var(--ageaf-emerald-soft);
+  border-color: var(--ageaf-emerald);
+  color: var(--ageaf-emerald-light);
+}
+
+.ageaf-message__copy-icon,
+.ageaf-message__copy-check {
+  width: 14px;
+  height: 14px;
+}
+
+/* Status Line */
+.ageaf-message__status {
+  font-family: var(--ageaf-font-mono);
+  font-size: 12px;
+  color: var(--ageaf-emerald);
+  background: var(--ageaf-emerald-soft);
+  border: 1px solid rgba(57, 185, 138, 0.25);
+  border-radius: var(--ageaf-radius-md);
+  padding: var(--ageaf-space-sm) var(--ageaf-space-md);
+  margin-bottom: var(--ageaf-space-md);
+  box-shadow: var(--ageaf-shadow-sm);
+  animation: ageaf-status-fade-in var(--ageaf-transition-base);
+}
+
+.ageaf-message__status--toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--ageaf-space-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ageaf-message__status--toggle:hover {
+  border-color: var(--ageaf-emerald);
+  box-shadow: 0 0 0 2px var(--ageaf-emerald-soft);
+}
+
+.ageaf-message__status--toggle:focus-visible {
+  outline: 2px solid var(--ageaf-emerald);
+  outline-offset: 2px;
+}
+
+.ageaf-message__status-toggle-arrow {
+  width: 14px;
+  flex: 0 0 14px;
+  opacity: 0.9;
+}
+
+.ageaf-message__status-toggle-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@keyframes ageaf-status-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ageaf-message__status.is-active {
+  animation: ageaf-status-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes ageaf-status-pulse {
+
+  0%,
+  100% {
+    box-shadow: var(--ageaf-shadow-sm);
+    border-color: rgba(57, 185, 138, 0.25);
+  }
+
+  50% {
+    box-shadow: 0 0 0 2px var(--ageaf-emerald-glow);
+    border-color: var(--ageaf-emerald);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THINKING BLOCKS & TOOL INDICATORS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Chain of Thought Display */
+.ageaf-message__cot-header {
+  display: flex;
+  align-items: center;
+  gap: var(--ageaf-space-sm);
+  padding: var(--ageaf-space-md);
+  background: rgba(57, 185, 138, 0.05);
+  border: 1px solid rgba(57, 185, 138, 0.15);
+  border-radius: var(--ageaf-radius-lg);
+  cursor: pointer;
+  transition: all var(--ageaf-transition-fast);
+  margin: var(--ageaf-space-lg) 0;
+  font-family: var(--ageaf-font-body);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ageaf-emerald);
+  text-align: left;
+  width: 100%;
+}
+
+.ageaf-message__cot-header:hover {
+  background: rgba(57, 185, 138, 0.08);
+  border-color: rgba(57, 185, 138, 0.3);
+}
+
+.ageaf-cot-arrow {
+  font-size: 10px;
+  transition: transform var(--ageaf-transition-fast);
+}
+
+.ageaf-cot-label {
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 11px;
+}
+
+.ageaf-message__cot-body {
+  padding: var(--ageaf-space-md);
+  background: rgba(57, 185, 138, 0.03);
+  border: 1px solid rgba(57, 185, 138, 0.1);
+  border-top: none;
+  border-radius: 0 0 var(--ageaf-radius-lg) var(--ageaf-radius-lg);
+  margin-top: -1px;
+}
+
+.ageaf-cot-thinking {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ageaf-space-md);
+  padding: var(--ageaf-space-md);
+  margin: var(--ageaf-space-sm) 0;
+  background: var(--ageaf-slate);
+  border-radius: var(--ageaf-radius-md);
+  border-left: 3px solid var(--ageaf-emerald);
+}
+
+.ageaf-cot-thinking-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.ageaf-cot-thinking-content {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ageaf-text-secondary);
+}
+
+/* Tool Indicators */
+.ageaf-tool-indicators {
+  margin: var(--ageaf-space-md) 0;
+}
+
+.ageaf-tool-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--ageaf-space-sm);
+  padding: var(--ageaf-space-sm) var(--ageaf-space-md);
+  font-size: 13px;
+  line-height: 1.4;
+  margin: var(--ageaf-space-sm) 0;
+  border-radius: var(--ageaf-radius-md);
+  background: var(--ageaf-surface);
+  border: 1px solid var(--ageaf-border);
+  transition: all var(--ageaf-transition-fast);
+}
+
+.ageaf-tool-indicator--started {
+  border-left: 3px solid var(--ageaf-emerald);
+  animation: ageaf-tool-pulse 1.5s ease-in-out infinite;
+}
+
+.ageaf-tool-indicator--completed {
+  opacity: 0.7;
+  border-left: 3px solid var(--ageaf-success);
+}
+
+.ageaf-tool-indicator--failed {
+  border-left: 3px solid var(--ageaf-error);
+}
+
+@keyframes ageaf-tool-pulse {
+
+  0%,
+  100% {
+    background: var(--ageaf-surface);
+  }
+
+  50% {
+    background: var(--ageaf-emerald-soft);
+  }
+}
+
+.ageaf-tool-indicator__icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.ageaf-tool-indicator__name {
+  font-weight: 600;
+  color: var(--ageaf-text-primary);
+}
+
+.ageaf-tool-indicator__input {
+  flex: 1;
+  font-family: var(--ageaf-font-mono);
+  font-size: 11px;
+  color: var(--ageaf-text-muted);
+  background: var(--ageaf-black);
+  padding: 2px 6px;
+  border-radius: var(--ageaf-radius-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ageaf-tool-indicator__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--ageaf-emerald-soft);
+  border-top-color: var(--ageaf-emerald);
+  border-radius: 50%;
+  animation: ageaf-spinner-rotate 0.8s linear infinite;
+}
+
+@keyframes ageaf-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   INPUT AREA
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-panel__input {
+  background: var(--ageaf-black);
+  border-top: 1px solid var(--ageaf-border);
+  padding: var(--ageaf-space-lg);
+  box-shadow: 0 -1px 0 rgba(57, 185, 138, 0.08);
+}
+
+.ageaf-panel__input textarea {
+  width: 100%;
+  min-height: 80px;
+  max-height: 200px;
+  padding: var(--ageaf-space-md) var(--ageaf-space-lg);
+  background: var(--ageaf-slate);
+  border: 1.5px solid var(--ageaf-border);
+  border-radius: var(--ageaf-radius-lg);
+  color: var(--ageaf-text-primary);
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  transition: all var(--ageaf-transition-base);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.ageaf-panel__input textarea::placeholder {
+  color: var(--ageaf-text-dim);
+  font-style: italic;
+}
+
+.ageaf-panel__input textarea:focus {
+  outline: none;
+  border-color: var(--ageaf-emerald);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.2),
+    0 0 0 3px var(--ageaf-emerald-glow);
+  background: var(--ageaf-surface);
+}
+
+/* Send Button */
+.ageaf-panel__send {
+  margin-top: var(--ageaf-space-md);
+  width: 100%;
+  padding: var(--ageaf-space-md) var(--ageaf-space-lg);
+  background: linear-gradient(135deg, var(--ageaf-emerald) 0%, var(--ageaf-emerald-dark) 100%);
+  border: none;
+  border-radius: var(--ageaf-radius-lg);
+  color: var(--ageaf-black);
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--ageaf-transition-base);
+  box-shadow:
+    var(--ageaf-shadow-sm),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  position: relative;
+  overflow: hidden;
+}
+
+.ageaf-panel__send::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.2);
+  opacity: 0;
+  transition: opacity 0.6s;
+}
+
+.ageaf-panel__send:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    var(--ageaf-shadow-md),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.ageaf-panel__send:active::before {
+  opacity: 1;
+  transition: none;
+}
+
+.ageaf-panel__send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RUNTIME SELECTOR
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-runtime {
+  display: flex;
+  gap: var(--ageaf-space-sm);
+  margin-bottom: 0px;
+  /* Reduced to minimum as requested */
+}
+
+.ageaf-runtime__picker {
+  flex: 0 0 auto;
+  width: 110px;
+  position: relative;
+}
+
+.ageaf-runtime__button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--ageaf-space-sm);
+  padding: 4px 8px;
+  /* Compact padding */
+  background: var(--ageaf-surface);
+  border: 1px solid var(--ageaf-border);
+  border-radius: var(--ageaf-radius-md);
+  color: var(--ageaf-text-secondary);
+  font-family: var(--ageaf-font-body);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--ageaf-transition-fast);
+}
+
+.ageaf-runtime__button:hover {
+  border-color: var(--ageaf-emerald-soft);
+  background: var(--ageaf-slate);
+}
+
+.ageaf-runtime__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ageaf-text-dim);
+  font-weight: 600;
+}
+
+.ageaf-runtime__value {
+  flex: 1;
+  text-align: left;
+  font-weight: 500;
+  color: var(--ageaf-text-primary);
+}
+
+.ageaf-runtime__value--accent {
+  color: var(--ageaf-emerald);
+}
+
+.ageaf-runtime__menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: var(--ageaf-space-sm);
+  background: var(--ageaf-charcoal);
+  border: 1px solid var(--ageaf-border);
+  border-radius: var(--ageaf-radius-lg);
+  box-shadow: var(--ageaf-shadow-lg);
+  /* Allow the hover-bridge pseudo-element from panel.css to extend below the menu. */
+  overflow: visible;
+  z-index: 100;
+}
+
+.ageaf-runtime__option:first-child {
+  border-top-left-radius: var(--ageaf-radius-lg);
+  border-top-right-radius: var(--ageaf-radius-lg);
+}
+
+.ageaf-runtime__option:last-child {
+  border-bottom-left-radius: var(--ageaf-radius-lg);
+  border-bottom-right-radius: var(--ageaf-radius-lg);
+}
+
+.ageaf-runtime__option {
+  padding: 6px 10px;
+  /* Compact option padding */
+  cursor: pointer;
+  transition: background var(--ageaf-transition-fast);
+  border-bottom: 1px solid var(--ageaf-border);
+}
+
+.ageaf-runtime__option:last-child {
+  border-bottom: none;
+}
+
+.ageaf-runtime__option:hover {
+  background: var(--ageaf-emerald-soft);
+}
+
+.ageaf-runtime__option-title {
+  font-weight: 600;
+  color: var(--ageaf-text-primary);
+  margin-bottom: 4px;
+}
+
+.ageaf-runtime__option-description {
+  font-size: 11px;
+  color: var(--ageaf-text-muted);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SETTINGS MODAL - SEMI-TRANSPARENT
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-settings {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  padding: var(--ageaf-space-xl);
+  animation: ageaf-settings-fade-in 0.3s var(--ageaf-ease-out);
+}
+
+@keyframes ageaf-settings-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* CRITICAL: Semi-transparent backdrop - Users can see Overleaf through it */
+.ageaf-settings__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 14, 12, 0.75);
+  backdrop-filter: blur(6px) saturate(0.8);
+  -webkit-backdrop-filter: blur(6px) saturate(0.8);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DIFF REVIEW MODAL - MATCH SETTINGS OVERLAY
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* The diff modal is a separate full-screen overlay; match settings' backdrop. */
+.ageaf-diff-modal__backdrop {
+  background: rgba(10, 14, 12, 0.75);
+  backdrop-filter: blur(6px) saturate(0.8);
+  -webkit-backdrop-filter: blur(6px) saturate(0.8);
+}
+
+/* Bring the modal chrome in line with the redesign tokens. */
+.ageaf-diff-modal {
+  background: var(--ageaf-charcoal);
+  border-color: var(--ageaf-border);
+  border-radius: var(--ageaf-radius-lg);
+  box-shadow: var(--ageaf-shadow-xl);
+  position: relative;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.ageaf-diff-modal::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 30% 25%,
+      var(--ageaf-emerald-soft) 0%,
+      transparent 50%),
+    radial-gradient(circle at 70% 75%,
+      rgba(57, 185, 138, 0.08) 0%,
+      transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.ageaf-diff-modal__header {
+  background: var(--ageaf-black);
+  border-bottom-color: var(--ageaf-border);
+  position: relative;
+  z-index: 1;
+}
+
+.ageaf-diff-modal__title {
+  color: var(--ageaf-text-primary);
+}
+
+.ageaf-diff-modal__close {
+  color: var(--ageaf-text-secondary);
+}
+
+.ageaf-diff-modal__content {
+  position: relative;
+  z-index: 1;
+}
+
+.ageaf-settings__panel {
+  position: relative;
+  width: min(900px, 95vw);
+  height: min(680px, 90vh);
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  background: var(--ageaf-charcoal);
+  border-radius: var(--ageaf-radius-xl);
+  overflow: hidden;
+  box-shadow: var(--ageaf-shadow-xl);
+  z-index: 1;
+  border: 1px solid var(--ageaf-border);
+  animation: ageaf-settings-slide-in 0.4s var(--ageaf-ease-out);
+}
+
+@keyframes ageaf-settings-slide-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Atmospheric overlay */
+.ageaf-settings__panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 30% 25%,
+      var(--ageaf-emerald-soft) 0%,
+      transparent 50%),
+    radial-gradient(circle at 70% 75%,
+      rgba(57, 185, 138, 0.08) 0%,
+      transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Settings Sidebar */
+.ageaf-settings__sidebar {
+  background: var(--ageaf-black);
+  padding: var(--ageaf-space-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ageaf-space-xs);
+  position: relative;
+  z-index: 1;
+  border-right: 1px solid var(--ageaf-border);
+  box-shadow: inset -1px 0 0 rgba(57, 185, 138, 0.08);
+}
+
+.ageaf-settings__sidebar-header {
+  margin-bottom: var(--ageaf-space-lg);
+  padding-bottom: var(--ageaf-space-lg);
+  border-bottom: 1px solid var(--ageaf-border);
+}
+
+.ageaf-settings__title {
+  font-family: var(--ageaf-font-display);
+  font-size: 28px;
+  font-weight: 600;
+  font-style: italic;
+  color: var(--ageaf-text-primary);
+  margin: 0;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.ageaf-settings__subtitle {
+  font-family: var(--ageaf-font-body);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ageaf-emerald);
+  margin-top: var(--ageaf-space-sm);
+  opacity: 0.9;
+}
+
+.ageaf-settings__tab {
+  position: relative;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--ageaf-text-secondary);
+  padding: var(--ageaf-space-md) var(--ageaf-space-lg);
+  cursor: pointer;
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: var(--ageaf-radius-md);
+  transition: all var(--ageaf-transition-base);
+  display: flex;
+  align-items: center;
+  gap: var(--ageaf-space-md);
+  opacity: 0.7;
+}
+
+.ageaf-settings__tab::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ageaf-emerald);
+  opacity: 0;
+  transition: opacity var(--ageaf-transition-fast);
+  flex-shrink: 0;
+}
+
+.ageaf-settings__tab:hover {
+  background: rgba(57, 185, 138, 0.05);
+  opacity: 1;
+}
+
+.ageaf-settings__tab:hover::before {
+  opacity: 0.4;
+}
+
+.ageaf-settings__tab.is-active {
+  background: var(--ageaf-emerald-soft);
+  color: var(--ageaf-emerald-light);
+  opacity: 1;
+  box-shadow: var(--ageaf-shadow-sm);
+}
+
+.ageaf-settings__tab.is-active::before {
+  opacity: 1;
+}
+
+/* Settings Content */
+.ageaf-settings__content {
+  background: var(--ageaf-charcoal);
+  padding: var(--ageaf-space-3xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ageaf-space-xl);
+  overflow-y: auto;
+  position: relative;
+  z-index: 1;
+
+  /* Custom scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--ageaf-emerald-soft) transparent;
+}
+
+.ageaf-settings__content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.ageaf-settings__content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ageaf-settings__content::-webkit-scrollbar-thumb {
+  background: var(--ageaf-emerald-soft);
+  border-radius: var(--ageaf-radius-full);
+  transition: background var(--ageaf-transition-fast);
+}
+
+.ageaf-settings__content::-webkit-scrollbar-thumb:hover {
+  background: var(--ageaf-emerald-glow);
+}
+
+.ageaf-settings__section {
+  background: var(--ageaf-black);
+  border-radius: var(--ageaf-radius-lg);
+  padding: var(--ageaf-space-xl);
+  box-shadow: var(--ageaf-shadow-md);
+  border: 1px solid var(--ageaf-border);
+  position: relative;
+  animation: ageaf-section-fade-in 0.4s var(--ageaf-ease-out) backwards;
+}
+
+.ageaf-settings__section:nth-child(1) {
+  animation-delay: 50ms;
+}
+
+.ageaf-settings__section:nth-child(2) {
+  animation-delay: 100ms;
+}
+
+.ageaf-settings__section:nth-child(3) {
+  animation-delay: 150ms;
+}
+
+.ageaf-settings__section:nth-child(4) {
+  animation-delay: 200ms;
+}
+
+@keyframes ageaf-section-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ageaf-settings__section h3 {
+  font-family: var(--ageaf-font-display);
+  font-size: 22px;
+  font-weight: 600;
+  font-style: italic;
+  color: var(--ageaf-text-primary);
+  margin: 0 0 var(--ageaf-space-md) 0;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.ageaf-settings__subhead {
+  font-family: var(--ageaf-font-body);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ageaf-emerald);
+  margin: var(--ageaf-space-xl) 0 var(--ageaf-space-md) 0;
+  padding-bottom: var(--ageaf-space-sm);
+  border-bottom: 1px solid rgba(57, 185, 138, 0.2);
+}
+
+.ageaf-settings__section h3+.ageaf-settings__subhead {
+  margin-top: var(--ageaf-space-lg);
+}
+
+/* Form Elements */
+.ageaf-settings__label {
+  display: block;
+  font-family: var(--ageaf-font-body);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ageaf-text-secondary);
+  margin-top: var(--ageaf-space-lg);
+  margin-bottom: var(--ageaf-space-sm);
+  letter-spacing: 0.01em;
+}
+
+.ageaf-settings__input,
+.ageaf-settings__textarea,
+select.ageaf-settings__input {
+  width: 100%;
+  background: var(--ageaf-slate);
+  border: 1.5px solid var(--ageaf-border);
+  border-radius: var(--ageaf-radius-md);
+  color: var(--ageaf-text-primary);
+  padding: var(--ageaf-space-md) var(--ageaf-space-lg);
+  font-family: var(--ageaf-font-mono);
+  font-size: 13px;
+  transition: all var(--ageaf-transition-base);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.ageaf-settings__input:focus,
+.ageaf-settings__textarea:focus,
+select.ageaf-settings__input:focus {
+  outline: none;
+  border-color: var(--ageaf-emerald);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.2),
+    0 0 0 3px var(--ageaf-emerald-glow);
+  background: var(--ageaf-surface);
+}
+
+.ageaf-settings__input::placeholder,
+.ageaf-settings__textarea::placeholder {
+  color: var(--ageaf-text-dim);
+  font-style: italic;
+}
+
+.ageaf-settings__textarea {
+  resize: vertical;
+  min-height: 100px;
+  font-family: var(--ageaf-font-mono);
+  line-height: 1.6;
+}
+
+.ageaf-settings__hint {
+  font-family: var(--ageaf-font-body);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ageaf-text-muted);
+  margin-top: var(--ageaf-space-sm);
+  margin-bottom: var(--ageaf-space-md);
+  font-style: italic;
+}
+
+/* Checkbox Styling */
+.ageaf-settings__checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--ageaf-space-md);
+  padding: var(--ageaf-space-md);
+  margin-top: var(--ageaf-space-md);
+  background: rgba(57, 185, 138, 0.03);
+  border-radius: var(--ageaf-radius-md);
+  cursor: pointer;
+  transition: background var(--ageaf-transition-base);
+  border: 1px solid transparent;
+}
+
+.ageaf-settings__checkbox:hover {
+  background: rgba(57, 185, 138, 0.06);
+  border-color: var(--ageaf-emerald-soft);
+}
+
+.ageaf-settings__checkbox input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--ageaf-slate);
+  border: 2px solid var(--ageaf-border);
+  border-radius: var(--ageaf-radius-sm);
+  position: relative;
+  transition: all var(--ageaf-transition-base);
+  flex-shrink: 0;
+}
+
+.ageaf-settings__checkbox input[type="checkbox"]:checked {
+  background: linear-gradient(135deg, var(--ageaf-emerald) 0%, var(--ageaf-emerald-dark) 100%);
+  border-color: var(--ageaf-emerald);
+}
+
+.ageaf-settings__checkbox input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  width: 5px;
+  height: 9px;
+  border: solid var(--ageaf-black);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.ageaf-settings__checkbox input[type="checkbox"]:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ageaf-emerald-glow);
+}
+
+.ageaf-settings__checkbox span {
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+  color: var(--ageaf-text-secondary);
+  line-height: 1.4;
+}
+
+/* Select Dropdown */
+select.ageaf-settings__input {
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%2339b98a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 40px;
+}
+
+/* Action Buttons */
+.ageaf-settings__actions {
+  display: flex;
+  gap: var(--ageaf-space-md);
+  align-items: center;
+  padding: var(--ageaf-space-xl);
+  background: var(--ageaf-black);
+  border-top: 1px solid var(--ageaf-border);
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+}
+
+.ageaf-settings__button {
+  padding: var(--ageaf-space-md) var(--ageaf-space-xl);
+  border-radius: var(--ageaf-radius-lg);
+  border: none;
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--ageaf-transition-base);
+  letter-spacing: 0.02em;
+  position: relative;
+  overflow: hidden;
+}
+
+.ageaf-settings__button::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.ageaf-settings__button:active::before {
+  width: 300px;
+  height: 300px;
+}
+
+.ageaf-settings__button:not(.is-secondary) {
+  background: linear-gradient(135deg,
+      var(--ageaf-emerald) 0%,
+      var(--ageaf-emerald-dark) 100%);
+  color: var(--ageaf-black);
+  box-shadow:
+    var(--ageaf-shadow-sm),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.ageaf-settings__button:not(.is-secondary):hover {
+  transform: translateY(-2px);
+  box-shadow:
+    var(--ageaf-shadow-md),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.ageaf-settings__button.is-secondary {
+  background: transparent;
+  color: var(--ageaf-text-secondary);
+  border: 1.5px solid var(--ageaf-border);
+}
+
+.ageaf-settings__button.is-secondary:hover {
+  background: var(--ageaf-emerald-soft);
+  border-color: var(--ageaf-emerald);
+  color: var(--ageaf-emerald-light);
+}
+
+.ageaf-settings__status {
+  margin-left: auto;
+  font-family: var(--ageaf-font-mono);
+  font-size: 12px;
+  color: var(--ageaf-emerald);
+  font-weight: 500;
+  padding: var(--ageaf-space-sm) var(--ageaf-space-md);
+  background: var(--ageaf-emerald-soft);
+  border-radius: var(--ageaf-radius-md);
+  border: 1px solid rgba(57, 185, 138, 0.25);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TOOL CALL APPROVAL
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-toolcall {
+  background: var(--ageaf-surface);
+  border: 1px solid var(--ageaf-border);
+  border-radius: var(--ageaf-radius-lg);
+  padding: var(--ageaf-space-lg);
+  margin: var(--ageaf-space-md) 0;
+  box-shadow: var(--ageaf-shadow-sm);
+}
+
+.ageaf-toolcall__title {
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ageaf-emerald);
+  margin-bottom: var(--ageaf-space-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ageaf-toolcall__detail {
+  font-family: var(--ageaf-font-mono);
+  font-size: 13px;
+  color: var(--ageaf-text-secondary);
+  background: var(--ageaf-black);
+  padding: var(--ageaf-space-md);
+  border-radius: var(--ageaf-radius-md);
+  margin: var(--ageaf-space-md) 0;
+  overflow-x: auto;
+  border: 1px solid var(--ageaf-border);
+}
+
+.ageaf-toolcall__actions {
+  display: flex;
+  gap: var(--ageaf-space-sm);
+  margin-top: var(--ageaf-space-md);
+}
+
+.ageaf-panel__apply {
+  padding: var(--ageaf-space-sm) var(--ageaf-space-lg);
+  background: linear-gradient(135deg, var(--ageaf-emerald) 0%, var(--ageaf-emerald-dark) 100%);
+  border: none;
+  border-radius: var(--ageaf-radius-md);
+  color: var(--ageaf-black);
+  font-family: var(--ageaf-font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--ageaf-transition-base);
+  box-shadow: var(--ageaf-shadow-sm);
+}
+
+.ageaf-panel__apply:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--ageaf-shadow-md);
+}
+
+.ageaf-panel__apply.is-secondary {
+  background: transparent;
+  color: var(--ageaf-text-secondary);
+  border: 1.5px solid var(--ageaf-border);
+}
+
+.ageaf-panel__apply.is-secondary:hover {
+  background: var(--ageaf-emerald-soft);
+  border-color: var(--ageaf-emerald);
+  color: var(--ageaf-emerald-light);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCROLL TO BOTTOM BUTTON
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-panel__scroll {
+  position: absolute;
+  bottom: 110px;
+  /* Moved up to avoid blocking toolbar */
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  background: var(--ageaf-charcoal);
+  border: 1px solid var(--ageaf-border);
+  border-radius: var(--ageaf-radius-full);
+  color: var(--ageaf-text-secondary);
+  font-family: var(--ageaf-font-body);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: var(--ageaf-shadow-lg);
+  transition: all var(--ageaf-transition-base);
+  z-index: 10;
+  white-space: nowrap;
+}
+
+.ageaf-panel__scroll:hover {
+  transform: translateX(-50%) translateY(-2px) scale(1.05);
+  box-shadow:
+    var(--ageaf-shadow-xl),
+    0 0 20px var(--ageaf-emerald-glow);
+}
+
+.ageaf-panel__scroll:active {
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RESPONSIVE DESIGN
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+  .ageaf-settings__panel {
+    grid-template-columns: 1fr;
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+  }
+
+  .ageaf-settings__sidebar {
+    display: none;
+  }
+
+  .ageaf-settings__content {
+    padding: var(--ageaf-space-xl);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ACCESSIBILITY
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Focus visible for keyboard navigation */
+:focus-visible {
+  outline: 2px solid var(--ageaf-emerald);
+  outline-offset: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   END OF STYLESHEET
+   ═══════════════════════════════════════════════════════════════════════════ */

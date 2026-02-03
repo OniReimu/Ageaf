@@ -1,0 +1,575 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * AGEAF TOOLBAR COMPONENTS - COMPACT BOTTOM CONTROLS
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Compact two-row bottom control layout:
+ * Row 1: Model selector | Thinking selector | Context ring | YOLO toggle
+ * Row 2: Session tabs (1,2,3) | Action buttons (6 buttons)
+ *
+ * Theme: Emerald Studio (#39b98a)
+ *
+ * Layout order (top to bottom):
+ * 1. Header
+ * 2. Chat messages
+ * 3. Input area
+ * 4. Bottom controls (two rows combined)
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BOTTOM CONTROLS CONTAINER (Compact two-row layout)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-bottom-controls {
+  display: flex;
+  flex-direction: column;
+  background: var(--ageaf-black);
+  border-top: 1px solid var(--ageaf-border);
+  order: 4;
+  /* After input area */
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CONTROL BAR (Row 1: Model, Thinking, Context, YOLO)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-control-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--ageaf-space-sm) var(--ageaf-space-lg);
+  gap: var(--ageaf-space-md);
+  border-bottom: 1px solid var(--ageaf-border);
+}
+
+.ageaf-control-bar__left {
+  display: flex;
+  align-items: center;
+  gap: var(--ageaf-space-md);
+  flex: 1;
+  min-width: 0;
+}
+
+.ageaf-control-bar__right {
+  display: flex;
+  align-items: center;
+  gap: var(--ageaf-space-lg);
+}
+
+/* Model & Thinking Selectors (Compact) */
+.ageaf-selector {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--ageaf-slate);
+  border: 1.5px solid var(--ageaf-border);
+  border-radius: var(--ageaf-radius-full);
+  font-family: var(--ageaf-font-body);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ageaf-text-primary);
+  cursor: pointer;
+  transition: all var(--ageaf-transition-fast);
+  white-space: nowrap;
+  height: 36px;
+}
+
+.ageaf-selector:hover {
+  border-color: var(--ageaf-emerald);
+  background: var(--ageaf-surface);
+  box-shadow: 0 0 0 2px var(--ageaf-emerald-soft);
+}
+
+.ageaf-selector__label {
+  font-size: 11px;
+  color: var(--ageaf-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: var(--ageaf-space-xs);
+}
+
+.ageaf-selector__value {
+  color: var(--ageaf-text-primary);
+  font-weight: 600;
+}
+
+.ageaf-selector__value--accent {
+  color: var(--ageaf-emerald-light);
+}
+
+/* Context Usage Ring (Compact) */
+.ageaf-context-ring {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ageaf-context-ring__circle {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+
+.ageaf-context-ring__svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.ageaf-context-ring__bg {
+  fill: none;
+  stroke: var(--ageaf-border);
+  stroke-width: 3;
+}
+
+.ageaf-context-ring__progress {
+  fill: none;
+  stroke: var(--ageaf-emerald);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.5s var(--ageaf-ease-out);
+  filter: drop-shadow(0 0 4px var(--ageaf-emerald-glow));
+}
+
+.ageaf-context-ring__percentage {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--ageaf-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ageaf-emerald);
+  text-shadow: 0 0 8px var(--ageaf-emerald-glow);
+}
+
+.ageaf-context-ring__label {
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ageaf-text-primary);
+}
+
+/* Warning state for high usage */
+.ageaf-context-ring--warning .ageaf-context-ring__progress {
+  stroke: var(--ageaf-warning);
+  filter: drop-shadow(0 0 4px rgba(255, 179, 87, 0.4));
+}
+
+.ageaf-context-ring--warning .ageaf-context-ring__percentage {
+  color: var(--ageaf-warning);
+  text-shadow: 0 0 8px rgba(255, 179, 87, 0.4);
+}
+
+/* Critical state for very high usage */
+.ageaf-context-ring--critical .ageaf-context-ring__progress {
+  stroke: var(--ageaf-error);
+  filter: drop-shadow(0 0 4px rgba(255, 107, 107, 0.4));
+}
+
+.ageaf-context-ring--critical .ageaf-context-ring__percentage {
+  color: var(--ageaf-error);
+  text-shadow: 0 0 8px rgba(255, 107, 107, 0.4);
+}
+
+/* YOLO Toggle Switch (Compact) */
+.ageaf-yolo-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ageaf-yolo-toggle__label {
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ageaf-text-primary);
+}
+
+.ageaf-yolo-toggle__switch {
+  position: relative;
+  width: 48px;
+  height: 26px;
+  background: var(--ageaf-border);
+  border-radius: var(--ageaf-radius-full);
+  cursor: pointer;
+  transition: all var(--ageaf-transition-base);
+  border: 1.5px solid transparent;
+  flex: 0 0 auto;
+}
+
+.ageaf-yolo-toggle__switch::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: var(--ageaf-text-primary);
+  border-radius: 50%;
+  transition: all var(--ageaf-transition-base);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.ageaf-yolo-toggle__switch:hover {
+  border-color: var(--ageaf-emerald-soft);
+}
+
+/* Active state */
+.ageaf-yolo-toggle__switch.is-active {
+  background: linear-gradient(135deg, var(--ageaf-emerald) 0%, var(--ageaf-emerald-dark) 100%);
+  border-color: var(--ageaf-emerald);
+  box-shadow: 0 0 0 2px var(--ageaf-emerald-soft);
+}
+
+.ageaf-yolo-toggle__switch.is-active::before {
+  left: calc(100% - 20px);
+  background: var(--ageaf-black);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ACTIONS ROW (Row 2: Session tabs + Action buttons)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ageaf-space-md);
+  padding: var(--ageaf-space-sm) var(--ageaf-space-lg);
+}
+
+.ageaf-sessions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ageaf-sessions::-webkit-scrollbar {
+  display: none;
+}
+
+.ageaf-session-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: var(--ageaf-slate);
+  border: 1.5px solid var(--ageaf-border);
+  border-radius: 50%;
+  font-family: var(--ageaf-font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ageaf-text-secondary);
+  cursor: pointer;
+  transition: all var(--ageaf-transition-base);
+  flex-shrink: 0;
+}
+
+.ageaf-session-tab:hover {
+  border-color: var(--ageaf-emerald);
+  background: var(--ageaf-surface);
+  color: var(--ageaf-emerald-light);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(57, 185, 138, 0.2);
+}
+
+.ageaf-session-tab.is-active {
+  background: linear-gradient(135deg, var(--ageaf-emerald) 0%, var(--ageaf-emerald-dark) 100%);
+  border-color: var(--ageaf-emerald);
+  color: var(--ageaf-black);
+  box-shadow:
+    0 0 0 3px var(--ageaf-emerald-soft),
+    0 4px 12px rgba(57, 185, 138, 0.3);
+}
+
+.ageaf-session-tab.is-active:hover {
+  transform: translateY(-2px) scale(1.05);
+}
+
+/* Close button on hover */
+.ageaf-session-tab__close {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 16px;
+  height: 16px;
+  background: var(--ageaf-error);
+  border: 2px solid var(--ageaf-black);
+  border-radius: 50%;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--ageaf-transition-fast);
+}
+
+.ageaf-session-tab:hover .ageaf-session-tab__close {
+  display: flex;
+}
+
+.ageaf-session-tab__close:hover {
+  transform: scale(1.2);
+  background: #ff4d4d;
+}
+
+.ageaf-session-tab__close::before,
+.ageaf-session-tab__close::after {
+  content: '';
+  position: absolute;
+  width: 8px;
+  height: 1.5px;
+  background: white;
+}
+
+.ageaf-session-tab__close::before {
+  transform: rotate(45deg);
+}
+
+.ageaf-session-tab__close::after {
+  transform: rotate(-45deg);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TOOLBAR ACTIONS (Part of Row 2)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.ageaf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ageaf-toolbar-action {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  background: var(--ageaf-slate);
+  border: 1.5px solid var(--ageaf-border);
+  border-radius: var(--ageaf-radius-lg);
+  color: var(--ageaf-text-secondary);
+  cursor: pointer;
+  transition: all var(--ageaf-transition-base);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.ageaf-toolbar-action::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--ageaf-emerald);
+  opacity: 0;
+  transition: opacity var(--ageaf-transition-fast);
+}
+
+.ageaf-toolbar-action:hover::before {
+  opacity: 0.1;
+}
+
+.ageaf-toolbar-action:hover {
+  border-color: var(--ageaf-emerald);
+  color: var(--ageaf-emerald-light);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(57, 185, 138, 0.2);
+}
+
+.ageaf-toolbar-action:active {
+  transform: translateY(0);
+}
+
+.ageaf-toolbar-action__icon {
+  width: 18px;
+  height: 18px;
+  position: relative;
+  z-index: 1;
+}
+
+/* Badge for file count, etc. (Compact) */
+.ageaf-toolbar-action__badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  background: var(--ageaf-emerald);
+  border: 1.5px solid var(--ageaf-black);
+  border-radius: var(--ageaf-radius-full);
+  font-family: var(--ageaf-font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--ageaf-black);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+/* Tooltip on hover */
+.ageaf-toolbar-action__tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  background: var(--ageaf-charcoal);
+  border: 1px solid var(--ageaf-emerald);
+  border-radius: var(--ageaf-radius-md);
+  font-family: var(--ageaf-font-body);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ageaf-text-primary);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--ageaf-transition-fast);
+  z-index: 100;
+  box-shadow: var(--ageaf-shadow-md);
+}
+
+.ageaf-toolbar-action__tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--ageaf-emerald);
+}
+
+.ageaf-toolbar-action:hover .ageaf-toolbar-action__tooltip {
+  opacity: 1;
+}
+
+/* Destructive action (clear, close) */
+.ageaf-toolbar-action--destructive:hover {
+  border-color: var(--ageaf-error);
+  color: var(--ageaf-error);
+  box-shadow: 0 4px 12px rgba(255, 107, 107, 0.2);
+}
+
+.ageaf-toolbar-action--destructive::before {
+  background: var(--ageaf-error);
+}
+
+/* Primary action (new chat) */
+.ageaf-toolbar-action--primary {
+  background: linear-gradient(135deg, var(--ageaf-emerald) 0%, var(--ageaf-emerald-dark) 100%);
+  border-color: var(--ageaf-emerald);
+  color: var(--ageaf-black);
+}
+
+.ageaf-toolbar-action--primary::before {
+  background: white;
+  opacity: 0;
+}
+
+.ageaf-toolbar-action--primary:hover::before {
+  opacity: 0.15;
+}
+
+.ageaf-toolbar-action--primary:hover {
+  transform: translateY(-2px) scale(1.05);
+  box-shadow:
+    0 0 0 3px var(--ageaf-emerald-soft),
+    0 4px 16px rgba(57, 185, 138, 0.4);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RESPONSIVE ADJUSTMENTS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+  .ageaf-control-bar {
+    padding: 6px 12px;
+    gap: 8px;
+  }
+
+  .ageaf-selector {
+    font-size: 12px;
+    padding: 6px 12px;
+    height: 32px;
+  }
+
+  .ageaf-context-ring__circle {
+    width: 32px;
+    height: 32px;
+  }
+
+  .ageaf-yolo-toggle__switch {
+    width: 42px;
+    height: 24px;
+  }
+
+  .ageaf-actions-row {
+    padding: 6px 12px;
+    gap: 8px;
+  }
+
+  .ageaf-session-tab,
+  .ageaf-toolbar-action {
+    width: 34px;
+    height: 34px;
+  }
+
+  .ageaf-toolbar-action__icon {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ANIMATIONS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes ageaf-context-pulse {
+
+  0%,
+  100% {
+    filter: drop-shadow(0 0 4px var(--ageaf-emerald-glow));
+  }
+
+  50% {
+    filter: drop-shadow(0 0 8px var(--ageaf-emerald-glow));
+  }
+}
+
+.ageaf-context-ring__progress {
+  animation: ageaf-context-pulse 2s ease-in-out infinite;
+}
+
+@keyframes ageaf-badge-pop {
+  0% {
+    transform: scale(0);
+  }
+
+  50% {
+    transform: scale(1.2);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+.ageaf-toolbar-action__badge {
+  animation: ageaf-badge-pop 0.3s var(--ageaf-ease-out);
+}
