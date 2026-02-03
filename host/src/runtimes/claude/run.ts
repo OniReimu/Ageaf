@@ -205,15 +205,37 @@ If asked about the model/runtime, use this note and do not guess.`;
     '- Keep responses concise and avoid long project summaries unless asked.',
     '- Keep formatting minimal and readable; brief bullets and task checkboxes are OK.',
   ].join('\n');
+  const hasSelection = contextForPrompt && typeof contextForPrompt.selection === 'string' && contextForPrompt.selection.trim().length > 0;
+
   const patchGuidance = [
-    'Patch proposals (optional):',
-    '- If you want the user to apply edits in Overleaf, include exactly one fenced code block labeled `ageaf-patch` containing ONLY a JSON object matching one of:',
-    '- { "kind":"replaceSelection", "text":"..." }',
-    '- { "kind":"replaceRangeInFile", "filePath":"main.tex", "expectedOldText":"...", "text":"...", "from":123, "to":456 } (from/to optional but if used must both be provided)',
-    '- { "kind":"insertAtCursor", "text":"..." }',
+    'Patch proposals (Review Change Cards):',
+    '- Use an `ageaf-patch` block when the user wants to modify existing Overleaf content (rewrite/edit selection, update a file, fix LaTeX errors, etc).',
+    '- IMPORTANT: If the user has selected/quoted/highlighted text AND uses editing keywords (proofread, paraphrase, rewrite, rephrase, refine, improve),',
+    '  you MUST use an `ageaf-patch` review change card instead of a normal fenced code block.',
+    '- If the user is asking for general info or standalone writing (e.g. an abstract draft, explanation, ideas), do NOT emit `ageaf-patch` — put the full answer directly in the visible response.',
+    '- If you are writing NEW content (not editing existing), prefer a normal fenced code block (e.g. ```tex).',
+    '- If you DO want the user to apply edits to existing Overleaf content, include exactly one fenced code block labeled `ageaf-patch` containing ONLY a JSON object matching one of:',
+    '  - { "kind":"replaceSelection", "text":"..." } — Use when editing selected text',
+    '  - { "kind":"replaceRangeInFile", "filePath":"main.tex", "expectedOldText":"...", "text":"...", "from":123, "to":456 } — Use for file-level edits',
+    '  - { "kind":"insertAtCursor", "text":"..." } — Use ONLY when explicitly asked to insert at cursor',
     '- Put all explanation/change notes outside the `ageaf-patch` code block.',
-    '- Also show the proposed new text to the user separately (e.g., in a ` ```latex ` code block).',
+    '- The /humanizer skill should be used when editing text to ensure natural, human-sounding writing (removing AI patterns).',
+    '- Exception: Only skip the review change card if user explicitly says "no review card", "without patch", or "just show me the code".',
   ].join('\n');
+
+  const selectionPatchGuidance = hasSelection
+    ? [
+      '\nSelection edits (CRITICAL - Review Change Card):',
+      '- If `Context.selection` is present AND the user uses words like "proofread", "paraphrase", "rewrite", "rephrase", "refine", or "improve",',
+      '  you MUST emit an `ageaf-patch` review change card with { "kind":"replaceSelection", "text":"..." }.',
+      '- This applies whether the user clicked "Rewrite Selection" button OR manually typed a message with these keywords while having text selected.',
+      '- Do NOT just output a normal fenced code block (e.g., ```tex) when editing selected content — use the ageaf-patch review change card instead.',
+      '- The review change card allows users to accept/reject the changes before applying them to Overleaf.',
+      '- EXCEPTION: Only use a normal code block if the user explicitly says "no review card", "without patch", or "just show me the code".',
+      '- The /humanizer skill should be used to ensure natural, human-sounding writing (removing AI patterns).',
+      '- Keep the visible response short (change notes only, NOT the full rewritten text).',
+    ].join('\n')
+    : '';
   const fileUpdateGuidance = [
     'Overleaf file edits:',
     '- The user may include one or more `[Overleaf file: <path>]` blocks showing the current file contents.',
@@ -238,6 +260,7 @@ If asked about the model/runtime, use this note and do not guess.`;
     'You are Ageaf, a concise Overleaf assistant.',
     responseGuidance,
     patchGuidance,
+    selectionPatchGuidance,
     hasOverleafFileBlocks ? fileUpdateGuidance : '',
     greetingMode ? greetingGuidance : 'If the user message is not a greeting, respond normally but stay concise.',
   ];

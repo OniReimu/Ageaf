@@ -4663,7 +4663,34 @@ const Panel = () => {
     try {
       const selection = await bridge.requestSelection();
       const resolvedMessageText = await resolveMentionFiles(text);
-      const { skillsPrompt, strippedText } = await processSkillDirectives(resolvedMessageText);
+
+      // Auto-invoke humanizer skill for writing/editing actions
+      const autoInvokeHumanizer = (messageText: string): string => {
+        // Check if user explicitly opted out
+        const optOutPatterns = /(?:don't|do not|without|skip|no)\s+(?:humanizer|humanize)/i;
+        if (optOutPatterns.test(messageText)) {
+          return messageText;
+        }
+
+        // Check if humanizer is already invoked
+        if (/\/humanizer/.test(messageText)) {
+          return messageText;
+        }
+
+        // Check for rewrite/editing keywords
+        const triggerKeywords = /\b(proofread|paraphrase|rewrite|rephrase|write|edit|refine|improve)\b/i;
+        const hasSelection = selection && typeof selection.text === 'string' && selection.text.trim().length > 0;
+
+        // Auto-invoke for rewrite selection or when trigger keywords are present
+        if (action === 'rewrite' || (hasSelection && triggerKeywords.test(messageText)) || triggerKeywords.test(messageText)) {
+          return `/humanizer ${messageText}`;
+        }
+
+        return messageText;
+      };
+
+      const messageWithAutoSkills = autoInvokeHumanizer(resolvedMessageText);
+      const { skillsPrompt, strippedText } = await processSkillDirectives(messageWithAutoSkills);
       const finalMessageText = strippedText;
       const options = await getOptions();
       const runtimeModel =

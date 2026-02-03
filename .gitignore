@@ -59,6 +59,7 @@ progress.md
 findings.md
 task_plan.md
 STATE_SUMMARY.md
+docs/*
 
 # Installer
 dist-native/

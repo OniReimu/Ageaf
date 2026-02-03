@@ -44,6 +44,14 @@
       "tags": [],
       "source": "k-dense",
       "path": "skills/k-dense/citation-management/SKILL.md"
+    },
+    {
+      "id": "custom/humanizer",
+      "name": "humanizer",
+      "description": "Remove signs of AI-generated writing from text. Automatically invoked when rewriting selections or when users use words like 'proofread', 'paraphrase', 'rewrite', 'rephrase', 'write', 'edit', 'refine', or 'improve' (unless explicitly told not to). Based on Wikipedia's comprehensive 'Signs of AI writing' guide. Detects and fixes 24 patterns including inflated symbolism, promotional language, superficial -ing analyses, vague attributions, em dash overuse, rule of three, AI vocabulary words, negative parallelisms, and excessive conjunctive phrases.",
+      "tags": ["Writing", "Editing", "Text Improvement", "AI Detection", "Proofreading"],
+      "source": "custom",
+      "path": "skills/custom/humanizer/SKILL.md"
     }
   ]
 }

@@ -474,6 +474,11 @@ function buildPrompt(
     'You are rewriting a selected LaTeX region from Overleaf.',
     'Preserve LaTeX commands, citations (\\cite{}), labels (\\label{}), refs (\\ref{}), and math.',
     '',
+    'IMPORTANT: When rewriting/editing text, the /humanizer skill should be automatically invoked to remove AI writing patterns.',
+    'The humanizer skill detects and fixes 24 AI writing patterns including inflated symbolism, promotional language,',
+    'superficial -ing analyses, vague attributions, AI vocabulary words, and excessive hedging.',
+    'This ensures the rewritten text sounds natural and human-written rather than AI-generated.',
+    '',
     'User-visible output:',
     '- First: a short bullet list of change notes (NOT in a code block).',
     '- Do NOT include the full rewritten text in the visible response.',
@@ -488,23 +493,31 @@ function buildPrompt(
   ].join('\n');
 
   const patchGuidance = [
-    'Patch proposals (use ONLY when editing Overleaf; optional):',
-    '- Use an `ageaf-patch` block ONLY if the user is asking you to modify Overleaf content (rewrite/edit selection, update a file, fix LaTeX errors, etc).',
-    '- If the user is asking for general info or standalone writing (e.g. an abstract draft, explanation, today’s weather), do NOT emit `ageaf-patch` — put the full answer directly in the visible response.',
-    '- If you are outputting LaTeX meant to be pasted into Overleaf, prefer a fenced code block (e.g. ```tex).',
-    '- If you DO want the user to apply edits in Overleaf, include exactly one fenced code block labeled `ageaf-patch` containing ONLY a JSON object matching one of:',
-    '- { "kind":"replaceSelection", "text":"..." }',
-    '- { "kind":"replaceRangeInFile", "filePath":"main.tex", "expectedOldText":"...", "text":"...", "from":123, "to":456 } (from/to optional but if used must both be provided)',
-    '- { "kind":"insertAtCursor", "text":"..." }',
+    'Patch proposals (Review Change Cards):',
+    '- Use an `ageaf-patch` block when the user wants to modify existing Overleaf content (rewrite/edit selection, update a file, fix LaTeX errors, etc).',
+    '- IMPORTANT: If the user has selected/quoted/highlighted text AND uses editing keywords (proofread, paraphrase, rewrite, rephrase, refine, improve),',
+    '  you MUST use an `ageaf-patch` review change card instead of a normal fenced code block.',
+    '- If the user is asking for general info or standalone writing (e.g. an abstract draft, explanation, ideas), do NOT emit `ageaf-patch` — put the full answer directly in the visible response.',
+    '- If you are writing NEW content (not editing existing), prefer a normal fenced code block (e.g. ```tex).',
+    '- If you DO want the user to apply edits to existing Overleaf content, include exactly one fenced code block labeled `ageaf-patch` containing ONLY a JSON object matching one of:',
+    '  - { "kind":"replaceSelection", "text":"..." } — Use when editing selected text',
+    '  - { "kind":"replaceRangeInFile", "filePath":"main.tex", "expectedOldText":"...", "text":"...", "from":123, "to":456 } — Use for file-level edits',
+    '  - { "kind":"insertAtCursor", "text":"..." } — Use ONLY when explicitly asked to insert at cursor',
     '- Put all explanation/change notes outside the `ageaf-patch` code block.',
-    '- Avoid `insertAtCursor` patches unless the user explicitly asks to insert at the cursor.',
+    '- Exception: Only skip the review change card if user explicitly says "no review card", "without patch", or "just show me the code".',
   ].join('\n');
 
   const selectionPatchGuidance = hasSelection
     ? [
-      'Selection edits:',
-      '- If `Context.selection` is present and the user is asking you to proofread/rewrite/edit the selection, prefer emitting a `ageaf-patch` with { "kind":"replaceSelection", "text":"..." }.',
-      '- Keep the visible response short (change notes only).',
+      'Selection edits (CRITICAL - Review Change Card):',
+      '- If `Context.selection` is present AND the user uses words like "proofread", "paraphrase", "rewrite", "rephrase", "refine", or "improve",',
+      '  you MUST emit an `ageaf-patch` review change card with { "kind":"replaceSelection", "text":"..." }.',
+      '- This applies whether the user clicked "Rewrite Selection" button OR manually typed a message with these keywords while having text selected.',
+      '- Do NOT just output a normal fenced code block (e.g., ```tex) when editing selected content — use the ageaf-patch review change card instead.',
+      '- The review change card allows users to accept/reject the changes before applying them to Overleaf.',
+      '- EXCEPTION: Only use a normal code block if the user explicitly says "no review card", "without patch", or "just show me the code".',
+      '- The /humanizer skill should be used to ensure natural, human-sounding writing (removing AI patterns).',
+      '- Keep the visible response short (change notes only, NOT the full rewritten text).',
     ].join('\n')
     : '';
 
