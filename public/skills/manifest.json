@@ -30,6 +30,14 @@
       "path": "skills/anthropic/doc-coauthoring/SKILL.md"
     },
     {
+      "id": "custom/humanizer",
+      "name": "humanizer",
+      "description": "Remove signs of AI-generated writing from text. Use when editing or reviewing\ntext to make it sound more natural and human-written. Based on Wikipedia's\ncomprehensive \"Signs of AI writing\" guide. Detects and fixes patterns including:\ninflated symbolism, promotional language, superficial -ing analyses, vague\nattributions, em dash overuse, rule of three, AI vocabulary words, negative\nparallelisms, and excessive conjunctive phrases.\n",
+      "tags": [],
+      "source": "custom",
+      "path": "skills/custom/humanizer/SKILL.md"
+    },
+    {
       "id": "custom/paper-reviewer",
       "name": "paper-reviewer",
       "description": "This skill should be used when users request peer reviews of academic papers or manuscripts. It produces structured, evidence-based reviews following top-tier venue standards with no scores or accept/reject decisions. Activates on requests like \"review this paper\", \"provide a peer review\", or \"analyze this manuscript\".",
@@ -44,14 +52,6 @@
       "tags": [],
       "source": "k-dense",
       "path": "skills/k-dense/citation-management/SKILL.md"
-    },
-    {
-      "id": "custom/humanizer",
-      "name": "humanizer",
-      "description": "Remove signs of AI-generated writing from text. Automatically invoked when rewriting selections or when users use words like 'proofread', 'paraphrase', 'rewrite', 'rephrase', 'write', 'edit', 'refine', or 'improve' (unless explicitly told not to). Based on Wikipedia's comprehensive 'Signs of AI writing' guide. Detects and fixes 24 patterns including inflated symbolism, promotional language, superficial -ing analyses, vague attributions, em dash overuse, rule of three, AI vocabulary words, negative parallelisms, and excessive conjunctive phrases.",
-      "tags": ["Writing", "Editing", "Text Improvement", "AI Detection", "Proofreading"],
-      "source": "custom",
-      "path": "skills/custom/humanizer/SKILL.md"
     }
   ]
 }

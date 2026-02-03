@@ -757,10 +757,12 @@ const Panel = () => {
   const [mentionResults, setMentionResults] = useState<OverleafEntry[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
+  const mentionListRef = useRef<HTMLDivElement | null>(null);
   const [skillOpen, setSkillOpen] = useState(false);
   const [skillResults, setSkillResults] = useState<SkillEntry[]>([]);
   const [skillIndex, setSkillIndex] = useState(0);
   const skillRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
+  const skillListRef = useRef<HTMLDivElement | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const attachmentErrorTimerRef = useRef<number | null>(null);
   const [isDropActive, setIsDropActive] = useState(false);
@@ -1135,6 +1137,24 @@ const Panel = () => {
       window.removeEventListener('keydown', onKeyDown);
     };
   }, []);
+
+  // Scroll selected skill option into view when navigating with keyboard
+  useEffect(() => {
+    if (!skillOpen || !skillListRef.current) return;
+    const activeItem = skillListRef.current.querySelector('.ageaf-skill__option.is-active');
+    if (activeItem) {
+      activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [skillIndex, skillOpen]);
+
+  // Scroll selected mention option into view when navigating with keyboard
+  useEffect(() => {
+    if (!mentionOpen || !mentionListRef.current) return;
+    const activeItem = mentionListRef.current.querySelector('.ageaf-mention__option.is-active');
+    if (activeItem) {
+      activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [mentionIndex, mentionOpen]);
 
   const checkConnectionHealth = async () => {
     const HEALTH_TTL_MS = 15_000;
@@ -6732,6 +6752,7 @@ const Panel = () => {
           {mentionOpen ? (
             <div
               class="ageaf-mention"
+              ref={mentionListRef}
               onWheel={(event) => {
                 // Ensure the dropdown itself scrolls (trackpad wheel often scrolls the chat instead).
                 // We scroll manually to be robust across browsers' passive wheel defaults.
@@ -6777,6 +6798,7 @@ const Panel = () => {
           {skillOpen ? (
             <div
               class="ageaf-skill"
+              ref={skillListRef}
               onWheel={(event) => {
                 const el = event.currentTarget as HTMLElement | null;
                 if (!el) return;
