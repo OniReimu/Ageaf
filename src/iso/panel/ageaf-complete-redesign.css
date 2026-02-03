@@ -16,7 +16,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
-@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,600;1,6..72,400&family=JetBrains+Mono:wght@400;500;600&family=Work+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,600;1,6..72,400&family=JetBrains+Mono:wght@400;500;600&family=Work+Sans:wght@400;500;600;700&family=Permanent+Marker&family=Orbitron:wght@400;700&display=swap');
 
 /* ═══════════════════════════════════════════════════════════════════════════
    DESIGN TOKENS
@@ -212,14 +212,49 @@
 }
 
 .ageaf-panel__name {
-  font-family: var(--ageaf-font-display);
-  font-size: 20px;
-  font-weight: 600;
-  font-style: italic;
-  letter-spacing: -0.02em;
+  font-family: 'Permanent Marker', cursive;
+  font-size: 24px;
+  font-weight: 400;
   color: var(--ageaf-text-primary);
-  line-height: 1.2;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  position: relative;
+  display: inline-block;
+
+  /* Cyberpunk Neon Glow */
+  text-shadow:
+    0 0 5px rgba(255, 0, 255, 0.7),
+    0 0 10px rgba(255, 0, 255, 0.3),
+    2px 2px 0 rgba(0, 255, 255, 0.7);
+
+  animation: ageaf-glitch 4s infinite linear alternate-reverse;
+}
+
+@keyframes ageaf-glitch {
+  0% {
+    text-shadow: 2px 2px 0 rgba(0, 255, 255, 0.7), -2px -2px 0 rgba(255, 0, 255, 0.7);
+    transform: skew(0deg);
+  }
+
+  2% {
+    text-shadow: 3px -3px 0 rgba(0, 255, 255, 0.7), -3px 3px 0 rgba(255, 0, 255, 0.7);
+    transform: skew(-2deg);
+  }
+
+  4% {
+    text-shadow: 2px 2px 0 rgba(0, 255, 255, 0.7), -2px -2px 0 rgba(255, 0, 255, 0.7);
+    transform: skew(0deg);
+  }
+
+  98% {
+    text-shadow: 2px 2px 0 rgba(0, 255, 255, 0.7), -2px -2px 0 rgba(255, 0, 255, 0.7);
+    transform: skew(0deg);
+  }
+
+  100% {
+    text-shadow: -3px 3px 0 rgba(0, 255, 255, 0.7), 3px -3px 0 rgba(255, 0, 255, 0.7);
+    transform: skew(2deg);
+  }
 }
 
 .ageaf-panel__intro {
@@ -377,13 +412,7 @@
   }
 }
 
-.ageaf-message--assistant {
-  /* Assistant messages stay left-aligned */
-}
 
-.ageaf-message--user {
-  /* User messages could be right-aligned if needed */
-}
 
 .ageaf-message--system {
   opacity: 0.85;
