@@ -31,14 +31,32 @@ export class CodexAppServer {
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly listeners = new Set<(message: JsonRpcMessage) => void>();
+  private readonly stderrListeners = new Set<(line: string) => void>();
   private started = false;
+  private initialized = false;
+  private initializing: Promise<void> | null = null;
 
   constructor(private readonly config: CodexAppServerConfig) {}
+
+  getPid() {
+    return this.child?.pid ?? null;
+  }
+
+  getCwd() {
+    return this.config.cwd;
+  }
 
   subscribe(listener: (message: JsonRpcMessage) => void) {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
+    };
+  }
+
+  subscribeStderr(listener: (line: string) => void) {
+    this.stderrListeners.add(listener);
+    return () => {
+      this.stderrListeners.delete(listener);
     };
   }
 
@@ -68,9 +86,19 @@ export class CodexAppServer {
     });
     this.child = child;
 
+    if (process.env.AGEAF_DEBUG_CLI === 'true') {
+      console.log('[CODEX DEBUG] spawning app-server', {
+        command,
+        cwd: this.config.cwd,
+        pid: child.pid ?? null,
+      });
+    }
+
     const handleChildError = (error: Error) => {
       this.child = null;
       this.started = false;
+      this.initialized = false;
+      this.initializing = null;
       for (const pending of this.pending.values()) {
         pending.reject(error);
       }
@@ -82,6 +110,8 @@ export class CodexAppServer {
     child.on('exit', () => {
       this.child = null;
       this.started = false;
+      this.initialized = false;
+      this.initializing = null;
       for (const pending of this.pending.values()) {
         pending.reject(new Error('Codex app-server exited'));
       }
@@ -133,6 +163,46 @@ export class CodexAppServer {
         }
       });
     }
+
+    const stderr = child.stderr;
+    if (stderr) {
+      const rl = createInterface({ input: stderr });
+      rl.on('line', (line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+
+        for (const listener of this.stderrListeners) {
+          listener(trimmed);
+        }
+
+        if (process.env.AGEAF_DEBUG_CLI === 'true') {
+          // Keep this short; stderr can be noisy and may include user content.
+          console.log('[CODEX STDERR]', trimmed.slice(0, 300));
+        }
+      });
+    }
+  }
+
+  async ensureInitialized() {
+    await this.start();
+    if (this.initialized) return;
+    if (this.initializing) return this.initializing;
+
+    this.initializing = (async () => {
+      const response = await this.request('initialize', {
+        clientInfo: { name: 'ageaf', title: 'Ageaf', version: '0.0.0' },
+      });
+      if ((response as any).error) {
+        const message = String((response as any).error?.message ?? 'initialize failed');
+        throw new Error(message);
+      }
+      await this.notify('initialized');
+      this.initialized = true;
+    })().finally(() => {
+      this.initializing = null;
+    });
+
+    return this.initializing;
   }
 
   async request(
@@ -197,7 +267,15 @@ export class CodexAppServer {
     const child = this.child;
     this.child = null;
     this.started = false;
+    this.initialized = false;
+    this.initializing = null;
     if (child) {
+      if (process.env.AGEAF_DEBUG_CLI === 'true') {
+        console.log('[CODEX DEBUG] stopping app-server', {
+          pid: child.pid ?? null,
+          cwd: this.config.cwd,
+        });
+      }
       child.kill();
     }
     for (const pending of this.pending.values()) {
@@ -207,8 +285,7 @@ export class CodexAppServer {
   }
 }
 
-let cachedServer: CodexAppServer | null = null;
-let cachedKey: string | null = null;
+const cachedServers = new Map<string, CodexAppServer>();
 
 function getCacheKey(config: CodexAppServerConfig): string {
   return [
@@ -220,30 +297,37 @@ function getCacheKey(config: CodexAppServerConfig): string {
 
 export async function getCodexAppServer(config: CodexAppServerConfig) {
   const key = getCacheKey(config);
-  if (cachedServer && cachedKey === key) {
-    await cachedServer.start();
-    return cachedServer;
-  }
-
-  if (cachedServer) {
-    await cachedServer.stop();
+  const existing = cachedServers.get(key);
+  if (existing) {
+    await existing.ensureInitialized();
+    if (process.env.AGEAF_DEBUG_CLI === 'true') {
+      console.log('[CODEX DEBUG] reusing app-server', {
+        pid: existing.getPid(),
+        cwd: existing.getCwd(),
+      });
+    }
+    return existing;
   }
 
   const server = new CodexAppServer(config);
-  cachedServer = server;
-  cachedKey = key;
-  await server.start();
-  await server.request('initialize', {
-    clientInfo: { name: 'ageaf', title: 'Ageaf', version: '0.0.0' },
-  });
-  await server.notify('initialized');
-  return server;
+  cachedServers.set(key, server);
+  try {
+    await server.ensureInitialized();
+    return server;
+  } catch (error) {
+    cachedServers.delete(key);
+    try {
+      await server.stop();
+    } catch {
+      // ignore cleanup failures
+    }
+    throw error;
+  }
 }
 
 export async function resetCodexAppServerForTests() {
-  if (!cachedServer) return;
-  await cachedServer.stop();
-  cachedServer = null;
-  cachedKey = null;
+  if (cachedServers.size === 0) return;
+  const servers = Array.from(cachedServers.values());
+  cachedServers.clear();
+  await Promise.all(servers.map((server) => server.stop().catch(() => {})));
 }
-

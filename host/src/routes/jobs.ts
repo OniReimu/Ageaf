@@ -271,7 +271,7 @@ export function registerJobs(server: FastifyInstance) {
             });
             return;
           }
-          await runCodexJob(payload, emitEvent);
+          await runCodexJob(payload, emitEvent, { jobId: id });
           return;
         }
 

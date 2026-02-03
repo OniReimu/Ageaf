@@ -1385,7 +1385,7 @@ const Panel = () => {
           metadata = await fetchClaudeRuntimeMetadata(options);
           if (cancelled) return;
           models = metadata.models ?? [];
-          thinkingModes = (metadata.thinkingModes ?? FALLBACK_THINKING_MODES).map((mode) => ({
+          thinkingModes = (metadata.thinkingModes ?? FALLBACK_THINKING_MODES).map((mode: ThinkingMode) => ({
             ...mode,
             label: mode.label === 'Medium' ? 'Med' : mode.label,
           }));
