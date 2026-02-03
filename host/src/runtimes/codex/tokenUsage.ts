@@ -35,7 +35,18 @@ export function parseCodexTokenUsage(payload: unknown): {
   if (!raw || typeof raw !== 'object') return null;
 
   const total = (raw as any).total ?? {};
+  const last = (raw as any).last ?? {};
+
   const usedTokensRaw = pickFirstFinite([
+    // Prioritize 'last' fields which reflect current context usage
+    last.contextTokens,
+    last.context_tokens,
+    last.totalTokens, // Correct field for current turn total usage
+    last.total_tokens,
+    last.inputTokens,
+    last.input_tokens,
+
+    // Fallback to 'total' fields (may be cumulative)
     total.contextTokens,
     total.context_tokens,
     total.promptTokens,
@@ -44,6 +55,8 @@ export function parseCodexTokenUsage(payload: unknown): {
     total.input_tokens,
     total.totalTokens,
     total.total_tokens,
+
+    // Legacy fields
     (raw as any).contextTokens,
     (raw as any).context_tokens,
     (raw as any).usedTokens,

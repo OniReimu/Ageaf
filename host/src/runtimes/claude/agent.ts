@@ -303,10 +303,11 @@ async function runQuery(
     const [model, usage] = picked as [string, any];
     const usedTokens =
       (typeof usage?.inputTokens === 'number' ? usage.inputTokens : 0) +
-      (typeof usage?.cacheReadInputTokens === 'number' ? usage.cacheReadInputTokens : 0) +
-      (typeof usage?.cacheCreationInputTokens === 'number' ? usage.cacheCreationInputTokens : 0);
+      (typeof usage?.outputTokens === 'number' ? usage?.outputTokens : 0) +
+      (typeof usage?.cacheReadInputTokens === 'number' ? usage?.cacheReadInputTokens : 0) +
+      (typeof usage?.cacheCreationInputTokens === 'number' ? usage?.cacheCreationInputTokens : 0);
     const contextWindow =
-      typeof usage?.contextWindow === 'number' ? usage.contextWindow : null;
+      typeof usage?.contextWindow === 'number' ? usage?.contextWindow : null;
 
     emitEvent({
       event: 'usage',
