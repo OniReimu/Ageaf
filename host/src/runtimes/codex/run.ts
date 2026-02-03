@@ -10,8 +10,8 @@ import { validatePatch } from '../../validate.js';
 import { getCodexAppServer } from './appServer.js';
 import { parseCodexTokenUsage } from './tokenUsage.js';
 
-// Debug logging to console (enabled via AGEAF_CODEX_DEBUG=true)
-const debugToConsole = process.env.AGEAF_CODEX_DEBUG === 'true';
+// Debug logging to console (enabled via AGEAF_DEBUG_CLI=true)
+const debugToConsole = process.env.AGEAF_DEBUG_CLI === 'true';
 function debugLog(message: string, data?: Record<string, unknown>) {
   if (!debugToConsole) return;
   console.log(`[CODEX DEBUG] ${message}`, data ?? '');

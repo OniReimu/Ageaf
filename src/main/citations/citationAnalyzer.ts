@@ -171,21 +171,19 @@ export async function warmTexCitationCache(): Promise<void> {
 
 export async function analyzeCitations(
   bibContent: string,
-  bibFileName: string
+  _bibFileName: string
 ): Promise<CitationAnalysisResult> {
   // Parse .bib file
   const entries = parseBibTeXFile(bibContent);
 
   // Duplicate title detection (within this bib file)
   const titleBuckets = new Map<string, string[]>();
-  const titleByKey = new Map<string, string>();
   for (const entry of entries) {
     const block = bibContent.slice(entry.startPos, Math.min(entry.endPos, bibContent.length));
     const title = extractFieldValue(block, 'title');
     if (!title) continue;
     const norm = normalizeTitle(title);
     if (!norm) continue;
-    titleByKey.set(entry.key, norm);
     const list = titleBuckets.get(norm) ?? [];
     list.push(entry.key);
     titleBuckets.set(norm, list);
@@ -201,22 +199,16 @@ export async function analyzeCitations(
     }
   }
 
-  // Discover all .tex files in project
-  const projectFiles = detectProjectFilesHeuristic();
-  const texFiles = projectFiles.filter(f => f.ext === 'tex');
-
-  // Collect citations from all .tex files
+  // Initialize usage map with empty entries
   const usageMap = new Map<string, CitationUsage>();
-
-  // Initialize usage map
-  entries.forEach(entry => {
+  for (const entry of entries) {
     usageMap.set(entry.key, {
       citationKey: entry.key,
       usedInFiles: [],
       totalUsages: 0,
-      isUsed: false
+      isUsed: false,
     });
-  });
+  }
 
   // Fill usage map from cached .tex citation scan (non-tab-switching).
   const texUsage = await getTexUsageCache();
