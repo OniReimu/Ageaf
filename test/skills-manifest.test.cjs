@@ -17,9 +17,10 @@ test('generateSkillsManifest creates valid manifest', async () => {
   // Verify bundled skill set:
   // - ai-research: 20-ml-paper-writing
   // - anthropic: doc-coauthoring
+  // - custom: humanizer
   // - custom: paper-reviewer
   // - k-dense: citation-management
-  assert.strictEqual(manifest.skills.length, 4, `Expected 4 skills, got ${manifest.skills.length}`);
+  assert.strictEqual(manifest.skills.length, 5, `Expected 5 skills, got ${manifest.skills.length}`);
 
   const paperSkill = manifest.skills.find((s) => s.name === 'ml-paper-writing');
   assert.ok(paperSkill, 'Should include ml-paper-writing skill');
@@ -36,6 +37,10 @@ test('generateSkillsManifest creates valid manifest', async () => {
   const reviewerSkill = manifest.skills.find((s) => s.name === 'paper-reviewer');
   assert.ok(reviewerSkill, 'Should include paper-reviewer skill');
   assert.strictEqual(reviewerSkill.source, 'custom', 'paper-reviewer should be from custom source');
+
+  const humanizerSkill = manifest.skills.find((s) => s.name === 'humanizer');
+  assert.ok(humanizerSkill, 'Should include humanizer skill');
+  assert.strictEqual(humanizerSkill.source, 'custom', 'humanizer should be from custom source');
 
   const citationSkill = manifest.skills.find((s) => s.name === 'citation-management');
   assert.ok(citationSkill, 'Should include citation-management skill');

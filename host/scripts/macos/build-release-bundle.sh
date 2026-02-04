@@ -11,7 +11,8 @@ set -euo pipefail
 # - package.json                        (type=module marker for installed runtime)
 # - install.sh                          (installs HTTP server wrapper + runtime files)
 #
-# The host runs as an HTTP server by default. Native messaging is experimental.
+# The host runs as an HTTP server when launched manually. When launched by Chrome via native
+# messaging, it speaks the stdio protocol instead.
 #
 # Output:
 #   dist-native/ageaf-host-macos-node-bundle.tar.gz
@@ -97,9 +98,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js is required but was not found on PATH." >&2
-  echo "Install Node 20+ and retry." >&2
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+if [[ -z "$NODE_BIN" ]]; then
+  for candidate in /opt/homebrew/bin/node /usr/local/bin/node /opt/local/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      NODE_BIN="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$NODE_BIN" && -n "${HOME:-}" ]]; then
+  shopt -s nullglob
+  for candidate in "$HOME/.nvm/versions/node"/*/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      NODE_BIN="$candidate"
+    fi
+  done
+  shopt -u nullglob
+fi
+if [[ -z "$NODE_BIN" ]]; then
+  echo "Node.js is required but was not found." >&2
+  echo "Install Node 20+ (Homebrew recommended) and retry." >&2
   exit 127
 fi
 
@@ -122,9 +141,27 @@ sudo tee "$BIN_DIR/ageaf-host" > /dev/null <<'WRAP'
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "ageaf-host: Node.js is required but was not found on PATH." >&2
-  echo "Install Node 20+ and retry." >&2
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+if [[ -z "$NODE_BIN" ]]; then
+  for candidate in /opt/homebrew/bin/node /usr/local/bin/node /opt/local/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      NODE_BIN="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$NODE_BIN" && -n "${HOME:-}" ]]; then
+  shopt -s nullglob
+  for candidate in "$HOME/.nvm/versions/node"/*/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      NODE_BIN="$candidate"
+    fi
+  done
+  shopt -u nullglob
+fi
+if [[ -z "$NODE_BIN" ]]; then
+  echo "ageaf-host: Node.js is required but was not found." >&2
+  echo "Install Node 20+ (Homebrew recommended) and retry." >&2
   exit 127
 fi
 
@@ -133,9 +170,9 @@ cd /usr/local/share/ageaf-host
 # If stdin is NOT a TTY (piped by Chrome), run native messaging mode
 # Otherwise (manual launch), run HTTP server mode
 if [[ ! -t 0 ]]; then
-  exec node dist/src/native.js
+  exec "$NODE_BIN" dist/src/native.js
 else
-  exec node dist/src/start.js "$@"
+  exec "$NODE_BIN" dist/src/start.js "$@"
 fi
 WRAP
 sudo chmod 0755 "$BIN_DIR/ageaf-host"
@@ -156,7 +193,31 @@ MANIFEST_PATH="$MANIFEST_DIR/com.ageaf.host.json"
 
 mkdir -p "$MANIFEST_DIR"
 
-node "/usr/local/share/ageaf-host/dist/build-native-manifest.mjs" \
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+if [[ -z "$NODE_BIN" ]]; then
+  for candidate in /opt/homebrew/bin/node /usr/local/bin/node /opt/local/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      NODE_BIN="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$NODE_BIN" && -n "${HOME:-}" ]]; then
+  shopt -s nullglob
+  for candidate in "$HOME/.nvm/versions/node"/*/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      NODE_BIN="$candidate"
+    fi
+  done
+  shopt -u nullglob
+fi
+if [[ -z "$NODE_BIN" ]]; then
+  echo "Node.js is required but was not found." >&2
+  echo "Install Node 20+ (Homebrew recommended) and retry." >&2
+  exit 127
+fi
+
+"$NODE_BIN" "/usr/local/share/ageaf-host/dist/build-native-manifest.mjs" \
   "$EXTENSION_ID" \
   "/usr/local/bin/ageaf-host" \
   "$MANIFEST_PATH"
@@ -164,6 +225,12 @@ node "/usr/local/share/ageaf-host/dist/build-native-manifest.mjs" \
 echo "Wrote native messaging manifest to: $MANIFEST_PATH"
 HELPER
 sudo chmod 0755 "$BIN_DIR/ageaf-host-install-manifest"
+
+if command -v xattr >/dev/null 2>&1; then
+  sudo xattr -dr com.apple.quarantine "$INSTALL_ROOT" 2>/dev/null || true
+  sudo xattr -d com.apple.quarantine "$BIN_DIR/ageaf-host" 2>/dev/null || true
+  sudo xattr -d com.apple.quarantine "$BIN_DIR/ageaf-host-install-manifest" 2>/dev/null || true
+fi
 
 echo "Installed. Next:"
 echo "  1) Find your extension ID in chrome://extensions"
@@ -180,5 +247,3 @@ chmod 0755 "$BUNDLE_DIR/install.sh"
 tar -czf "$ARCHIVE_PATH" -C "$OUT_DIR" "$(basename "$BUNDLE_DIR")"
 
 echo "Built bundle: $ARCHIVE_PATH"
-
-

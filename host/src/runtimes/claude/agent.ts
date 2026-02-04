@@ -441,7 +441,7 @@ async function runQuery(
           const candidates: unknown[] = [resultMessage.structured_output, resultText].filter(
             (value) => value !== undefined && value !== null
           );
-          let parsedPatch: z.SafeParseReturnType<unknown, unknown> | null = null;
+          let parsedPatch: ReturnType<typeof structuredOutput.schema.safeParse> | null = null;
           for (const raw of candidates) {
             let candidate: unknown = raw;
             if (typeof candidate === 'string') {

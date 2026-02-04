@@ -1,5 +1,6 @@
 'use strict';
 
+const webpack = require('webpack');
 const { merge } = require('webpack-merge');
 const TerserPlugin = require('terser-webpack-plugin');
 
@@ -9,6 +10,12 @@ const PATHS = require('./paths');
 // Merge webpack configuration files
 const config = (env, argv) =>
   merge(common, {
+    plugins: [
+      new webpack.DefinePlugin({
+        __AGEAF_BUILD_MODE__: JSON.stringify(argv.mode === 'production' ? 'production' : 'development'),
+        __AGEAF_DEFAULT_TRANSPORT__: JSON.stringify(argv.mode === 'production' ? 'native' : 'http'),
+      }),
+    ],
     entry: {
       contentMainScript: PATHS.src + '/main/contentScript.ts',
       contentIsoScript: PATHS.src + '/iso//contentScript.ts',

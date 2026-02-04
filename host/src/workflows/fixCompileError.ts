@@ -71,7 +71,7 @@ export async function runFixCompileError(
   const prompt = buildFixCompilePrompt(payload);
   emitEvent({ event: 'delta', data: { text: 'Analyzing compile log...' } });
 
-  let doneEvent: JobEvent | null = null;
+  let doneEvent: JobEvent = { event: 'done', data: { status: 'ok' } };
   const wrappedEmit: EmitEvent = (event) => {
     if (event.event === 'done') {
       doneEvent = event;
@@ -91,9 +91,9 @@ export async function runFixCompileError(
     enableTools: payload.userSettings?.enableTools ?? false,
   });
 
-  const status = (doneEvent as any)?.data?.status;
+  const status = (doneEvent.data as any)?.status;
   if (status && status !== 'ok') {
-    emitEvent(doneEvent as JobEvent);
+    emitEvent(doneEvent);
     return;
   }
 
@@ -109,5 +109,5 @@ export async function runFixCompileError(
     event: 'patch',
     data: { kind: 'replaceSelection', text: fixed ?? (payload.context?.selection ?? '') },
   });
-  emitEvent(doneEvent ?? { event: 'done', data: { status: 'ok' } });
+  emitEvent(doneEvent);
 }

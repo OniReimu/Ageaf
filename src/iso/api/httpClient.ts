@@ -417,3 +417,23 @@ export type HostHealthResponse = {
     configured?: boolean;
   };
 };
+
+export async function deleteSession(
+  options: Options,
+  provider: 'claude' | 'codex',
+  sessionId: string
+): Promise<void> {
+  if (!options.hostUrl) {
+    throw new Error('Host URL not configured');
+  }
+
+  const url = new URL(`/v1/sessions/${provider}/${sessionId}`, options.hostUrl).toString();
+  const response = await fetch(url, {
+    method: 'DELETE',
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Session deletion failed (${response.status})${text ? `: ${text}` : ''}`);
+  }
+}

@@ -302,7 +302,7 @@ If asked about the model/runtime, use this note and do not guess.`;
     emitEvent({ event: 'trace', data: { message, ...(data ?? {}) } });
   };
 
-  let doneEvent: JobEvent | null = null;
+  let doneEvent: JobEvent = { event: 'done', data: { status: 'ok' } };
   let patchEmitted = false;
   const wrappedEmit: EmitEvent = (event) => {
     if (event.event === 'done') {
@@ -328,9 +328,9 @@ If asked about the model/runtime, use this note and do not guess.`;
   });
   emitTrace('Claude: reply completed');
 
-  const status = (doneEvent as any)?.data?.status;
+  const status = (doneEvent.data as any)?.status;
   if (status && status !== 'ok') {
-    emitEvent(doneEvent as JobEvent);
+    emitEvent(doneEvent);
     return;
   }
 
@@ -346,5 +346,5 @@ If asked about the model/runtime, use this note and do not guess.`;
     }
   }
 
-  emitEvent(doneEvent ?? { event: 'done', data: { status: 'ok' } });
+  emitEvent(doneEvent);
 }
