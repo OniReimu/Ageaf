@@ -36,6 +36,13 @@ test('extractSkillDirectives handles directive at start', () => {
   assert.strictEqual(directives[0], 'langchain');
 });
 
+test('extractSkillDirectives allows whitespace after slash', () => {
+  const text = '/ langchain help me with this';
+  const directives = extractSkillDirectives(text);
+  assert.strictEqual(directives.length, 1, 'Should find directive with whitespace');
+  assert.strictEqual(directives[0], 'langchain');
+});
+
 test('extractSkillDirectives handles directive at end', () => {
   const text = 'Please help with /langchain';
   const directives = extractSkillDirectives(text);
@@ -97,6 +104,12 @@ test('stripSkillDirectives handles directive at start', () => {
   const text = '/langchain help me';
   const stripped = stripSkillDirectives(text);
   assert.strictEqual(stripped, ' help me', 'Should remove directive at start');
+});
+
+test('stripSkillDirectives removes directive with whitespace after slash', () => {
+  const text = '/ langchain help me';
+  const stripped = stripSkillDirectives(text);
+  assert.strictEqual(stripped, ' help me', 'Should remove directive at start with whitespace');
 });
 
 test('stripSkillDirectives handles directive at end', () => {
