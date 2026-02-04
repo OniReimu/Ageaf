@@ -12,7 +12,7 @@
 function extractSkillDirectives(text) {
   // Pattern: (start OR whitespace/bracket) + "/" + (allowed chars)
   // Same as slash menu pattern but global
-  const pattern = /(^|[\s([{])\/([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
+  const pattern = /(^|[\s([{])\/\s*([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
 
   const matches = text.matchAll(pattern);
   const directives = [];
@@ -36,7 +36,7 @@ function extractSkillDirectives(text) {
  */
 function stripSkillDirectives(text) {
   // Same pattern as extraction
-  const pattern = /(^|[\s([{])\/([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
+  const pattern = /(^|[\s([{])\/\s*([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
 
   // Replace directives with the surrounding characters (preserve whitespace/punctuation)
   return text.replace(pattern, (match, before, skillName, after) => {

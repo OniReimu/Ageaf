@@ -256,6 +256,21 @@ If asked about the model/runtime, use this note and do not guess.`;
     '- Do not summarize the document or infer project details unless asked.',
   ].filter(line => line).join('\n');
 
+  const skillsGuidance = [
+    'Available Skills (CRITICAL):',
+    '- Ageaf supports built-in skill directives (e.g. /humanizer).',
+    '- Available skills include:',
+    '  • /humanizer - Remove AI writing patterns (inflated symbolism, promotional language, AI vocabulary)',
+    '  • /paper-reviewer - Structured peer reviews following top-tier venue standards',
+    '  • /citation-management - Search papers, extract metadata, validate citations, generate BibTeX',
+    '  • /ml-paper-writing - Write publication-ready ML/AI papers for NeurIPS, ICML, ICLR, ACL, AAAI, COLM',
+    '  • /doc-coauthoring - Structured workflow for co-authoring documentation and technical specs',
+    '- If the user includes a /skillName directive, you MUST follow that skill for this request.',
+    '- Skill text (instructions) may be injected under "Additional instructions" for the request; do NOT try to locate skills on disk.',
+    '- These skills are part of the Ageaf system and do NOT require external installation.',
+    '- Do not announce skill-loading or mention internal skill frameworks; just apply the skill.',
+  ].join('\n');
+
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     responseGuidance,
@@ -263,6 +278,7 @@ If asked about the model/runtime, use this note and do not guess.`;
     selectionPatchGuidance,
     hasOverleafFileBlocks ? fileUpdateGuidance : '',
     greetingMode ? greetingGuidance : 'If the user message is not a greeting, respond normally but stay concise.',
+    skillsGuidance,
   ];
 
   if (customSystemPrompt) {

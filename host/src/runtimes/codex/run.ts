@@ -326,6 +326,36 @@ function extractAssistantTextFromItem(value: any): string | null {
   return null;
 }
 
+function mergeTextSnapshot(existing: string, snapshot: string): { merged: string; delta: string } {
+  const incoming = String(snapshot ?? '');
+  if (!incoming) return { merged: existing, delta: '' };
+  if (!existing) return { merged: incoming, delta: incoming };
+
+  if (existing.includes(incoming)) {
+    return { merged: existing, delta: '' };
+  }
+
+  if (incoming.startsWith(existing)) {
+    return { merged: incoming, delta: incoming.slice(existing.length) };
+  }
+
+  const maxOverlap = Math.min(existing.length, incoming.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    if (existing.endsWith(incoming.slice(0, overlap))) {
+      const delta = incoming.slice(overlap);
+      return { merged: existing + delta, delta };
+    }
+  }
+
+  // If the snapshot contains the existing text but not as a prefix, treat it as authoritative,
+  // but do not emit a delta (we can only append client-side).
+  if (incoming.includes(existing)) {
+    return { merged: incoming, delta: '' };
+  }
+
+  return { merged: existing + incoming, delta: incoming };
+}
+
 function summarizeObjectKeys(value: unknown, limit = 24) {
   if (!value || typeof value !== 'object') return [];
   return Object.keys(value as Record<string, unknown>).slice(0, limit);
@@ -534,6 +564,21 @@ function buildPrompt(
     '- Do NOT include the full updated file contents in the visible response (only inside the markers).',
   ].join('\n');
 
+  const skillsGuidance = [
+    'Available Skills (CRITICAL):',
+    '- Ageaf supports built-in skill directives (e.g. /humanizer).',
+    '- Available skills include:',
+    '  • /humanizer - Remove AI writing patterns (inflated symbolism, promotional language, AI vocabulary)',
+    '  • /paper-reviewer - Structured peer reviews following top-tier venue standards',
+    '  • /citation-management - Search papers, extract metadata, validate citations, generate BibTeX',
+    '  • /ml-paper-writing - Write publication-ready ML/AI papers for NeurIPS, ICML, ICLR, ACL, AAAI, COLM',
+    '  • /doc-coauthoring - Structured workflow for co-authoring documentation and technical specs',
+    '- If the user includes a /skillName directive, you MUST follow that skill for this request.',
+    '- Skill text (instructions) may be injected under "Additional instructions" for the request; do NOT try to locate skills on disk.',
+    '- These skills are part of the Ageaf system and do NOT require external installation.',
+    '- Do not announce skill-loading or mention internal skill frameworks; just apply the skill.',
+  ].join('\n');
+
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     'Respond in Markdown, keep it concise.',
@@ -543,6 +588,7 @@ function buildPrompt(
     contextForPrompt ? `Context:\n${JSON.stringify(contextForPrompt, null, 2)}` : '',
     action === 'rewrite' ? rewriteInstructions : '',
     hasOverleafFileBlocks ? fileUpdateInstructions : '',
+    skillsGuidance,
   ].filter(Boolean);
 
   if (custom) {
@@ -1470,17 +1516,14 @@ export async function runCodexJob(
             diagnostics.seenAnyDelta = true;
             emitTrace('Codex: first delta received');
           }
-          // Avoid duplicating output if we already received deltas.
-          if (!fullText.trim()) {
-            fullText = extractedText;
-          } else if (!fullText.includes(extractedText)) {
-            fullText += extractedText;
-          }
+          const merged = mergeTextSnapshot(fullText, extractedText);
+          fullText = merged.merged;
+          const deltaToEmit = merged.delta;
 
-          if (!shouldHidePatchPayload) {
-            emitEvent({ event: 'delta', data: { text: extractedText } });
-          } else if (!patchPayloadStarted) {
-            visibleBuffer += extractedText;
+          if (deltaToEmit && !shouldHidePatchPayload) {
+            emitEvent({ event: 'delta', data: { text: deltaToEmit } });
+          } else if (deltaToEmit && !patchPayloadStarted) {
+            visibleBuffer += deltaToEmit;
             const matchIndex = visibleBuffer.search(patchPayloadStartRe);
             if (matchIndex >= 0) {
               const beforeFence = visibleBuffer.slice(0, matchIndex);

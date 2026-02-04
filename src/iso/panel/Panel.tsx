@@ -2425,7 +2425,7 @@ const Panel = () => {
       selection.addRange(range);
     }
 
-    insertTextAtCursor(`/ ${skill.name} `);
+    insertTextAtCursor(`/${skill.name} `);
     setSkillOpen(false);
     setSkillResults([]);
     skillRangeRef.current = null;
@@ -2437,13 +2437,13 @@ const Panel = () => {
   ): Promise<{ skillsPrompt: string; strippedText: string }> => {
     // Extract skill directives from text (e.g., /langchain, /vllm)
     // Pattern: (start OR whitespace/bracket) + "/" + (allowed chars)
-    const pattern = /(^|[\s([{])\/([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
+    const pattern = /(^|[\s([{])\/\s*([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
     const matches = text.matchAll(pattern);
     const directiveNames: string[] = [];
     const seen = new Set<string>();
 
     for (const match of matches) {
-      const skillName = match[2];
+      const skillName = String(match[2] ?? '').trim().toLowerCase();
       if (skillName && !seen.has(skillName)) {
         directiveNames.push(skillName);
         seen.add(skillName);
@@ -2463,11 +2463,11 @@ const Panel = () => {
       const resolvedNames = new Set<string>();
 
       for (const name of directiveNames) {
-        const skill = manifest.skills.find((s) => s.name === name);
+        const skill = manifest.skills.find((s) => s.name.toLowerCase() === name);
         if (skill) {
           const markdown = await loadSkillMarkdown(skill);
           const contentLength = markdown.length;
-          skillContents.push(`\n\n# Skill: ${skill.name} \n\n${markdown} `);
+          skillContents.push(`# Skill: ${skill.name}\n\n${markdown}`);
           resolvedNames.add(name);
           console.log(`[processSkillDirectives] ✓ Loaded skill: /${name} (${contentLength} chars)`);
         } else {
@@ -2475,15 +2475,42 @@ const Panel = () => {
         }
       }
 
-      // Strip ONLY directives that resolved to actual skills (preserve unknown directives)
+      const invokedSkills = Array.from(resolvedNames).map((name) => `/${name}`).join(', ');
+      const skillsPrompt =
+        skillContents.length > 0
+          ? [
+            '# Active skill directives',
+            `The user invoked: ${invokedSkills}.`,
+            'Apply the following skill instructions for this request.',
+            '',
+            ...skillContents,
+          ].join('\n')
+          : '';
+
+      // Keep directives in the message (normalize spacing), so providers consistently see that a skill was invoked.
       const strippedText = text.replace(pattern, (match, before, skillName, after) => {
-        if (resolvedNames.has(skillName)) {
-          return before + after;
+        const normalized = String(skillName ?? '').trim().toLowerCase();
+        if (resolvedNames.has(normalized)) {
+          return `${before}/${normalized}${after}`;
         }
         return match; // Keep unknown directives intact
       });
 
-      const skillsPrompt = skillContents.length > 0 ? skillContents.join('\n\n') : '';
+      // If the message is only directives, add a minimal instruction so the runtime knows what to do.
+      if (resolvedNames.size > 0) {
+        const withoutDirectives = text.replace(pattern, (match, before, skillName, after) => {
+          const normalized = String(skillName ?? '').trim().toLowerCase();
+          if (resolvedNames.has(normalized)) return `${before}${after}`;
+          return match;
+        });
+        if (!withoutDirectives.trim()) {
+          const requestLine = `Apply ${invokedSkills} to the provided text/context.`;
+          const unique = new Set<string>(
+            [strippedText.trim(), requestLine].filter(Boolean)
+          );
+          return { skillsPrompt, strippedText: Array.from(unique).join('\n\n') };
+        }
+      }
 
       if (resolvedNames.size > 0) {
         console.log(
@@ -4200,7 +4227,7 @@ const Panel = () => {
 
         const fullContent = pending.status === 'ok' && finalText
           ? finalText
-          : pending.message ?? 'Job failed';
+          : pending.message ?? `Job failed (${pending.status})`;
 
         updatedMessages.push({
           role: pending.status === 'ok' ? 'assistant' : 'system',
@@ -4226,7 +4253,7 @@ const Panel = () => {
           }
         } else {
           sessionState.pendingPatchReviewMessages = [];
-          const message = pending.message ?? 'Job failed';
+          const message = pending.message ?? `Job failed (${pending.status})`;
           updatedMessages.push({
             role: 'system' as const,
             content: message,
@@ -5207,10 +5234,22 @@ const Panel = () => {
 
         if (event.event === 'done') {
           markThinkingComplete(sessionConversationId);
-          const status = event.data?.status ?? 'ok';
+          const rawStatus =
+            typeof (event.data as any)?.status === 'string'
+              ? String((event.data as any).status).trim()
+              : 'ok';
+          const status =
+            rawStatus === 'complete' || rawStatus === 'success' ? 'ok' : rawStatus;
+          const message =
+            typeof (event.data as any)?.message === 'string' &&
+              String((event.data as any).message).trim()
+              ? String((event.data as any).message)
+              : status === 'ok'
+                ? undefined
+                : `Job finished with status "${rawStatus}"`;
           sessionState.pendingDone = {
             status,
-            message: event.data?.message,
+            message,
           };
           pendingDoneRef.current = sessionState.pendingDone;
           if (provider === 'codex') {
