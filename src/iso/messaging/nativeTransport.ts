@@ -9,6 +9,7 @@ import type {
   HostHealthResponse,
   HostToolsStatus,
   JobPayload,
+  AttachmentMeta,
 } from '../api/httpClient';
 import type { JobEvent } from '../api/sse';
 
@@ -250,6 +251,48 @@ export function nativeTransport(_options: Options): Transport {
         request: { method: 'GET', path: '/v1/health' },
       });
       return unwrapNativeResponse(response) as HostHealthResponse;
+    },
+
+    async openAttachmentDialog(payload: { multiple?: boolean; extensions?: string[] }) {
+      const response = await sendNativeRequest({
+        id: crypto.randomUUID(),
+        kind: 'request',
+        request: { method: 'POST', path: '/v1/attachments/open', body: payload },
+      });
+      return unwrapNativeResponse(response) as { paths: string[] };
+    },
+
+    async validateAttachmentEntries(payload: {
+      entries?: Array<{
+        id?: string;
+        path?: string;
+        name?: string;
+        ext?: string;
+        content?: string;
+        sizeBytes?: number;
+        lineCount?: number;
+      }>;
+      paths?: string[];
+      limits?: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number };
+    }) {
+      const response = await sendNativeRequest({
+        id: crypto.randomUUID(),
+        kind: 'request',
+        request: { method: 'POST', path: '/v1/attachments/validate', body: payload },
+      });
+      return unwrapNativeResponse(response) as {
+        attachments: AttachmentMeta[];
+        errors: Array<{ id?: string; path?: string; message: string }>;
+      };
+    },
+
+    async deleteSession(provider: 'claude' | 'codex', sessionId: string): Promise<void> {
+      const response = await sendNativeRequest({
+        id: crypto.randomUUID(),
+        kind: 'request',
+        request: { method: 'DELETE', path: `/v1/sessions/${provider}/${sessionId}` },
+      });
+      unwrapNativeResponse(response);
     },
   };
 }

@@ -3,11 +3,13 @@ import { Options } from "../types";
 
 let lastKnownOptions: Options | null = null;
 
+const DEFAULT_TRANSPORT: Options['transport'] = __AGEAF_DEFAULT_TRANSPORT__;
+
 function applyOptionDefaults(input: Options): Options {
   const options = { ...(input ?? {}) } as Options;
 
   if (options.transport !== 'http' && options.transport !== 'native') {
-    options.transport = 'http';
+    options.transport = DEFAULT_TRANSPORT;
   }
   if (options.transport !== 'native' && !options.hostUrl) {
     options.hostUrl = 'http://127.0.0.1:3210';

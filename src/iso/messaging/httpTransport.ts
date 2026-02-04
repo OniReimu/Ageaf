@@ -12,6 +12,9 @@ import {
   fetchClaudeRuntimeContextUsage as httpFetchClaudeRuntimeContextUsage,
   fetchCodexRuntimeContextUsage as httpFetchCodexRuntimeContextUsage,
   fetchHostHealth as httpFetchHostHealth,
+  openAttachmentDialog as httpOpenAttachmentDialog,
+  validateAttachmentEntries as httpValidateAttachmentEntries,
+  deleteSession as httpDeleteSession,
   type JobPayload,
 } from '../api/httpClient';
 
@@ -53,5 +56,18 @@ export function httpTransport(options: Options): Transport {
     ) => httpFetchCodexRuntimeContextUsage(options, payload),
 
     fetchHostHealth: () => httpFetchHostHealth(options),
+
+    openAttachmentDialog: (
+      payload: Parameters<typeof httpOpenAttachmentDialog>[1]
+    ) => httpOpenAttachmentDialog(options, payload),
+
+    validateAttachmentEntries: (
+      payload: Parameters<typeof httpValidateAttachmentEntries>[1]
+    ) => httpValidateAttachmentEntries(options, payload),
+
+    deleteSession: (
+      provider: Parameters<typeof httpDeleteSession>[1],
+      sessionId: Parameters<typeof httpDeleteSession>[2]
+    ) => httpDeleteSession(options, provider, sessionId),
   };
 }

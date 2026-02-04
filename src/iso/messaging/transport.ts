@@ -2,6 +2,7 @@ import type { Options } from '../../types';
 import { httpTransport } from './httpTransport';
 import { nativeTransport } from './nativeTransport';
 import type {
+  AttachmentMeta,
   ClaudeContextUsageResponse,
   ClaudeRuntimeMetadata,
   CodexContextUsageResponse,
@@ -43,6 +44,26 @@ export type Transport = {
   fetchClaudeRuntimeContextUsage: () => Promise<ClaudeContextUsageResponse>;
   fetchCodexRuntimeContextUsage: (payload?: { threadId?: string }) => Promise<CodexContextUsageResponse>;
   fetchHostHealth: () => Promise<HostHealthResponse>;
+
+  openAttachmentDialog: (payload: { multiple?: boolean; extensions?: string[] }) => Promise<{ paths: string[] }>;
+  validateAttachmentEntries: (payload: {
+    entries?: Array<{
+      id?: string;
+      path?: string;
+      name?: string;
+      ext?: string;
+      content?: string;
+      sizeBytes?: number;
+      lineCount?: number;
+    }>;
+    paths?: string[];
+    limits?: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number };
+  }) => Promise<{
+    attachments: AttachmentMeta[];
+    errors: Array<{ id?: string; path?: string; message: string }>;
+  }>;
+
+  deleteSession: (provider: 'claude' | 'codex', sessionId: string) => Promise<void>;
 };
 
 export function createTransport(options: Options): Transport {

@@ -3,7 +3,7 @@ export type NativeHostRequest =
       id: string;
       kind: 'request';
       request: {
-        method: 'GET' | 'POST';
+        method: 'GET' | 'POST' | 'DELETE';
         path: string;
         headers?: Record<string, string>;
         body?: unknown;

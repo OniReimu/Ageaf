@@ -2,10 +2,29 @@
 set -euo pipefail
 
 # Ageaf host wrapper - auto-detects mode based on stdin
-# Requires Node to be installed and available on PATH.
-if ! command -v node >/dev/null 2>&1; then
-  echo "ageaf-host: Node.js is required but was not found on PATH." >&2
-  echo "Install Node 20+ and retry." >&2
+# Requires Node to be installed. Chrome may launch native hosts with a minimal PATH,
+# so we also check common install locations.
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+if [[ -z "$NODE_BIN" ]]; then
+  for candidate in /opt/homebrew/bin/node /usr/local/bin/node /opt/local/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      NODE_BIN="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$NODE_BIN" && -n "${HOME:-}" ]]; then
+  shopt -s nullglob
+  for candidate in "$HOME/.nvm/versions/node"/*/bin/node; do
+    if [[ -x "$candidate" ]]; then
+      NODE_BIN="$candidate"
+    fi
+  done
+  shopt -u nullglob
+fi
+if [[ -z "$NODE_BIN" ]]; then
+  echo "ageaf-host: Node.js is required but was not found." >&2
+  echo "Install Node 20+ (Homebrew recommended) and retry." >&2
   exit 127
 fi
 
@@ -14,7 +33,7 @@ cd /usr/local/share/ageaf-host
 # If stdin is NOT a TTY (piped by Chrome), run native messaging mode
 # Otherwise (manual launch), run HTTP server mode
 if [[ ! -t 0 ]]; then
-  exec node dist/src/native.js
+  exec "$NODE_BIN" dist/src/native.js
 else
-  exec node dist/src/start.js "$@"
+  exec "$NODE_BIN" dist/src/start.js "$@"
 fi

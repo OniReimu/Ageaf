@@ -133,7 +133,7 @@ export async function runRewriteSelection(payload: RewritePayload, emitEvent: Em
   const prompt = buildRewritePrompt(payload);
   emitEvent({ event: 'delta', data: { text: 'Preparing rewrite...' } });
 
-  let doneEvent: JobEvent | null = null;
+  let doneEvent: JobEvent = { event: 'done', data: { status: 'ok' } };
   const wrappedEmit: EmitEvent = (event) => {
     if (event.event === 'done') {
       doneEvent = event;
@@ -153,9 +153,9 @@ export async function runRewriteSelection(payload: RewritePayload, emitEvent: Em
     enableTools: payload.userSettings?.enableTools ?? false,
   });
 
-  const status = (doneEvent as any)?.data?.status;
+  const status = (doneEvent.data as any)?.status;
   if (status && status !== 'ok') {
-    emitEvent(doneEvent as JobEvent);
+    emitEvent(doneEvent);
     return;
   }
 
@@ -163,7 +163,7 @@ export async function runRewriteSelection(payload: RewritePayload, emitEvent: Em
   // simply echo the original selection back as the patch.
   if (process.env.AGEAF_CLAUDE_MOCK === 'true') {
     emitEvent({ event: 'patch', data: patch });
-    emitEvent(doneEvent ?? { event: 'done', data: { status: 'ok' } });
+    emitEvent(doneEvent);
     return;
   }
 
@@ -186,5 +186,5 @@ export async function runRewriteSelection(payload: RewritePayload, emitEvent: Em
     event: 'patch',
     data: { kind: 'replaceSelection', text: rewritten ?? selection },
   });
-  emitEvent(doneEvent ?? { event: 'done', data: { status: 'ok' } });
+  emitEvent(doneEvent);
 }
