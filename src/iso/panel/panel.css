@@ -271,6 +271,34 @@
   gap: 10px;
 }
 
+.ageaf-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ageaf-panel__help {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--ageaf-panel-border);
+  background: var(--ageaf-panel-surface);
+  color: var(--ageaf-panel-accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.ageaf-panel__help:hover {
+  border-color: var(--ageaf-panel-accent);
+  background: var(--ageaf-panel-accent-soft);
+}
+
 .ageaf-panel__logo {
   width: 32px;
   height: 32px;
@@ -2866,4 +2894,139 @@
   white-space: nowrap;
   flex: 1;
   min-width: 0;
+}
+
+/* Ageaf Landing Page */
+.ageaf-landing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  height: 100%;
+  padding: 24px;
+  background: transparent;
+  color: var(--ageaf-panel-text);
+  text-align: center;
+  gap: 32px;
+}
+
+.ageaf-landing__content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+}
+
+.ageaf-landing__header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.ageaf-landing__logo {
+  width: 96px;
+  height: 96px;
+  margin-bottom: 4px;
+}
+
+.ageaf-landing__title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--ageaf-panel-text);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  text-shadow: 0 0 20px rgba(57, 185, 138, 0.3);
+}
+
+.ageaf-landing__slogan {
+  font-size: 14px;
+  color: var(--ageaf-panel-accent);
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.ageaf-landing__actions {
+  display: flex;
+  gap: 16px;
+  width: 100%;
+  max-width: 480px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.ageaf-landing__card {
+  flex: 1;
+  background-color: var(--ageaf-panel-surface);
+  border: 1px solid var(--ageaf-panel-border);
+  border-radius: 12px;
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  color: var(--ageaf-panel-text);
+  text-align: center;
+  min-width: 140px;
+}
+
+.ageaf-landing__card:hover {
+  background-color: var(--ageaf-panel-accent-soft);
+  border-color: var(--ageaf-panel-accent);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.ageaf-landing__card-title {
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--ageaf-panel-text);
+}
+
+.ageaf-landing__card-desc {
+  font-size: 12px;
+  color: var(--ageaf-panel-muted);
+  line-height: 1.4;
+}
+
+.ageaf-landing__footer {
+  padding-bottom: 16px;
+}
+
+.ageaf-landing__help {
+  color: var(--ageaf-panel-accent);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 1px dotted transparent;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ageaf-landing__help:hover {
+  color: var(--ageaf-panel-accent);
+  border-bottom-color: var(--ageaf-panel-accent);
+  filter: brightness(1.1);
+}
+
+/* Ensure landing page replaces the main body layout correctly */
+.ageaf-panel__body:has(.ageaf-landing) {
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  grid-row: 1 / -1;
+}
+
+@media (max-width: 420px) {
+  .ageaf-landing__actions {
+    flex-direction: column;
+  }
 }

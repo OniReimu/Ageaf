@@ -8,6 +8,6 @@ test('Panel header owns the intro copy (no initial system blocks)', () => {
   const contents = fs.readFileSync(panelPath, 'utf8');
 
   assert.doesNotMatch(contents, /Ready to assist on this Overleaf project/);
-  assert.match(contents, /Ask me to rewrite, explain, or fix LaTeX errors/);
+  assert.match(contents, /Your Overleaf Agent/);
 });
 
