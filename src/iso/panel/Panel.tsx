@@ -67,7 +67,6 @@ import './ageaf-complete-redesign.css';
 import './ageaf-toolbar-components.css';
 import Icons from './ageaf-icons';
 import {
-  AgeafLogo,
   SettingsIcon,
   RewriteIcon,
   AttachFilesIcon,
@@ -83,10 +82,24 @@ const DEFAULT_MODEL_VALUE = 'sonnet';
 const DEFAULT_MODEL_LABEL = 'Sonnet';
 const INTERRUPTED_BY_USER_MARKER = 'INTERRUPTED BY USER';
 const DEBUG_DIFF = false;
+const HOW_TO_GUIDES_URL = 'https://github.com/OniReimu/Ageaf/tree/main/docs';
 const EDITOR_OVERLAY_SHOW_EVENT = 'ageaf:editor:overlay:show';
 const EDITOR_OVERLAY_CLEAR_EVENT = 'ageaf:editor:overlay:clear';
 const EDITOR_OVERLAY_READY_EVENT = 'ageaf:editor:overlay:ready';
 const PANEL_OVERLAY_ACTION_EVENT = 'ageaf:panel:patch-review-action';
+
+function getIconUrl(path: string) {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
+      const url = chrome.runtime.getURL(path);
+      const version = chrome.runtime.getManifest?.()?.version ?? 'dev';
+      return `${url}?v=${version}`;
+    }
+  } catch {
+    // Extension context invalidated - fall back to relative path
+  }
+  return path;
+}
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -314,15 +327,15 @@ const PatchReviewCard = ({
     patchReview.kind === 'replaceRangeInFile'
       ? patchReview.filePath
       : patchReview.kind === 'replaceSelection'
-      ? patchReview.fileName ?? 'selection.tex'
-      : null;
+        ? patchReview.fileName ?? 'selection.tex'
+        : null;
 
   const title =
     status === 'accepted'
       ? 'Review changes · Accepted'
       : status === 'rejected'
-      ? 'Review changes · Rejected'
-      : 'Review changes';
+        ? 'Review changes · Rejected'
+        : 'Review changes';
 
   // Calculate starting line number for absolute line number display
   const calculateStartLineNumber = (): number | undefined => {
@@ -553,10 +566,10 @@ function getCodexEffortForThinkingMode(
     modeId === 'off'
       ? ['none']
       : modeId === 'ultra'
-      ? ['xhigh']
-      : modeId === 'low'
-      ? ['low', 'minimal']
-      : [modeId];
+        ? ['xhigh']
+        : modeId === 'low'
+          ? ['low', 'minimal']
+          : [modeId];
   for (const candidate of candidates) {
     if (supported.includes(candidate)) return candidate;
   }
@@ -614,13 +627,13 @@ type Patch =
   | { kind: 'replaceSelection'; text: string }
   | { kind: 'insertAtCursor'; text: string }
   | {
-      kind: 'replaceRangeInFile';
-      filePath: string;
-      expectedOldText: string;
-      text: string;
-      from?: number;
-      to?: number;
-    };
+    kind: 'replaceRangeInFile';
+    filePath: string;
+    expectedOldText: string;
+    text: string;
+    from?: number;
+    to?: number;
+  };
 
 type SelectionSnapshot = {
   selection: string;
@@ -728,8 +741,8 @@ function normalizeContextUsage(input: {
     : 0;
   const contextWindow =
     input.contextWindow &&
-    Number.isFinite(input.contextWindow) &&
-    input.contextWindow > 0
+      Number.isFinite(input.contextWindow) &&
+      input.contextWindow > 0
       ? input.contextWindow
       : null;
 
@@ -1381,8 +1394,8 @@ const Panel = () => {
       } else if (response.kind === 'response') {
         const detail =
           typeof response.body === 'object' &&
-          response.body &&
-          'message' in response.body
+            response.body &&
+            'message' in response.body
             ? String((response.body as { message: unknown }).message)
             : undefined;
         setNativeStatusError(
@@ -1474,19 +1487,19 @@ const Panel = () => {
           // Determine model selection
           const resolvedModel = metadata
             ? metadata.currentModel ??
-              models.find((model: RuntimeModel) => model.isDefault)?.value ??
-              models[0]?.value ??
-              null
+            models.find((model: RuntimeModel) => model.isDefault)?.value ??
+            models[0]?.value ??
+            null
             : models.find((model: RuntimeModel) => model.isDefault)?.value ??
-              models[0]?.value ??
-              null;
+            models[0]?.value ??
+            null;
           setCurrentModel(resolvedModel);
 
           const selectedModel =
             (resolvedModel
               ? models.find(
-                  (model: RuntimeModel) => model.value === resolvedModel
-                )
+                (model: RuntimeModel) => model.value === resolvedModel
+              )
               : undefined) ??
             models.find((model: RuntimeModel) => model.isDefault) ??
             models[0] ??
@@ -1527,8 +1540,8 @@ const Panel = () => {
 
           const effort = metadata
             ? metadata.currentReasoningEffort ??
-              selectedModel?.defaultReasoningEffort ??
-              null
+            selectedModel?.defaultReasoningEffort ??
+            null
             : selectedModel?.defaultReasoningEffort ?? null;
           setCurrentThinkingMode(getThinkingModeIdForCodexEffort(effort));
           setCurrentThinkingTokens(null);
@@ -1581,22 +1594,22 @@ const Panel = () => {
         setCurrentModel(
           metadata
             ? metadata.currentModel ??
-                options.claudeModel ??
-                DEFAULT_MODEL_VALUE
+            options.claudeModel ??
+            DEFAULT_MODEL_VALUE
             : options.claudeModel ?? DEFAULT_MODEL_VALUE
         );
         setCurrentThinkingMode(
           metadata
             ? metadata.currentThinkingMode ??
-                options.claudeThinkingMode ??
-                'off'
+            options.claudeThinkingMode ??
+            'off'
             : options.claudeThinkingMode ?? 'off'
         );
         setCurrentThinkingTokens(
           metadata
             ? metadata.maxThinkingTokens ??
-                options.claudeMaxThinkingTokens ??
-                null
+            options.claudeMaxThinkingTokens ??
+            null
             : options.claudeMaxThinkingTokens ?? null
         );
         setYoloMode(options.claudeYoloMode ?? true);
@@ -1972,6 +1985,32 @@ const Panel = () => {
     const stored = await loadProjectChat(projectId);
     if (!isActive()) return;
     const provider = stored.activeProvider;
+    const hasConversations =
+      (stored.providers.claude.conversations?.length ?? 0) > 0 ||
+      (stored.providers.codex.conversations?.length ?? 0) > 0;
+
+    if (!hasConversations) {
+      chatProjectIdRef.current = projectId;
+      chatConversationIdRef.current = null;
+      chatStateRef.current = stored;
+      setChatProvider(provider);
+      setSessionIds([]);
+      setActiveSessionId(null);
+
+      setStreamingState(null, false);
+      setStreamingText('');
+      setStreamingThinking('');
+      streamingTextRef.current = '';
+      streamingThinkingRef.current = '';
+      streamTokensRef.current = [];
+      pendingDoneRef.current = null;
+
+      setContextUsageFromStored(null);
+      setMessages([]);
+      chatHydratedRef.current = true;
+      scheduleChatSave();
+      return;
+    }
     const { state: ensured, conversation } = ensureActiveConversation(
       stored,
       provider
@@ -2153,9 +2192,8 @@ const Panel = () => {
       units.length - 1
     );
     const value = bytes / Math.pow(1024, index);
-    return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${
-      units[index]
-    } `;
+    return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]
+      } `;
   };
 
   const truncateName = (name: string, max = 24) => {
@@ -2380,9 +2418,9 @@ const Panel = () => {
     const getLabelText = (node: HTMLElement) =>
       sanitizeLabel(
         node.getAttribute('aria-label')?.trim() ||
-          node.getAttribute('title')?.trim() ||
-          node.textContent?.trim() ||
-          ''
+        node.getAttribute('title')?.trim() ||
+        node.textContent?.trim() ||
+        ''
       );
 
     const buildTreePath = (
@@ -2786,12 +2824,12 @@ const Panel = () => {
       const skillsPrompt =
         skillContents.length > 0
           ? [
-              '# Active skill directives',
-              `The user invoked: ${invokedSkills}.`,
-              'Apply the following skill instructions for this request.',
-              '',
-              ...skillContents,
-            ].join('\n')
+            '# Active skill directives',
+            `The user invoked: ${invokedSkills}.`,
+            'Apply the following skill instructions for this request.',
+            '',
+            ...skillContents,
+          ].join('\n')
           : '';
 
       // Keep directives in the message (normalize spacing), so providers consistently see that a skill was invoked.
@@ -3673,12 +3711,11 @@ const Panel = () => {
     chip.dataset.lines = String(lineCount);
     chip.setAttribute(
       'aria-label',
-      `${filename} ${
-        typeof lineFrom === 'number' && typeof lineTo === 'number'
-          ? lineFrom === lineTo
-            ? lineFrom
-            : `${lineFrom}-${lineTo}`
-          : lineCount > 1
+      `${filename} ${typeof lineFrom === 'number' && typeof lineTo === 'number'
+        ? lineFrom === lineTo
+          ? lineFrom
+          : `${lineFrom}-${lineTo}`
+        : lineCount > 1
           ? `1-${lineCount}`
           : '1'
       }`
@@ -3722,8 +3759,8 @@ const Panel = () => {
         ? `${lineFrom}`
         : `${lineFrom}-${lineTo}`
       : lineCount > 1
-      ? `1-${lineCount}`
-      : '1';
+        ? `1-${lineCount}`
+        : '1';
 
     const icon = document.createElement('span');
     icon.className = `ageaf-panel__chip-icon ageaf-panel__chip-icon--${iconMeta.className}`;
@@ -4073,13 +4110,13 @@ const Panel = () => {
     const filteredQuotes =
       latestPatchText && message.role === 'assistant'
         ? quotes.filter((quote) => {
-            const copyText = extractCopyTextFromQuoteHtml(quote.html);
-            if (!copyText) return true;
-            return (
-              normalizeForCompare(copyText) !==
-              normalizeForCompare(latestPatchText)
-            );
-          })
+          const copyText = extractCopyTextFromQuoteHtml(quote.html);
+          if (!copyText) return true;
+          return (
+            normalizeForCompare(copyText) !==
+            normalizeForCompare(latestPatchText)
+          );
+        })
         : quotes;
 
     // If the assistant message is just the proposed patch text (as a LaTeX/code fence),
@@ -4165,9 +4202,8 @@ const Panel = () => {
                       </div>
                     )}
                     <button
-                      class={`ageaf-message__copy ${
-                        copyDisabled ? 'is-disabled' : ''
-                      }`}
+                      class={`ageaf-message__copy ${copyDisabled ? 'is-disabled' : ''
+                        }`}
                       type="button"
                       aria-label="Copy quote"
                       title="Copy quote"
@@ -4544,11 +4580,11 @@ const Panel = () => {
           : null;
       const codexEffort = codexModel
         ? getCodexEffortForThinkingMode(
-            currentThinkingMode as ThinkingMode['id'],
-            codexRuntimeModel ?? null
-          ) ??
-          codexRuntimeModel?.defaultReasoningEffort ??
-          null
+          currentThinkingMode as ThinkingMode['id'],
+          codexRuntimeModel ?? null
+        ) ??
+        codexRuntimeModel?.defaultReasoningEffort ??
+        null
         : null;
       return {
         codex: {
@@ -5021,7 +5057,7 @@ const Panel = () => {
     const sessionState = getSessionState(sessionConversationId);
     let patchFeedbackTargetActive =
       patchFeedbackTarget &&
-      patchFeedbackTarget.conversationId === sessionConversationId
+        patchFeedbackTarget.conversationId === sessionConversationId
         ? patchFeedbackTarget
         : null;
 
@@ -5181,9 +5217,8 @@ const Panel = () => {
             if (body.length > MAX_CHARS) {
               const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
               const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
-              body = `${head}\n\n… [truncated ${
-                body.length - (head.length + tail.length)
-              } chars] …\n\n${tail}`;
+              body = `${head}\n\n… [truncated ${body.length - (head.length + tail.length)
+                } chars] …\n\n${tail}`;
             }
             const requested = ref;
             const lang = langForExt(requested);
@@ -5221,17 +5256,16 @@ const Panel = () => {
 
         const injection = ok
           ? (() => {
-              let body = content;
-              if (body.length > MAX_CHARS) {
-                const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
-                const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
-                body = `${head}\n\n… [truncated ${
-                  body.length - (head.length + tail.length)
+            let body = content;
+            if (body.length > MAX_CHARS) {
+              const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
+              const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
+              body = `${head}\n\n… [truncated ${body.length - (head.length + tail.length)
                 } chars] …\n\n${tail}`;
-              }
-              const lang = langForExt(requested);
-              return `\n\n[Overleaf file: ${requested}]\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
-            })()
+            }
+            const lang = langForExt(requested);
+            return `\n\n[Overleaf file: ${requested}]\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
+          })()
           : `\n\n[Overleaf file: ${requested}]\n(Unable to read file content from Overleaf editor.)\n`;
 
         return injection;
@@ -5339,154 +5373,154 @@ const Panel = () => {
       const codexRuntimeModel =
         provider === 'codex'
           ? (codexModelCandidate
-              ? runtimeModels.find(
-                  (entry) => entry.value === codexModelCandidate
-                )
-              : null) ??
-            runtimeModels.find((entry) => entry.isDefault) ??
-            runtimeModels.find(
-              (entry) => entry.supportedReasoningEfforts !== undefined
-            ) ??
-            runtimeModels[0] ??
-            null
+            ? runtimeModels.find(
+              (entry) => entry.value === codexModelCandidate
+            )
+            : null) ??
+          runtimeModels.find((entry) => entry.isDefault) ??
+          runtimeModels.find(
+            (entry) => entry.supportedReasoningEfforts !== undefined
+          ) ??
+          runtimeModels[0] ??
+          null
           : null;
       const codexModel =
         provider === 'codex' &&
-        codexRuntimeModel?.supportedReasoningEfforts !== undefined
+          codexRuntimeModel?.supportedReasoningEfforts !== undefined
           ? codexRuntimeModel.value
           : null;
       const codexEffort =
         provider === 'codex' && codexModel
           ? getCodexEffortForThinkingMode(
-              currentThinkingMode as ThinkingMode['id'],
-              codexRuntimeModel
-            ) ??
-            codexRuntimeModel?.defaultReasoningEffort ??
-            null
+            currentThinkingMode as ThinkingMode['id'],
+            codexRuntimeModel
+          ) ??
+          codexRuntimeModel?.defaultReasoningEffort ??
+          null
           : null;
       const payload =
         provider === 'codex'
           ? {
-              provider: 'codex' as const,
-              action,
-              runtime: {
-                codex: {
-                  cliPath: options.openaiCodexCliPath,
-                  envVars: options.openaiEnvVars,
-                  approvalPolicy: options.openaiApprovalPolicy,
-                  ...(codexModel ? { model: codexModel } : {}),
-                  ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
-                  ...(codexThreadId ? { threadId: codexThreadId } : {}),
-                },
+            provider: 'codex' as const,
+            action,
+            runtime: {
+              codex: {
+                cliPath: options.openaiCodexCliPath,
+                envVars: options.openaiEnvVars,
+                approvalPolicy: options.openaiApprovalPolicy,
+                ...(codexModel ? { model: codexModel } : {}),
+                ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
+                ...(codexThreadId ? { threadId: codexThreadId } : {}),
               },
-              overleaf: { url: window.location.href },
-              context: {
-                message: finalMessageText,
-                selection: selection?.selection ?? '',
-                surroundingBefore: selection?.before ?? '',
-                surroundingAfter: selection?.after ?? '',
-                ...(messageImages
-                  ? {
-                      images: messageImages.map((image) => ({
-                        id: image.id,
-                        name: image.name,
-                        mediaType: image.mediaType,
-                        data: image.data,
-                        size: image.size,
-                      })),
-                    }
-                  : {}),
-                ...(messageAttachments
-                  ? {
-                      attachments: messageAttachments.map((attachment) => ({
-                        id: attachment.id,
-                        path: attachment.path,
-                        name: attachment.name,
-                        ext: attachment.ext,
-                        sizeBytes: attachment.sizeBytes,
-                        lineCount: attachment.lineCount,
-                        content: attachment.content,
-                      })),
-                    }
-                  : {}),
-              },
-              policy: {
-                requireApproval: false,
-                allowNetwork: false,
-                maxFiles: 1,
-              },
-              userSettings: {
-                displayName: options.displayName,
-                customSystemPrompt: skillsPrompt
-                  ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
-                  : options.customSystemPrompt,
-                autoCompactEnabled: options.autoCompactEnabled,
-                debugCliEvents: options.debugCliEvents,
-              },
-            }
+            },
+            overleaf: { url: window.location.href },
+            context: {
+              message: finalMessageText,
+              selection: selection?.selection ?? '',
+              surroundingBefore: selection?.before ?? '',
+              surroundingAfter: selection?.after ?? '',
+              ...(messageImages
+                ? {
+                  images: messageImages.map((image) => ({
+                    id: image.id,
+                    name: image.name,
+                    mediaType: image.mediaType,
+                    data: image.data,
+                    size: image.size,
+                  })),
+                }
+                : {}),
+              ...(messageAttachments
+                ? {
+                  attachments: messageAttachments.map((attachment) => ({
+                    id: attachment.id,
+                    path: attachment.path,
+                    name: attachment.name,
+                    ext: attachment.ext,
+                    sizeBytes: attachment.sizeBytes,
+                    lineCount: attachment.lineCount,
+                    content: attachment.content,
+                  })),
+                }
+                : {}),
+            },
+            policy: {
+              requireApproval: false,
+              allowNetwork: false,
+              maxFiles: 1,
+            },
+            userSettings: {
+              displayName: options.displayName,
+              customSystemPrompt: skillsPrompt
+                ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
+                : options.customSystemPrompt,
+              autoCompactEnabled: options.autoCompactEnabled,
+              debugCliEvents: options.debugCliEvents,
+            },
+          }
           : {
-              provider: 'claude' as const,
-              action,
-              runtime: {
-                claude: {
-                  cliPath: options.claudeCliPath,
-                  envVars: options.claudeEnvVars,
-                  loadUserSettings: options.claudeLoadUserSettings,
-                  model: runtimeModel ?? undefined,
-                  maxThinkingTokens: runtimeThinkingTokens ?? undefined,
-                  sessionScope: 'project' as const,
-                  yoloMode,
-                  conversationId: sessionConversationId,
-                },
+            provider: 'claude' as const,
+            action,
+            runtime: {
+              claude: {
+                cliPath: options.claudeCliPath,
+                envVars: options.claudeEnvVars,
+                loadUserSettings: options.claudeLoadUserSettings,
+                model: runtimeModel ?? undefined,
+                maxThinkingTokens: runtimeThinkingTokens ?? undefined,
+                sessionScope: 'project' as const,
+                yoloMode,
+                conversationId: sessionConversationId,
               },
-              overleaf: { url: window.location.href },
-              context: {
-                message: finalMessageText,
-                selection: selection?.selection ?? '',
-                surroundingBefore: selection?.before ?? '',
-                surroundingAfter: selection?.after ?? '',
-                ...(messageImages
-                  ? {
-                      images: messageImages.map((image) => ({
-                        id: image.id,
-                        name: image.name,
-                        mediaType: image.mediaType,
-                        data: image.data,
-                        size: image.size,
-                      })),
-                    }
-                  : {}),
-                ...(messageAttachments
-                  ? {
-                      attachments: messageAttachments.map((attachment) => ({
-                        id: attachment.id,
-                        path: attachment.path,
-                        name: attachment.name,
-                        ext: attachment.ext,
-                        sizeBytes: attachment.sizeBytes,
-                        lineCount: attachment.lineCount,
-                        content: attachment.content,
-                      })),
-                    }
-                  : {}),
-              },
-              policy: {
-                requireApproval: false,
-                allowNetwork: false,
-                maxFiles: 1,
-              },
-              userSettings: {
-                displayName: options.displayName,
-                customSystemPrompt: skillsPrompt
-                  ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
-                  : options.customSystemPrompt,
-                enableTools: options.enableTools,
-                enableCommandBlocklist: options.enableCommandBlocklist,
-                blockedCommandsUnix: options.blockedCommandsUnix,
-                autoCompactEnabled: options.autoCompactEnabled,
-                debugCliEvents: options.debugCliEvents,
-              },
-            };
+            },
+            overleaf: { url: window.location.href },
+            context: {
+              message: finalMessageText,
+              selection: selection?.selection ?? '',
+              surroundingBefore: selection?.before ?? '',
+              surroundingAfter: selection?.after ?? '',
+              ...(messageImages
+                ? {
+                  images: messageImages.map((image) => ({
+                    id: image.id,
+                    name: image.name,
+                    mediaType: image.mediaType,
+                    data: image.data,
+                    size: image.size,
+                  })),
+                }
+                : {}),
+              ...(messageAttachments
+                ? {
+                  attachments: messageAttachments.map((attachment) => ({
+                    id: attachment.id,
+                    path: attachment.path,
+                    name: attachment.name,
+                    ext: attachment.ext,
+                    sizeBytes: attachment.sizeBytes,
+                    lineCount: attachment.lineCount,
+                    content: attachment.content,
+                  })),
+                }
+                : {}),
+            },
+            policy: {
+              requireApproval: false,
+              allowNetwork: false,
+              maxFiles: 1,
+            },
+            userSettings: {
+              displayName: options.displayName,
+              customSystemPrompt: skillsPrompt
+                ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
+                : options.customSystemPrompt,
+              enableTools: options.enableTools,
+              enableCommandBlocklist: options.enableCommandBlocklist,
+              blockedCommandsUnix: options.blockedCommandsUnix,
+              autoCompactEnabled: options.autoCompactEnabled,
+              debugCliEvents: options.debugCliEvents,
+            },
+          };
 
       const { jobId } = await createJob(options, payload, {
         signal: abortController.signal,
@@ -5631,11 +5665,11 @@ const Panel = () => {
               sessionState.statusPrefix = trimmed;
               const elapsedSeconds = sessionState.activityStartTime
                 ? Math.max(
-                    0,
-                    Math.floor(
-                      (Date.now() - sessionState.activityStartTime) / 1000
-                    )
+                  0,
+                  Math.floor(
+                    (Date.now() - sessionState.activityStartTime) / 1000
                   )
+                )
                 : null;
               const status = formatStreamingStatusLine(trimmed, elapsedSeconds);
               if (sessionConversationId === chatConversationIdRef.current) {
@@ -5728,11 +5762,11 @@ const Panel = () => {
               sessionState.statusPrefix = trimmed;
               const elapsedSeconds = sessionState.activityStartTime
                 ? Math.max(
-                    0,
-                    Math.floor(
-                      (Date.now() - sessionState.activityStartTime) / 1000
-                    )
+                  0,
+                  Math.floor(
+                    (Date.now() - sessionState.activityStartTime) / 1000
                   )
+                )
                 : null;
               const status = formatStreamingStatusLine(trimmed, elapsedSeconds);
               if (sessionConversationId === chatConversationIdRef.current) {
@@ -5997,17 +6031,17 @@ const Panel = () => {
             const normalizedStatus = rawStatus.toLowerCase();
             const status =
               normalizedStatus === 'complete' ||
-              normalizedStatus === 'success' ||
-              normalizedStatus === 'ok'
+                normalizedStatus === 'success' ||
+                normalizedStatus === 'ok'
                 ? 'ok'
                 : normalizedStatus;
             const message =
               typeof (event.data as any)?.message === 'string' &&
-              String((event.data as any).message).trim()
+                String((event.data as any).message).trim()
                 ? String((event.data as any).message)
                 : status === 'ok'
-                ? undefined
-                : `Job finished with status "${rawStatus}"`;
+                  ? undefined
+                  : `Job finished with status "${rawStatus}"`;
             sessionState.pendingDone = {
               status,
               message,
@@ -6145,7 +6179,7 @@ const Panel = () => {
     const rawPatchFeedbackTarget = pendingPatchFeedbackTargetRef.current;
     const patchFeedbackTarget =
       rawPatchFeedbackTarget &&
-      rawPatchFeedbackTarget.conversationId === conversationId
+        rawPatchFeedbackTarget.conversationId === conversationId
         ? rawPatchFeedbackTarget
         : undefined;
     pendingPatchFeedbackTargetRef.current = null;
@@ -6635,20 +6669,20 @@ const Panel = () => {
             patchReview.kind === 'replaceSelection'
               ? patchReview.from
               : patchReview.kind === 'replaceRangeInFile'
-              ? patchReview.from
-              : undefined,
+                ? patchReview.from
+                : undefined,
           to:
             patchReview.kind === 'replaceSelection'
               ? patchReview.to
               : patchReview.kind === 'replaceRangeInFile'
-              ? patchReview.to
-              : undefined,
+                ? patchReview.to
+                : undefined,
           oldText:
             patchReview.kind === 'replaceSelection'
               ? patchReview.selection
               : patchReview.kind === 'replaceRangeInFile'
-              ? patchReview.expectedOldText
-              : '',
+                ? patchReview.expectedOldText
+                : '',
           newText: 'text' in patchReview ? patchReview.text : '',
           filePath:
             patchReview.kind === 'replaceRangeInFile'
@@ -6873,13 +6907,13 @@ const Panel = () => {
     typeof contextUsage?.percentage === 'number'
       ? Math.min(100, Math.max(0, contextUsage.percentage))
       : contextWindow && contextWindow > 0
-      ? Math.min(100, Math.round((usedTokens / contextWindow) * 100))
-      : 0;
+        ? Math.min(100, Math.round((usedTokens / contextWindow) * 100))
+        : 0;
   const usageLabel = contextWindow
     ? `${formatTokenCount(usedTokens)} / ${formatTokenCount(contextWindow)}`
     : usedTokens > 0
-    ? `${formatTokenCount(usedTokens)} used`
-    : 'Context usage unavailable';
+      ? `${formatTokenCount(usedTokens)} used`
+      : 'Context usage unavailable';
   const ringCircumference = 2 * Math.PI * 10;
   const panelToggleLabel = collapsed ? 'Show panel' : 'Hide panel';
   const panelToggleTooltip = collapsed
@@ -6939,7 +6973,7 @@ const Panel = () => {
           const evictedConversation = findConversation(state, evictedId);
           const sessionIdToDelete =
             provider === 'codex' &&
-            evictedConversation?.providerState?.codex?.threadId
+              evictedConversation?.providerState?.codex?.threadId
               ? evictedConversation.providerState.codex.threadId
               : evictedId;
           await deleteSession(options, provider, sessionIdToDelete);
@@ -7017,8 +7051,8 @@ const Panel = () => {
         sessionState.thinkingTimerId && !sessionState.thinkingComplete
           ? 'Thinking · ESC to interrupt'
           : sessionState.streamTimerId
-          ? 'Streaming · ESC to interrupt'
-          : 'Working · ESC to interrupt';
+            ? 'Streaming · ESC to interrupt'
+            : 'Working · ESC to interrupt';
       setStreamingState(status, true);
     } else {
       setStreamingState(null, false);
@@ -7058,7 +7092,7 @@ const Panel = () => {
       const options = await getOptions();
       const sessionIdToDelete =
         currentProvider === 'codex' &&
-        currentConversation.providerState?.codex?.threadId
+          currentConversation.providerState?.codex?.threadId
           ? currentConversation.providerState.codex.threadId
           : currentId;
       await deleteSession(options, currentProvider, sessionIdToDelete);
@@ -7092,33 +7126,8 @@ const Panel = () => {
         );
       }
     } else {
-      const created = startNewConversation(nextState, currentProvider);
-      nextState = created.state;
-      nextActiveId = created.conversation.id;
-      orderedAfter = getOrderedSessionIds(nextState);
-
-      // Clean up evicted sessions
-      if (created.evicted.length > 0) {
-        const options = await getOptions();
-        for (const evictedId of created.evicted) {
-          try {
-            // For Codex, need to look up the conversation to get threadId
-            // Look up from the state before startNewConversation removed it
-            const evictedConversation = findConversation(state, evictedId);
-            const sessionIdToDelete =
-              currentProvider === 'codex' &&
-              evictedConversation?.providerState?.codex?.threadId
-                ? evictedConversation.providerState.codex.threadId
-                : evictedId;
-            await deleteSession(options, currentProvider, sessionIdToDelete);
-          } catch (error) {
-            console.error(
-              `Failed to delete evicted ${currentProvider} session ${evictedId}:`,
-              error
-            );
-          }
-        }
-      }
+      nextActiveId = null;
+      orderedAfter = [];
     }
 
     chatStateRef.current = nextState;
@@ -7133,10 +7142,12 @@ const Panel = () => {
     setContextUsageFromStored(
       getCachedStoredUsage(nextConversation, nextProvider)
     );
-    void refreshContextUsage({
-      provider: nextProvider,
-      conversationId: nextActiveId,
-    });
+    if (nextActiveId) {
+      void refreshContextUsage({
+        provider: nextProvider,
+        conversationId: nextActiveId,
+      });
+    }
 
     clearPatchActionState();
     setToolRequests([]);
@@ -7164,37 +7175,84 @@ const Panel = () => {
   const activeToolRequest = toolRequests[0] ?? null;
   const activeToolQuestions: ToolInputQuestion[] =
     activeToolRequest?.kind === 'user_input' &&
-    Array.isArray(activeToolRequest.params?.questions)
+      Array.isArray(activeToolRequest.params?.questions)
       ? (activeToolRequest.params.questions as unknown[])
-          .map((entry): ToolInputQuestion | null => {
-            if (!entry || typeof entry !== 'object') return null;
-            const id = String((entry as any).id ?? '').trim();
-            if (!id) return null;
-            const header = String((entry as any).header ?? '');
-            const question = String((entry as any).question ?? '');
-            const optionsRaw: unknown[] = Array.isArray((entry as any).options)
-              ? ((entry as any).options as unknown[])
-              : [];
-            const options = optionsRaw
-              .map((option): ToolInputOption | null => {
-                if (!option || typeof option !== 'object') return null;
-                const label = String((option as any).label ?? '').trim();
-                const description = String(
-                  (option as any).description ?? ''
-                ).trim();
-                if (!label && !description) return null;
-                return { label, description };
-              })
-              .filter((option): option is ToolInputOption => Boolean(option));
-            return {
-              id,
-              header,
-              question,
-              options: options.length ? options : null,
-            };
-          })
-          .filter((entry): entry is ToolInputQuestion => Boolean(entry))
+        .map((entry): ToolInputQuestion | null => {
+          if (!entry || typeof entry !== 'object') return null;
+          const id = String((entry as any).id ?? '').trim();
+          if (!id) return null;
+          const header = String((entry as any).header ?? '');
+          const question = String((entry as any).question ?? '');
+          const optionsRaw: unknown[] = Array.isArray((entry as any).options)
+            ? ((entry as any).options as unknown[])
+            : [];
+          const options = optionsRaw
+            .map((option): ToolInputOption | null => {
+              if (!option || typeof option !== 'object') return null;
+              const label = String((option as any).label ?? '').trim();
+              const description = String(
+                (option as any).description ?? ''
+              ).trim();
+              if (!label && !description) return null;
+              return { label, description };
+            })
+            .filter((option): option is ToolInputOption => Boolean(option));
+          return {
+            id,
+            header,
+            question,
+            options: options.length ? options : null,
+          };
+        })
+        .filter((entry): entry is ToolInputQuestion => Boolean(entry))
       : [];
+
+  const hasSessions = sessionIds.length > 0;
+  const landingPage = (
+    <div class="ageaf-landing">
+      <div class="ageaf-landing__content">
+        <div class="ageaf-landing__header">
+          <img
+            src={getIconUrl('icons/icon_256.png')}
+            class="ageaf-landing__logo"
+            alt="Ageaf Logo"
+          />
+          <div class="ageaf-landing__title">AGEAF</div>
+          <div class="ageaf-landing__slogan">YOUR OVERLEAF AGENT</div>
+        </div>
+        <div class="ageaf-landing__actions">
+          <button
+            class="ageaf-landing__card"
+            type="button"
+            onClick={() => void onNewChat('claude')}
+            aria-label="Start an Anthropic Claude session"
+          >
+            <div class="ageaf-landing__card-title">Anthropic</div>
+            <div class="ageaf-landing__card-desc">Claude</div>
+          </button>
+          <button
+            class="ageaf-landing__card"
+            type="button"
+            onClick={() => void onNewChat('codex')}
+            aria-label="Start an OpenAI Codex session"
+          >
+            <div class="ageaf-landing__card-title">OpenAI</div>
+            <div class="ageaf-landing__card-desc">Codex</div>
+          </button>
+        </div>
+      </div>
+      <div class="ageaf-landing__footer">
+        <a
+          class="ageaf-landing__help"
+          href={HOW_TO_GUIDES_URL}
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          How-to Guides
+        </a>
+      </div>
+    </div>
+  );
 
   return (
     <aside
@@ -7206,9 +7264,8 @@ const Panel = () => {
         onMouseDown={onResizeStart}
       >
         <button
-          class={`ageaf-panel__divider-toggle ${
-            collapsed ? 'is-collapsed' : ''
-          }`}
+          class={`ageaf-panel__divider-toggle ${collapsed ? 'is-collapsed' : ''
+            }`}
           type="button"
           onMouseDown={(event) => {
             event.stopPropagation();
@@ -7229,53 +7286,53 @@ const Panel = () => {
         </button>
       </div>
       <div class="ageaf-panel__inner" id="ageaf-panel-inner">
-        <header class="ageaf-panel__header">
-          <img
-            src={(() => {
-              try {
-                if (typeof chrome !== 'undefined' && chrome.runtime?.getURL) {
-                  // Use icon_48.png as it was the source for our crop
-                  const url = chrome.runtime.getURL('icons/icon_48.png');
-                  const version =
-                    chrome.runtime.getManifest?.()?.version ?? 'dev';
-                  return `${url}?v=${version}`;
-                }
-              } catch {
-                // Extension context invalidated - fall back to relative path
-              }
-              return 'icons/icon_48.png';
-            })()}
-            class="ageaf-panel__logo"
-            alt="Ageaf Logo"
-          />
-          <div class="ageaf-panel__title">
-            <div class="ageaf-panel__name">Ageaf</div>
-            <div class="ageaf-panel__intro">
-              Ask me to rewrite, explain, or fix LaTeX errors
+        {hasSessions ? (
+          <header class="ageaf-panel__header">
+            <img
+              src={getIconUrl('icons/icon_48.png')}
+              class="ageaf-panel__logo"
+              alt="Ageaf Logo"
+            />
+            <div class="ageaf-panel__title">
+              <div class="ageaf-panel__name">Ageaf</div>
+              <div class="ageaf-panel__intro">
+                Your Overleaf Agent
+              </div>
             </div>
-          </div>
-          <div
-            class={`ageaf-provider ${providerIndicatorClass} ${
-              !connectionHealth.hostConnected ||
-              !connectionHealth.runtimeWorking
-                ? 'ageaf-provider--disconnected'
-                : ''
-            } ${
-              !connectionHealth.hostConnected
-                ? 'ageaf-provider--host-disconnected'
-                : !connectionHealth.runtimeWorking
-                ? 'ageaf-provider--runtime-disconnected'
-                : ''
-            }`}
-            aria-label={`Provider: ${providerDisplay.label}`}
-            data-tooltip={getConnectionHealthTooltip()}
-          >
-            <span class="ageaf-provider__dot" aria-hidden="true" />
-            <span class="ageaf-provider__label">{providerDisplay.label}</span>
-          </div>
-        </header>
+            <div class="ageaf-panel__header-actions">
+              <div
+                class={`ageaf-provider ${providerIndicatorClass} ${!connectionHealth.hostConnected ||
+                  !connectionHealth.runtimeWorking
+                  ? 'ageaf-provider--disconnected'
+                  : ''
+                  } ${!connectionHealth.hostConnected
+                    ? 'ageaf-provider--host-disconnected'
+                    : !connectionHealth.runtimeWorking
+                      ? 'ageaf-provider--runtime-disconnected'
+                      : ''
+                  }`}
+                aria-label={`Provider: ${providerDisplay.label}`}
+                data-tooltip={getConnectionHealthTooltip()}
+              >
+                <span class="ageaf-provider__dot" aria-hidden="true" />
+                <span class="ageaf-provider__label">{providerDisplay.label}</span>
+              </div>
+              <a
+                class="ageaf-panel__help"
+                href={HOW_TO_GUIDES_URL}
+                target="_blank"
+                rel="noreferrer noopener"
+                aria-label="How-to Guides"
+              >
+                ?
+              </a>
+            </div>
+          </header>
+        ) : null}
         <div class="ageaf-panel__body">
-          <div class="ageaf-panel__chat" ref={chatRef}>
+          {hasSessions ? (
+            <>
+              <div class="ageaf-panel__chat" ref={chatRef}>
             {messages.map((message) => {
               const content = renderMessageContent(message);
               if (!content) return null;
@@ -7295,9 +7352,9 @@ const Panel = () => {
               );
               const isStatusCoTToggle = Boolean(
                 message.role === 'assistant' &&
-                  message.statusLine &&
-                  hasCoTForMessage &&
-                  message.id
+                message.statusLine &&
+                hasCoTForMessage &&
+                message.id
               );
               const isStatusCoTExpanded = isStatusCoTToggle
                 ? expandedThinkingMessages.has(message.id)
@@ -7330,13 +7387,13 @@ const Panel = () => {
                   ) : null}
                   {hasCoTForMessage
                     ? renderCoTBlock(
-                        cotForMessage!,
-                        false,
-                        message.role === 'assistant' ? message.id : undefined,
-                        {
-                          hideHeader: isStatusCoTToggle,
-                        }
-                      )
+                      cotForMessage!,
+                      false,
+                      message.role === 'assistant' ? message.id : undefined,
+                      {
+                        hideHeader: isStatusCoTToggle,
+                      }
+                    )
                     : null}
                   {content}
                   {canCopyResponse ? (
@@ -7383,9 +7440,8 @@ const Panel = () => {
                     <>
                       {isStreamingCoTToggle ? (
                         <button
-                          class={`ageaf-message__status ageaf-message__status--toggle ${
-                            isStreamingActive ? 'is-active' : ''
-                          }`}
+                          class={`ageaf-message__status ageaf-message__status--toggle ${isStreamingActive ? 'is-active' : ''
+                            }`}
                           type="button"
                           aria-expanded={isStreamingCoTExpanded}
                           onClick={() =>
@@ -7401,22 +7457,21 @@ const Panel = () => {
                         </button>
                       ) : (
                         <div
-                          class={`ageaf-message__status ${
-                            isStreamingActive ? 'is-active' : ''
-                          }`}
+                          class={`ageaf-message__status ${isStreamingActive ? 'is-active' : ''
+                            }`}
                         >
                           {streamingStatus}
                         </div>
                       )}
                       {hasStreamingCoT
                         ? renderCoTBlock(
-                            streamingCoT,
-                            isStreamingActive,
-                            'streaming-thinking',
-                            {
-                              hideHeader: isStreamingCoTToggle,
-                            }
-                          )
+                          streamingCoT,
+                          isStreamingActive,
+                          'streaming-thinking',
+                          {
+                            hideHeader: isStreamingCoTToggle,
+                          }
+                        )
                         : null}
                     </>
                   );
@@ -7598,9 +7653,8 @@ const Panel = () => {
               <div class="ageaf-runtime__menu" role="listbox">
                 {getOrderedRuntimeModels().map((model) => (
                   <button
-                    class={`ageaf-runtime__option ${
-                      isRuntimeModelSelected(model) ? 'is-selected' : ''
-                    }`}
+                    class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''
+                      }`}
                     type="button"
                     onClick={() => onSelectModel(model.value)}
                     key={model.value}
@@ -7630,9 +7684,8 @@ const Panel = () => {
               <div class="ageaf-runtime__menu" role="listbox">
                 {thinkingModes.map((mode) => (
                   <button
-                    class={`ageaf-runtime__option ${
-                      mode.id === currentThinkingMode ? 'is-selected' : ''
-                    }`}
+                    class={`ageaf-runtime__option ${mode.id === currentThinkingMode ? 'is-selected' : ''
+                      }`}
                     type="button"
                     onClick={() => onSelectThinkingMode(mode.id)}
                     key={mode.id}
@@ -7681,8 +7734,8 @@ const Panel = () => {
                     ? 'Codex YOLO mode enabled'
                     : 'Codex safe mode enabled'
                   : yoloMode
-                  ? 'YOLO mode enabled'
-                  : 'Safe mode enabled'
+                    ? 'YOLO mode enabled'
+                    : 'Safe mode enabled'
               }
               data-tooltip={yoloMode ? 'YOLO mode' : 'Safe mode'}
               onClick={() => {
@@ -7697,14 +7750,19 @@ const Panel = () => {
               </span>
             </button>
           </div>
+            </>
+          ) : (
+            landingPage
+          )}
         </div>
-        <div
-          class="ageaf-panel__input"
-          onDragEnter={(event) => handleDragEnter(event as DragEvent)}
-          onDragOver={(event) => handleDragOver(event as DragEvent)}
-          onDragLeave={(event) => handleDragLeave(event as DragEvent)}
-          onDrop={(event) => handleDrop(event as DragEvent)}
-        >
+        {hasSessions ? (
+          <div
+            class="ageaf-panel__input"
+            onDragEnter={(event) => handleDragEnter(event as DragEvent)}
+            onDragOver={(event) => handleDragOver(event as DragEvent)}
+            onDragLeave={(event) => handleDragLeave(event as DragEvent)}
+            onDrop={(event) => handleDrop(event as DragEvent)}
+          >
           <div class="ageaf-panel__toolbar">
             <div
               class="ageaf-session-tabs"
@@ -7725,14 +7783,13 @@ const Panel = () => {
                 const statusIcon = sessionState?.isSending
                   ? '⟳' // spinning/thinking
                   : (sessionState?.queue.length ?? 0) > 0
-                  ? `${sessionState?.queue.length ?? 0}` // queue count
-                  : null;
+                    ? `${sessionState?.queue.length ?? 0}` // queue count
+                    : null;
 
                 return (
                   <button
-                    class={`ageaf-session-tab ${
-                      id === activeSessionId ? 'is-active' : ''
-                    } ${isActive ? 'is-busy' : ''}`}
+                    class={`ageaf-session-tab ${id === activeSessionId ? 'is-active' : ''
+                      } ${isActive ? 'is-busy' : ''}`}
                     type="button"
                     role="tab"
                     aria-selected={id === activeSessionId}
@@ -7943,9 +8000,8 @@ const Panel = () => {
                   <button
                     key={file.path}
                     type="button"
-                    class={`ageaf-mention__option ${
-                      index === mentionIndex ? 'is-active' : ''
-                    }`}
+                    class={`ageaf-mention__option ${index === mentionIndex ? 'is-active' : ''
+                      }`}
                     onMouseDown={(event) => {
                       event.preventDefault();
                       insertMentionEntry(file);
@@ -7956,12 +8012,12 @@ const Panel = () => {
                       {file.kind === 'folder'
                         ? 'Dir'
                         : file.kind === 'tex'
-                        ? 'TeX'
-                        : file.kind === 'bib'
-                        ? 'Bib'
-                        : file.kind === 'img'
-                        ? 'Img'
-                        : 'File'}
+                          ? 'TeX'
+                          : file.kind === 'bib'
+                            ? 'Bib'
+                            : file.kind === 'img'
+                              ? 'Img'
+                              : 'File'}
                     </span>
                     <span class="ageaf-mention__name">{file.name}</span>
                   </button>
@@ -7989,9 +8045,8 @@ const Panel = () => {
                   <button
                     key={skill.id}
                     type="button"
-                    class={`ageaf-skill__option ${
-                      index === skillIndex ? 'is-active' : ''
-                    }`}
+                    class={`ageaf-skill__option ${index === skillIndex ? 'is-active' : ''
+                      }`}
                     onMouseDown={(event) => {
                       event.preventDefault();
                       insertSkill(skill);
@@ -8046,6 +8101,7 @@ const Panel = () => {
             </div>
           ) : null}
         </div>
+      ) : null}
       </div>
       {settingsOpen ? (
         <div class="ageaf-settings">
@@ -8060,45 +8116,40 @@ const Panel = () => {
           >
             <div class="ageaf-settings__sidebar">
               <button
-                class={`ageaf-settings__tab ${
-                  settingsTab === 'connection' ? 'is-active' : ''
-                }`}
+                class={`ageaf-settings__tab ${settingsTab === 'connection' ? 'is-active' : ''
+                  }`}
                 type="button"
                 onClick={() => setSettingsTab('connection')}
               >
                 Connection
               </button>
               <button
-                class={`ageaf-settings__tab ${
-                  settingsTab === 'authentication' ? 'is-active' : ''
-                }`}
+                class={`ageaf-settings__tab ${settingsTab === 'authentication' ? 'is-active' : ''
+                  }`}
                 type="button"
                 onClick={() => setSettingsTab('authentication')}
               >
                 Authentication
               </button>
               <button
-                class={`ageaf-settings__tab ${
-                  settingsTab === 'customization' ? 'is-active' : ''
-                }`}
+                class={`ageaf-settings__tab ${settingsTab === 'customization' ? 'is-active' : ''
+                  }`}
                 type="button"
                 onClick={() => setSettingsTab('customization')}
               >
                 Customization
               </button>
               <button
-                class={`ageaf-settings__tab ${
-                  settingsTab === 'tools' ? 'is-active' : ''
-                }`}
+                class={`ageaf-settings__tab ${settingsTab === 'tools' ? 'is-active' : ''
+                  }`}
                 type="button"
                 onClick={() => setSettingsTab('tools')}
               >
                 Tools
               </button>
               <button
-                class={`ageaf-settings__tab ${
-                  settingsTab === 'safety' ? 'is-active' : ''
-                }`}
+                class={`ageaf-settings__tab ${settingsTab === 'safety' ? 'is-active' : ''
+                  }`}
                 type="button"
                 onClick={() => setSettingsTab('safety')}
               >
@@ -8395,15 +8446,12 @@ const Panel = () => {
                       <p class="ageaf-settings__hint">
                         Host status:{' '}
                         {hostToolsStatus
-                          ? `tools=${
-                              hostToolsStatus.toolsEnabled ? 'on' : 'off'
-                            }, remote-toggle=${
-                              hostToolsStatus.remoteToggleAllowed
-                                ? 'allowed'
-                                : 'blocked'
-                            }, available=${
-                              hostToolsStatus.toolsAvailable ? 'yes' : 'no'
-                            }`
+                          ? `tools=${hostToolsStatus.toolsEnabled ? 'on' : 'off'
+                          }, remote-toggle=${hostToolsStatus.remoteToggleAllowed
+                            ? 'allowed'
+                            : 'blocked'
+                          }, available=${hostToolsStatus.toolsAvailable ? 'yes' : 'no'
+                          }`
                           : 'unavailable'}
                       </p>
                       {!hostToolsStatus?.remoteToggleAllowed ? (
@@ -8606,7 +8654,7 @@ const Panel = () => {
           </div>
         </div>
       ) : null}
-    </aside>
+    </aside >
   );
 };
 
@@ -8704,10 +8752,10 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
       ext === 'tex'
         ? 'tex'
         : ext === 'bib'
-        ? 'bib'
-        : ext.match(/png|jpg|jpeg|pdf|svg/)
-        ? 'img'
-        : 'other';
+          ? 'bib'
+          : ext.match(/png|jpg|jpeg|pdf|svg/)
+            ? 'img'
+            : 'other';
 
     // Prefer extracting Overleaf entity id/type from the file tree markup
     // (file tree nodes contain a descendant with `data-file-id`).

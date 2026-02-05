@@ -17,6 +17,7 @@
         "icons/icon_32.png",
         "icons/icon_48.png",
         "icons/icon_128.png",
+        "icons/icon_256.png",
         "fonts/*",
         "vendors-*.js",
         "skills/*"
