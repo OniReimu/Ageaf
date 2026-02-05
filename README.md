@@ -59,6 +59,7 @@ Ageaf supports two connection modes:
 
 1. Add the Homebrew tap (once published):
    ```bash
+   brew update
    brew tap onireimu/ageaf-host
    ```
 
