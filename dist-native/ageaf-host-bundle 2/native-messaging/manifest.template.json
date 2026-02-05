@@ -1,0 +1,7 @@
+{
+  "name": "com.ageaf.host",
+  "description": "Ageaf native messaging host",
+  "path": "__AGEAF_HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://__AGEAF_EXTENSION_ID__/"]
+}

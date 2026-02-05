@@ -16,6 +16,17 @@ set -euo pipefail
 #
 # Output:
 #   dist-native/ageaf-host-macos-node-bundle.tar.gz
+#
+# Distribution options:
+#   1. GitHub Releases (recommended):
+#      - Upload the .tar.gz as a release asset
+#      - URL format: https://github.com/OWNER/REPO/releases/download/vVERSION/ageaf-host-macos-node-bundle.tar.gz
+#
+#   2. Separate distribution repository:
+#      - Use --prepare-dist-repo to create a repo structure
+#      - Push to a separate repo and tag it
+#      - URL format: https://github.com/OWNER/ageaf-host/archive/refs/tags/vVERSION.tar.gz
+#      - Note: The archive will contain the bundle directory, so adjust Homebrew formula accordingly
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOST_DIR="$ROOT_DIR/host"
@@ -23,6 +34,49 @@ OUT_DIR="$ROOT_DIR/dist-native"
 BUNDLE_DIR="$OUT_DIR/ageaf-host-bundle"
 ARCHIVE_PATH="$OUT_DIR/ageaf-host-macos-node-bundle.tar.gz"
 NPM_PROD_DIR="$OUT_DIR/npm-prod-bundle"
+
+# Parse arguments
+PREPARE_DIST_REPO=false
+VERSION=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --prepare-dist-repo)
+      PREPARE_DIST_REPO=true
+      shift
+      ;;
+    --version)
+      VERSION="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      cat <<EOF
+Usage: $0 [OPTIONS]
+
+Options:
+  --prepare-dist-repo    Create a distribution repository structure
+  --version VERSION      Specify version for distribution repo (required with --prepare-dist-repo)
+  -h, --help            Show this help message
+
+Examples:
+  # Build bundle for GitHub Releases
+  $0
+
+  # Prepare for distribution repository
+  $0 --prepare-dist-repo --version 1.2.3
+EOF
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "$PREPARE_DIST_REPO" == true && -z "$VERSION" ]]; then
+  echo "Error: --version is required when using --prepare-dist-repo" >&2
+  exit 1
+fi
 
 mkdir -p "$OUT_DIR"
 rm -rf "$BUNDLE_DIR"
@@ -246,4 +300,72 @@ chmod 0755 "$BUNDLE_DIR/install.sh"
 
 tar -czf "$ARCHIVE_PATH" -C "$OUT_DIR" "$(basename "$BUNDLE_DIR")"
 
-echo "Built bundle: $ARCHIVE_PATH"
+# Calculate SHA256 checksum
+SHA256=$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')
+
+echo ""
+echo "✓ Built bundle: $ARCHIVE_PATH"
+echo "✓ SHA256: $SHA256"
+echo ""
+
+if [[ "$PREPARE_DIST_REPO" == true ]]; then
+  DIST_REPO_DIR="$OUT_DIR/ageaf-host-dist"
+  rm -rf "$DIST_REPO_DIR"
+  mkdir -p "$DIST_REPO_DIR"
+  
+  # Copy bundle contents to distribution repo root
+  cp -R "$BUNDLE_DIR/." "$DIST_REPO_DIR/"
+  
+  # Create a README for the distribution repo
+  cat > "$DIST_REPO_DIR/README.md" <<EOF
+# Ageaf Host Distribution
+
+This repository contains pre-built bundles for the Ageaf host.
+
+## Installation
+
+Extract this archive and run \`./install.sh\` from the extracted directory.
+
+## For Homebrew
+
+This repository is structured for use with Homebrew formulas that reference GitHub archive URLs:
+
+\`\`\`
+url "https://github.com/OWNER/ageaf-host/archive/refs/tags/v${VERSION}.tar.gz"
+\`\`\`
+
+Note: The archive will contain this directory structure, so adjust the Homebrew formula's
+\`install\` method to reference the correct paths within the extracted archive.
+EOF
+  
+  # Create .gitignore
+  echo "# This repo only contains the bundle" > "$DIST_REPO_DIR/.gitignore"
+  
+  echo "✓ Prepared distribution repository structure in: $DIST_REPO_DIR"
+  echo ""
+  echo "Next steps:"
+  echo "  1. cd $DIST_REPO_DIR"
+  echo "  2. git init"
+  echo "  3. git add ."
+  echo "  4. git commit -m \"Release v${VERSION}\""
+  echo "  5. git remote add origin <YOUR_DIST_REPO_URL>"
+  echo "  6. git push -u origin main"
+  echo "  7. git tag v${VERSION}"
+  echo "  8. git push origin v${VERSION}"
+  echo ""
+  echo "Then use this URL in your Homebrew formula:"
+  echo "  https://github.com/OWNER/ageaf-host/archive/refs/tags/v${VERSION}.tar.gz"
+  echo ""
+else
+  echo "Distribution options:"
+  echo ""
+  echo "1. GitHub Releases (recommended):"
+  echo "   - Create a release on GitHub"
+  echo "   - Upload: $ARCHIVE_PATH"
+  echo "   - Use URL: https://github.com/OWNER/REPO/releases/download/vVERSION/ageaf-host-macos-node-bundle.tar.gz"
+  echo ""
+  echo "2. Distribution repository:"
+  echo "   - Run: $0 --prepare-dist-repo --version VERSION"
+  echo "   - Follow the instructions to create a separate distribution repo"
+  echo ""
+fi

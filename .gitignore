@@ -60,4 +60,7 @@ findings.md
 task_plan.md
 STATE_SUMMARY.md
 MAINTAINER.md
+README-DISTRIBUTION.md
 docs/*
+
+*.rb
