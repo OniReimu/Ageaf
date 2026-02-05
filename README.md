@@ -48,9 +48,78 @@ You must have either:
    - Select the `build/` directory from this repository
    - After making changes, click the reload icon on the extension card in `chrome://extensions`, then refresh your Overleaf tab
 
-### Distribution (macOS)
+## Companion App (macOS)
 
-See [docs/macos-distribution.md](docs/macos-distribution.md) for building and distributing the `.pkg` installer.
+Ageaf supports two connection modes:
+
+- **HTTP (development)**: run the host locally via `cd host && npm run dev` and set Transport = `HTTP`.
+- **Native Messaging (distribution)**: install the companion host app and set Transport = `Native Messaging (prod)`.
+
+### Install via Homebrew (recommended for technical users)
+
+Note: the Homebrew formula (`host/scripts/homebrew/ageaf-host.rb`) is a template. Once the companion bundle
+(`ageaf-host-macos-node-bundle.tar.gz`) is uploaded, we’ll update the formula `url` + `sha256`.
+
+Maintainers:
+```bash
+./host/scripts/macos/build-release-bundle.sh
+shasum -a 256 dist-native/ageaf-host-macos-node-bundle.tar.gz
+# then update host/scripts/homebrew/ageaf-host.rb (url/sha256/version) and push to GitHub
+```
+
+1. Install the host:
+   ```bash
+   curl -fsSL -o ageaf-host.rb \
+     https://raw.githubusercontent.com/OniReimu/Ageaf/main/host/scripts/homebrew/ageaf-host.rb
+   brew install --formula ./ageaf-host.rb
+   ```
+
+2. Register the Chrome native messaging manifest (defaults to the Web Store extension ID):
+   ```bash
+   ageaf-host-install-manifest
+   ```
+   If you’re using an unpacked extension (different ID), pass it explicitly:
+   ```bash
+   ageaf-host-install-manifest <EXTENSION_ID>
+   ```
+
+3. Fully quit and reopen Chrome, then in Overleaf open Ageaf Settings → Connection:
+   - Transport = `Native Messaging (prod)`
+   - Click **Retry** (Native host status should become `available`)
+
+Uninstall (Homebrew):
+```bash
+ageaf-host-uninstall-manifest
+brew uninstall ageaf-host
+```
+
+### Install via unsigned download (.pkg / .tar.gz)
+
+You can also install the companion app from an unsigned `.pkg` or `.tar.gz` (to be uploaded separately).
+
+Maintainers:
+```bash
+./host/scripts/macos/build-installer-pkg.sh --extension-id gafkbigpgbpcbmkdllomaoogcbebonlj
+# outputs: dist-native/ageaf-host-macos-unsigned.pkg
+```
+
+Because it is **unsigned / not notarized**, macOS may show a warning the first time it runs native components.
+If blocked, go to:
+System Settings → **Privacy & Security** → “Open Anyway”.
+
+Uninstall (unsigned .pkg):
+```bash
+sudo rm -f /usr/local/bin/ageaf-host /usr/local/bin/ageaf-host-install-manifest
+sudo rm -rf /usr/local/share/ageaf-host
+sudo rm -f /Library/Google/Chrome/NativeMessagingHosts/com.ageaf.host.json
+rm -f "$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.ageaf.host.json"
+```
+
+Troubleshooting (“Native host error: forbidden”):
+- Your manifest `allowed_origins` must match your extension ID (unpacked extensions have a different ID).
+- Remove stale manifests if you previously installed via `.pkg` and then Homebrew:
+  - System: `/Library/Google/Chrome/NativeMessagingHosts/com.ageaf.host.json`
+  - User: `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.ageaf.host.json`
 
 ## License
 
