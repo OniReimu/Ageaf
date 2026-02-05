@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ageaf",
-  "version": "0.2.5",
+  "version": "0.1.0",
   "description": "Ageaf for Overleaf",
   "icons": {
     "16": "icons/icon_16.png",
