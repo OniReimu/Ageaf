@@ -59,6 +59,7 @@ export interface Options {
   enableCommandBlocklist?: boolean;
   blockedCommandsUnix?: string;
   autoCompactEnabled?: boolean;
+  showThinkingAndTools?: boolean;
   debugCliEvents?: boolean;
   surroundingContextLimit?: number;
 }

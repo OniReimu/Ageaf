@@ -175,6 +175,12 @@ function ensureInlineDiffStyles() {
       border: 1px solid rgba(239, 68, 68, 0.4);
     }
 
+    .ageaf-inline-diff-btn.is-feedback {
+      background: rgba(59, 130, 246, 0.16);
+      color: rgba(10, 20, 35, 0.92);
+      border: 1px solid rgba(59, 130, 246, 0.35);
+    }
+
     .ageaf-inline-diff-addition {
       position: relative;
       display: block;
@@ -380,7 +386,9 @@ function ensureReviewBar() {
   const focusIndexForFile = () => {
     if (!reviewBarFileKey || reviewBarItems.length === 0) return 0;
     const focused = reviewBarFocusedByFile.get(reviewBarFileKey);
-    const idx = focused ? reviewBarItems.findIndex((x) => x.messageId === focused) : -1;
+    const idx = focused
+      ? reviewBarItems.findIndex((x) => x.messageId === focused)
+      : -1;
     return idx >= 0 ? idx : 0;
   };
 
@@ -394,7 +402,11 @@ function ensureReviewBar() {
       if (!coords) return;
       const scrollDOM = view.scrollDOM as HTMLElement;
       const hostRect = scrollDOM.getBoundingClientRect();
-      const targetTop = coords.top - hostRect.top + scrollDOM.scrollTop - scrollDOM.clientHeight * 0.35;
+      const targetTop =
+        coords.top -
+        hostRect.top +
+        scrollDOM.scrollTop -
+        scrollDOM.clientHeight * 0.35;
       scrollDOM.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
     } catch {
       // ignore
@@ -405,18 +417,27 @@ function ensureReviewBar() {
     const view = safeGetCmView();
     if (!view || !reviewBarFileKey || reviewBarItems.length === 0) return;
     const cur = focusIndexForFile();
-    const nextIdx = (cur + delta + reviewBarItems.length) % reviewBarItems.length;
+    const nextIdx =
+      (cur + delta + reviewBarItems.length) % reviewBarItems.length;
     const nextItem = reviewBarItems[nextIdx];
     if (!nextItem) return;
     reviewBarFocusedByFile.set(reviewBarFileKey, nextItem.messageId);
-    updateCount(`${nextIdx + 1} of ${reviewBarItems.length} review change hunks`);
+    updateCount(
+      `${nextIdx + 1} of ${reviewBarItems.length} review change hunks`
+    );
     scrollToFocused(view);
   };
 
-  const dispatchPanelAction = (messageId: string, action: 'accept' | 'reject') => {
+  const dispatchPanelAction = (
+    messageId: string,
+    action: 'accept' | 'reject'
+  ) => {
     const detail: any = { messageId, action };
     if (action === 'accept') {
-      const esc = typeof (CSS as any)?.escape === 'function' ? (CSS as any).escape(messageId) : messageId;
+      const esc =
+        typeof (CSS as any)?.escape === 'function'
+          ? (CSS as any).escape(messageId)
+          : messageId;
       const editor = document.querySelector(
         `.ageaf-inline-diff-widget[data-message-id="${esc}"] textarea[data-ageaf-proposed-editor="1"]`
       ) as HTMLTextAreaElement | null;
@@ -442,7 +463,9 @@ function ensureReviewBar() {
     if (!view || !reviewBarFileKey || reviewBarItems.length === 0) return;
     bulkActionInProgress = true;
     try {
-      const ids = [...reviewBarItems].sort((a, b) => a.from - b.from).map((x) => x.messageId);
+      const ids = [...reviewBarItems]
+        .sort((a, b) => a.from - b.from)
+        .map((x) => x.messageId);
       for (const id of ids) {
         if (!overlayById.has(String(id))) continue;
         dispatchPanelAction(id, action);
@@ -475,7 +498,10 @@ function ensureReviewBar() {
   return bar;
 }
 
-function updateReviewBar(fileKey: string, items: Array<{ messageId: string; from: number }>) {
+function updateReviewBar(
+  fileKey: string,
+  items: Array<{ messageId: string; from: number }>
+) {
   const bar = ensureReviewBar();
   reviewBarFileKey = fileKey;
   reviewBarItems = items;
@@ -491,8 +517,13 @@ function updateReviewBar(fileKey: string, items: Array<{ messageId: string; from
   }
 
   const focusId = reviewBarFocusedByFile.get(fileKey)!;
-  const idx = Math.max(0, items.findIndex((x) => x.messageId === focusId));
-  (bar as any).__ageafUpdateCount?.(`${idx + 1} of ${items.length} review change hunks`);
+  const idx = Math.max(
+    0,
+    items.findIndex((x) => x.messageId === focusId)
+  );
+  (bar as any).__ageafUpdateCount?.(
+    `${idx + 1} of ${items.length} review change hunks`
+  );
   bar.style.display = 'flex';
 }
 
@@ -509,17 +540,44 @@ function normalizeFileName(filePath: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : trimmed;
 }
 
-function getActiveTabName(): string | null {
-  const selected =
-    document.querySelector('[role="tab"][aria-selected="true"]') ??
-    document.querySelector('.cm-tab.is-active, .cm-tab[aria-selected="true"]') ??
-    document.querySelector('.cm-tab--active');
-  if (!(selected instanceof HTMLElement)) return null;
-  const text = (selected.getAttribute('aria-label') ?? selected.textContent ?? '').trim();
-  return text || null;
+function extractFilenameFromLabel(raw: string): string | null {
+  let value = raw.trim();
+  if (!value) return null;
+  value = value.replace(/\*+$/, '').trim(); // unsaved marker
+  value = value.replace(/\s*\(.*?\)\s*$/, '').trim(); // trailing "(...)" metadata
+  if (!value) return null;
+
+  const matches = value.match(/[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,10}/g);
+  if (!matches || matches.length === 0) return null;
+  return matches[matches.length - 1] ?? null;
 }
 
-function matchesActiveFile(activeName: string | null, filePath: string): boolean {
+function getActiveTabName(): string | null {
+  const selectors = [
+    '.cm-tab.is-active, .cm-tab[aria-selected="true"]',
+    '.cm-tab--active',
+    '[role="treeitem"][aria-selected="true"]',
+    '[role="tab"][aria-selected="true"]',
+  ];
+  for (const selector of selectors) {
+    const selected = document.querySelector(selector);
+    if (!(selected instanceof HTMLElement)) continue;
+    const label = (
+      selected.getAttribute('aria-label') ??
+      selected.getAttribute('title') ??
+      selected.textContent ??
+      ''
+    ).trim();
+    const extracted = extractFilenameFromLabel(label);
+    if (extracted) return extracted;
+  }
+  return null;
+}
+
+function matchesActiveFile(
+  activeName: string | null,
+  filePath: string
+): boolean {
   // If we can't detect the active tab name (Overleaf DOM not ready / changed),
   // do NOT block rendering—range resolution will fail safely if it's the wrong file.
   if (!activeName) return true;
@@ -538,7 +596,10 @@ function findUniqueRange(fullText: string, needle: string) {
   return { from: first, to: first + needle.length };
 }
 
-function resolveOverlayRange(view: ReturnType<typeof getCmView>, payload: OverlayPayload): OverlayRange | null {
+function resolveOverlayRange(
+  view: ReturnType<typeof getCmView>,
+  payload: OverlayPayload
+): OverlayRange | null {
   const state = view.state;
   const fullText = state.sliceDoc(0, state.doc.length);
   const oldText = payload.oldText ?? '';
@@ -549,7 +610,11 @@ function resolveOverlayRange(view: ReturnType<typeof getCmView>, payload: Overla
     return { from: head, to: head, oldText: '', newText };
   }
 
-  if (typeof payload.from === 'number' && typeof payload.to === 'number' && payload.to >= payload.from) {
+  if (
+    typeof payload.from === 'number' &&
+    typeof payload.to === 'number' &&
+    payload.to >= payload.from
+  ) {
     const current = state.sliceDoc(payload.from, payload.to);
     if (!oldText || current === oldText) {
       return { from: payload.from, to: payload.to, oldText: current, newText };
@@ -603,7 +668,10 @@ function ensureGapSpacerAfter(targetEl: HTMLElement) {
     gapSpacerEl.style.height = '0px';
     gapSpacerEl.style.pointerEvents = 'none';
   }
-  if (gapAnchorEl !== targetEl || gapSpacerEl.parentElement !== targetEl.parentElement) {
+  if (
+    gapAnchorEl !== targetEl ||
+    gapSpacerEl.parentElement !== targetEl.parentElement
+  ) {
     gapSpacerEl.remove();
     targetEl.after(gapSpacerEl);
     gapAnchorEl = targetEl;
@@ -611,7 +679,9 @@ function ensureGapSpacerAfter(targetEl: HTMLElement) {
 }
 
 function findLineAtY(contentDOM: HTMLElement, y: number) {
-  const lines = Array.from(contentDOM.querySelectorAll<HTMLElement>('.cm-line'));
+  const lines = Array.from(
+    contentDOM.querySelectorAll<HTMLElement>('.cm-line')
+  );
   for (const lineEl of lines) {
     const rect = lineEl.getBoundingClientRect();
     if (y >= rect.top && y <= rect.bottom) return lineEl;
@@ -684,7 +754,10 @@ function toRelativeCoords(scrollDOM: HTMLElement, rect: DOMRect) {
   };
 }
 
-function toRelativePoint(scrollDOM: HTMLElement, point: { left: number; top: number }) {
+function toRelativePoint(
+  scrollDOM: HTMLElement,
+  point: { left: number; top: number }
+) {
   const hostRect = scrollDOM.getBoundingClientRect();
   return {
     left: point.left - hostRect.left + scrollDOM.scrollLeft,
@@ -704,7 +777,15 @@ function scheduleOverlayUpdate() {
 function initializeCm6Overlay(cm6: Cm6Exports) {
   if (overlayField && overlayEffect && overlayCompartment) return;
 
-  const { StateEffect, StateField, Decoration, EditorView, EditorState, Compartment, WidgetType } = cm6;
+  const {
+    StateEffect,
+    StateField,
+    Decoration,
+    EditorView,
+    EditorState,
+    Compartment,
+    WidgetType,
+  } = cm6;
 
   // Create effect type for setting overlay payload(s)
   overlayEffect = StateEffect.define();
@@ -761,8 +842,12 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       return { deco: Decoration.none, ranges: [] as Array<[number, number]> };
     },
     update(value: any, tr: any) {
-      let deco = value?.deco?.map ? value.deco.map(tr.changes) : Decoration.none;
-      let ranges: Array<[number, number]> = Array.isArray(value?.ranges) ? value.ranges : [];
+      let deco = value?.deco?.map
+        ? value.deco.map(tr.changes)
+        : Decoration.none;
+      let ranges: Array<[number, number]> = Array.isArray(value?.ranges)
+        ? value.ranges
+        : [];
       try {
         ranges = ranges.map(([rf, rt]) => {
           const nextFrom = tr.changes.mapPos(rf, 1);
@@ -775,7 +860,9 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       for (const e of tr.effects) {
         if (e.is(overlayEffect)) {
           if (e.value) {
-            const list: OverlayWidgetPayload[] = Array.isArray(e.value) ? e.value : [e.value];
+            const list: OverlayWidgetPayload[] = Array.isArray(e.value)
+              ? e.value
+              : [e.value];
             const items: any[] = [];
             const nextRanges: Array<[number, number]> = [];
 
@@ -788,7 +875,11 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
               const rt = Number(entry.replaceTo);
               if (Number.isFinite(rf) && Number.isFinite(rt) && rt > rf) {
                 try {
-                  items.push(Decoration.mark({ class: 'ageaf-inline-diff-old-mark' }).range(rf, rt));
+                  items.push(
+                    Decoration.mark({
+                      class: 'ageaf-inline-diff-old-mark',
+                    }).range(rf, rt)
+                  );
                   nextRanges.push([rf, rt]);
                 } catch {
                   // ignore
@@ -885,17 +976,24 @@ function ensureCm6FieldInstalled(view: any) {
   lastInstallAttemptAt = now;
 
   try {
-    const baseExt = overlayGuardExtension ? [overlayField, overlayGuardExtension] : overlayField;
+    const baseExt = overlayGuardExtension
+      ? [overlayField, overlayGuardExtension]
+      : overlayField;
     const ext = overlayCompartment ? overlayCompartment.of(baseExt) : baseExt;
     // Preferred dynamic append
     const append = cm6Exports.StateEffect?.appendConfig;
     if (!append?.of) {
-      logOnce('cm6-no-appendConfig', 'CM6 StateEffect.appendConfig missing; cannot inject field');
+      logOnce(
+        'cm6-no-appendConfig',
+        'CM6 StateEffect.appendConfig missing; cannot inject field'
+      );
       return false;
     }
     view.dispatch({ effects: append.of(ext) });
   } catch (err: any) {
-    logOnce('cm6-inject-error', 'Failed to inject CM6 field', { error: err?.message });
+    logOnce('cm6-inject-error', 'Failed to inject CM6 field', {
+      error: err?.message,
+    });
     return false;
   }
 
@@ -905,7 +1003,10 @@ function ensureCm6FieldInstalled(view: any) {
     return true;
   }
 
-  logOnce('cm6-field-not-yet', 'CM6 overlay field not yet available after inject attempt');
+  logOnce(
+    'cm6-field-not-yet',
+    'CM6 overlay field not yet available after inject attempt'
+  );
   return false;
 }
 
@@ -919,12 +1020,17 @@ function createWidgetDOM(text: string, messageId: string): HTMLElement {
   (textEl as HTMLTextAreaElement).value = text;
   textEl.spellcheck = false;
   // Allow editing proposed text like Cursor does.
-  (textEl as HTMLTextAreaElement).setAttribute('data-ageaf-proposed-editor', '1');
+  (textEl as HTMLTextAreaElement).setAttribute(
+    'data-ageaf-proposed-editor',
+    '1'
+  );
   const autosize = () => {
     try {
       // Reset first so shrink works too.
       (textEl as HTMLTextAreaElement).style.height = 'auto';
-      (textEl as HTMLTextAreaElement).style.height = `${(textEl as HTMLTextAreaElement).scrollHeight}px`;
+      (textEl as HTMLTextAreaElement).style.height = `${
+        (textEl as HTMLTextAreaElement).scrollHeight
+      }px`;
     } catch {
       // ignore
     }
@@ -959,13 +1065,20 @@ function createWidgetDOM(text: string, messageId: string): HTMLElement {
   rejectBtn.onclick = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    window.dispatchEvent(
-      new CustomEvent(PANEL_ACTION_EVENT, {
-        detail: { messageId, action: 'reject' },
-      })
-    );
+    emitOverlayAction(messageId, 'reject');
   };
   actions.appendChild(rejectBtn);
+
+  const feedbackBtn = document.createElement('button');
+  feedbackBtn.className = 'ageaf-inline-diff-btn is-feedback';
+  feedbackBtn.textContent = 'Feedback';
+  feedbackBtn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const edited = (textEl as HTMLTextAreaElement).value;
+    emitOverlayAction(messageId, 'feedback', edited);
+  };
+  actions.appendChild(feedbackBtn);
 
   wrap.appendChild(actions);
   return wrap;
@@ -973,7 +1086,7 @@ function createWidgetDOM(text: string, messageId: string): HTMLElement {
 
 function setOverlayWidget(view: any, payload: OverlayWidgetPayload | null) {
   if (!cm6Exports || !overlayEffect) return;
-  
+
   view.dispatch({
     effects: overlayEffect.of(payload),
   });
@@ -994,8 +1107,16 @@ function renderOverlay() {
   const activeNameForBar = getActiveTabName() ?? '';
   const barItems: Array<{ messageId: string; from: number }> = [];
   for (const payload of overlayById.values()) {
-    if (payload.filePath && !matchesActiveFile(activeNameForBar, payload.filePath)) continue;
-    if (payload.fileName && payload.kind === 'replaceSelection' && !matchesActiveFile(activeNameForBar, payload.fileName)) {
+    if (
+      payload.filePath &&
+      !matchesActiveFile(activeNameForBar, payload.filePath)
+    )
+      continue;
+    if (
+      payload.fileName &&
+      payload.kind === 'replaceSelection' &&
+      !matchesActiveFile(activeNameForBar, payload.fileName)
+    ) {
       continue;
     }
     const range = resolveOverlayRange(view, payload);
@@ -1026,8 +1147,13 @@ function renderOverlay() {
     const widgetPayloads: OverlayWidgetPayload[] = [];
     for (const payload of overlayById.values()) {
       // File gating (best-effort)
-      if (payload.filePath && !matchesActiveFile(activeName, payload.filePath)) continue;
-      if (payload.fileName && payload.kind === 'replaceSelection' && !matchesActiveFile(activeName, payload.fileName)) {
+      if (payload.filePath && !matchesActiveFile(activeName, payload.filePath))
+        continue;
+      if (
+        payload.fileName &&
+        payload.kind === 'replaceSelection' &&
+        !matchesActiveFile(activeName, payload.fileName)
+      ) {
         continue;
       }
       const range = resolveOverlayRange(view, payload);
@@ -1042,7 +1168,10 @@ function renderOverlay() {
     }
 
     if (ensureCm6FieldInstalled(view)) {
-      setOverlayWidget(view, widgetPayloads.length > 0 ? (widgetPayloads as any) : null);
+      setOverlayWidget(
+        view,
+        widgetPayloads.length > 0 ? (widgetPayloads as any) : null
+      );
       if (widgetPayloads.length > 0) {
         logOnce('cm6-render-multi', 'Rendered inline diffs via CM6 widgets', {
           count: widgetPayloads.length,
@@ -1062,12 +1191,19 @@ function renderOverlay() {
   const overlayState = overlays[overlays.length - 1];
   if (!overlayState) return;
   const activeName = getActiveTabName();
-  if (overlayState.filePath && !matchesActiveFile(activeName, overlayState.filePath)) {
+  if (
+    overlayState.filePath &&
+    !matchesActiveFile(activeName, overlayState.filePath)
+  ) {
     clearOverlayElements();
     clearGap();
     return;
   }
-  if (overlayState.fileName && overlayState.kind === 'replaceSelection' && !matchesActiveFile(activeName, overlayState.fileName)) {
+  if (
+    overlayState.fileName &&
+    overlayState.kind === 'replaceSelection' &&
+    !matchesActiveFile(activeName, overlayState.fileName)
+  ) {
     clearOverlayElements();
     clearGap();
     return;
@@ -1093,7 +1229,10 @@ function renderOverlay() {
   // Attach scroll listener once we have a view.
   if (overlayScrollListenerDom !== scrollDOM) {
     try {
-      overlayScrollListenerDom?.removeEventListener('scroll', scheduleOverlayUpdate);
+      overlayScrollListenerDom?.removeEventListener(
+        'scroll',
+        scheduleOverlayUpdate
+      );
     } catch {
       // ignore
     }
@@ -1125,8 +1264,9 @@ function renderOverlay() {
       // Use the actual line DOM rect so highlight/strike cover the full wrapped line width.
       const lineEl = findLineAtY(contentDOM, fromCoords.top + 1);
       const lineRect = lineEl?.getBoundingClientRect();
-      const relLine =
-        lineRect ? toRelativeCoords(scrollDOM, lineRect) : toRelativeCoords(scrollDOM, fromCoords);
+      const relLine = lineRect
+        ? toRelativeCoords(scrollDOM, lineRect)
+        : toRelativeCoords(scrollDOM, fromCoords);
       const height = lineRect
         ? Math.max(1, relLine.bottom - relLine.top)
         : Math.max(1, relLine.bottom - relLine.top);
@@ -1187,6 +1327,16 @@ function renderOverlay() {
       emitOverlayAction(overlayState.messageId, 'accept');
     });
 
+    const feedback = document.createElement('button');
+    feedback.className = 'ageaf-inline-diff-btn is-feedback';
+    feedback.textContent = 'Feedback';
+    feedback.type = 'button';
+    feedback.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      emitOverlayAction(overlayState.messageId, 'feedback', range.newText);
+    });
+
     const reject = document.createElement('button');
     reject.className = 'ageaf-inline-diff-btn is-reject';
     reject.textContent = '✕ Reject';
@@ -1199,6 +1349,7 @@ function renderOverlay() {
 
     actions.appendChild(accept);
     actions.appendChild(reject);
+    actions.appendChild(feedback);
 
     const text = document.createElement('div');
     text.className = 'ageaf-inline-diff-addition__text';
@@ -1213,8 +1364,8 @@ function renderOverlay() {
     const resolvedLineHeight = Number.isFinite(lineHeightValue)
       ? lineHeightValue
       : Number.isFinite(fontSize)
-        ? fontSize * 1.3
-        : 16;
+      ? fontSize * 1.3
+      : 16;
     // 2-3 empty lines for the buttons, inside the green paragraph.
     text.style.paddingBottom = `${Math.round(resolvedLineHeight * 2.6 + 10)}px`;
 
@@ -1243,11 +1394,19 @@ function renderOverlay() {
   }
 }
 
-function emitOverlayAction(messageId: string | undefined, action: 'accept' | 'reject') {
+function emitOverlayAction(
+  messageId: string | undefined,
+  action: 'accept' | 'reject' | 'feedback',
+  text?: string
+) {
   if (!messageId) return;
   window.dispatchEvent(
     new CustomEvent(PANEL_ACTION_EVENT, {
-      detail: { messageId, action },
+      detail: {
+        messageId,
+        action,
+        ...(typeof text === 'string' ? { text } : {}),
+      },
     })
   );
 }
@@ -1268,7 +1427,10 @@ function stopOverlayUpdates() {
   }
   window.removeEventListener('resize', scheduleOverlayUpdate);
   try {
-    overlayScrollListenerDom?.removeEventListener('scroll', scheduleOverlayUpdate);
+    overlayScrollListenerDom?.removeEventListener(
+      'scroll',
+      scheduleOverlayUpdate
+    );
   } catch {
     // ignore
   }
@@ -1281,13 +1443,13 @@ function clearOverlay() {
   overlayById.clear();
   stopOverlayUpdates();
   hideReviewBar();
-  
+
   // Clear CM6 widget if active
   if (overlayWidgetView && overlayEffect) {
     setOverlayWidget(overlayWidgetView, null);
     overlayWidgetView = null;
   }
-  
+
   overlayRoot?.remove();
   overlayRoot = null;
   overlayScrollDom = null;
@@ -1327,12 +1489,17 @@ function onOverlayClear(event: Event) {
 export function registerInlineDiffOverlay() {
   window.addEventListener(OVERLAY_SHOW_EVENT, onOverlayShow as EventListener);
   window.addEventListener(OVERLAY_CLEAR_EVENT, onOverlayClear as EventListener);
-  
+
   // Listen for Overleaf's UNSTABLE_editor:extensions event to get CM6 classes
-  window.addEventListener('UNSTABLE_editor:extensions', ((event: CustomEvent) => {
+  window.addEventListener('UNSTABLE_editor:extensions', ((
+    event: CustomEvent
+  ) => {
     const { CodeMirror } = event.detail || {};
     if (!CodeMirror) {
-      logOnce('cm6-event-no-cm', 'UNSTABLE_editor:extensions event received but no CodeMirror object');
+      logOnce(
+        'cm6-event-no-cm',
+        'UNSTABLE_editor:extensions event received but no CodeMirror object'
+      );
       return;
     }
 
@@ -1348,7 +1515,13 @@ export function registerInlineDiffOverlay() {
     const EditorState = stateNS.EditorState || CodeMirror.EditorState;
     const Compartment = stateNS.Compartment || CodeMirror.Compartment;
 
-    if (!Decoration || !EditorView || !StateEffect || !StateField || !WidgetType) {
+    if (
+      !Decoration ||
+      !EditorView ||
+      !StateEffect ||
+      !StateField ||
+      !WidgetType
+    ) {
       logOnce('cm6-missing-classes', 'CM6 classes incomplete', {
         hasDecoration: !!Decoration,
         hasEditorView: !!EditorView,
@@ -1373,7 +1546,9 @@ export function registerInlineDiffOverlay() {
     // their event listeners after Overleaf fires UNSTABLE_editor:extensions.
     try {
       (window as any).__ageafCm6Exports = cm6Exports;
-      window.dispatchEvent(new CustomEvent('ageaf:cm6:resolved', { detail: { cm6Exports } }));
+      window.dispatchEvent(
+        new CustomEvent('ageaf:cm6:resolved', { detail: { cm6Exports } })
+      );
     } catch {
       // ignore
     }
@@ -1406,13 +1581,23 @@ export function registerInlineDiffOverlay() {
       const raw = window.localStorage.getItem(LOCAL_STORAGE_KEY_INLINE_OVERLAY);
       if (raw) {
         const parsed = JSON.parse(raw) as OverlayPayload | OverlayPayload[];
-        const list = Array.isArray(parsed) ? parsed : parsed?.messageId ? [parsed] : [];
+        const list = Array.isArray(parsed)
+          ? parsed
+          : parsed?.messageId
+          ? [parsed]
+          : [];
         if (list.length > 0) {
           const currentProjectId = getCurrentProjectId();
           for (const stored of list) {
             if (!stored?.messageId) continue;
-            if (!stored.projectId || !currentProjectId || stored.projectId === currentProjectId) {
-              onOverlayShow(new CustomEvent(OVERLAY_SHOW_EVENT, { detail: stored }) as any);
+            if (
+              !stored.projectId ||
+              !currentProjectId ||
+              stored.projectId === currentProjectId
+            ) {
+              onOverlayShow(
+                new CustomEvent(OVERLAY_SHOW_EVENT, { detail: stored }) as any
+              );
             }
           }
           return;
@@ -1427,14 +1612,27 @@ export function registerInlineDiffOverlay() {
       if (typeof chrome !== 'undefined' && chrome.storage?.local) {
         chrome.storage.local.get([LOCAL_STORAGE_KEY_INLINE_OVERLAY], (data) => {
           if (overlayById.size > 0) return;
-          const storedAny = data?.[LOCAL_STORAGE_KEY_INLINE_OVERLAY] as OverlayPayload | OverlayPayload[] | undefined;
-          const list = Array.isArray(storedAny) ? storedAny : storedAny?.messageId ? [storedAny] : [];
+          const storedAny = data?.[LOCAL_STORAGE_KEY_INLINE_OVERLAY] as
+            | OverlayPayload
+            | OverlayPayload[]
+            | undefined;
+          const list = Array.isArray(storedAny)
+            ? storedAny
+            : storedAny?.messageId
+            ? [storedAny]
+            : [];
           if (list.length === 0) return;
           const currentProjectId = getCurrentProjectId();
           for (const stored of list) {
             if (!stored?.messageId) continue;
-            if (!stored.projectId || !currentProjectId || stored.projectId === currentProjectId) {
-              onOverlayShow(new CustomEvent(OVERLAY_SHOW_EVENT, { detail: stored }) as any);
+            if (
+              !stored.projectId ||
+              !currentProjectId ||
+              stored.projectId === currentProjectId
+            ) {
+              onOverlayShow(
+                new CustomEvent(OVERLAY_SHOW_EVENT, { detail: stored }) as any
+              );
             }
           }
         });
@@ -1446,4 +1644,3 @@ export function registerInlineDiffOverlay() {
 
   tryRestoreFromStorage();
 }
-

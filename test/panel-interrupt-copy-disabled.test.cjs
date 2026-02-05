@@ -8,7 +8,6 @@ test('Interrupted-by-user marker is not copyable as a response', () => {
   const contents = fs.readFileSync(panelPath, 'utf8');
 
   assert.match(contents, /stripInterruptedByUserSuffix\(message\.content\)/);
-  assert.match(contents, /copyToClipboard\(copyResponseText\)/);
+  assert.match(contents, /copyToClipboard\(\s*copyResponseText\s*\)/);
   assert.match(contents, /canCopyResponse/);
 });
-
