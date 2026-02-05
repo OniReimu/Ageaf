@@ -57,24 +57,17 @@ Ageaf supports two connection modes:
 
 ### Install via Homebrew (recommended for technical users)
 
-Note: the Homebrew formula (`host/scripts/homebrew/ageaf-host.rb`) is a template. Once the companion bundle
-(`ageaf-host-macos-node-bundle.tar.gz`) is uploaded, we’ll update the formula `url` + `sha256`.
-
-Maintainers:
-```bash
-./host/scripts/macos/build-release-bundle.sh
-shasum -a 256 dist-native/ageaf-host-macos-node-bundle.tar.gz
-# then update host/scripts/homebrew/ageaf-host.rb (url/sha256/version) and push to GitHub
-```
-
-1. Install the host:
+1. Add the Homebrew tap (once published):
    ```bash
-   curl -fsSL -o ageaf-host.rb \
-     https://raw.githubusercontent.com/OniReimu/Ageaf/main/host/scripts/homebrew/ageaf-host.rb
-   brew install --formula ./ageaf-host.rb
+   brew tap onireimu/ageaf-host
    ```
 
-2. Register the Chrome native messaging manifest (defaults to the Web Store extension ID):
+2. Install the host:
+   ```bash
+   brew install ageaf-host
+   ```
+
+3. Register the Chrome native messaging manifest (defaults to the Web Store extension ID):
    ```bash
    ageaf-host-install-manifest
    ```
@@ -83,7 +76,7 @@ shasum -a 256 dist-native/ageaf-host-macos-node-bundle.tar.gz
    ageaf-host-install-manifest <EXTENSION_ID>
    ```
 
-3. Fully quit and reopen Chrome, then in Overleaf open Ageaf Settings → Connection:
+4. Fully quit and reopen Chrome, then in Overleaf open Ageaf Settings → Connection:
    - Transport = `Native Messaging (prod)`
    - Click **Retry** (Native host status should become `available`)
 
@@ -91,6 +84,20 @@ Uninstall (Homebrew):
 ```bash
 ageaf-host-uninstall-manifest
 brew uninstall ageaf-host
+```
+
+Reinstall (Homebrew):
+```bash
+brew uninstall ageaf-host
+brew install ageaf-host
+ageaf-host-install-manifest
+```
+
+Local testing (maintainers):
+```bash
+brew tap-new onireimu/ageaf-host
+cp host/scripts/homebrew/ageaf-host.rb "$(brew --repo onireimu/ageaf-host)/Formula/ageaf-host.rb"
+brew install ageaf-host
 ```
 
 ### Install via unsigned download (.pkg / .tar.gz)
