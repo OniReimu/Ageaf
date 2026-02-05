@@ -344,13 +344,39 @@ export function registerCitationIndicator() {
 }
 
 function getActiveTabName(): string | null {
-  const selected =
-    document.querySelector('[role="tab"][aria-selected="true"]') ??
-    document.querySelector('.cm-tab.is-active, .cm-tab[aria-selected="true"]') ??
-    document.querySelector('.cm-tab--active');
-  if (!(selected instanceof HTMLElement)) return null;
-  const text = (selected.getAttribute('aria-label') ?? selected.textContent ?? '').trim();
-  return text || null;
+  const selectors = [
+    '.cm-tab.is-active, .cm-tab[aria-selected="true"]',
+    '.cm-tab--active',
+    '[role="treeitem"][aria-selected="true"]',
+    '[role="tab"][aria-selected="true"]',
+  ];
+
+  for (const selector of selectors) {
+    const selected = document.querySelector(selector);
+    if (!(selected instanceof HTMLElement)) continue;
+    const label = (
+      selected.getAttribute('aria-label') ??
+      selected.getAttribute('title') ??
+      selected.textContent ??
+      ''
+    ).trim();
+    const extracted = extractFilenameFromLabel(label);
+    if (extracted) return extracted;
+  }
+
+  return null;
+}
+
+function extractFilenameFromLabel(raw: string): string | null {
+  let value = raw.trim();
+  if (!value) return null;
+  value = value.replace(/\*+$/, '').trim(); // unsaved marker
+  value = value.replace(/\s*\(.*?\)\s*$/, '').trim(); // trailing "(...)" metadata
+  if (!value) return null;
+
+  const matches = value.match(/[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,10}/g);
+  if (!matches || matches.length === 0) return null;
+  return matches[matches.length - 1] ?? null;
 }
 
 function normalizeTabFileName(tabLabel: string | null): string | null {

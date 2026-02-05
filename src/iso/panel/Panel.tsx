@@ -8616,6 +8616,21 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
   const entries: OverleafEntry[] = [];
   const seen = new Set<string>();
 
+  const extractFilenameFromLabel = (raw: string): string | null => {
+    let value = raw.trim();
+    if (!value) return null;
+    value = value.replace(/\*+$/, '').trim(); // unsaved marker
+    value = value.replace(/\s*\(.*?\)\s*$/, '').trim(); // trailing "(...)" metadata
+    if (!value) return null;
+
+    // Prefer known Overleaf-relevant file extensions; tab labels often include counts (e.g. "main.tex 5").
+    const matches = value.match(
+      /[A-Za-z0-9_./-]+\.(?:tex|bib|sty|cls|md|json|ya?ml|csv|xml|png|jpe?g|gif|svg|pdf|toml|ini|log|txt)\b/gi
+    );
+    if (!matches || matches.length === 0) return null;
+    return matches[matches.length - 1] ?? null;
+  };
+
   const normalizeLabel = (raw: string): string => {
     let s = raw.trim();
     if (!s) return '';
@@ -8679,8 +8694,11 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
     const text = normalizeLabel(raw);
     if (!text) continue;
 
-    const base = basename(text);
-    const ext = base.split('.').pop()?.toLowerCase() || '';
+    const extracted = extractFilenameFromLabel(text);
+    if (!extracted) continue;
+
+    const base = basename(extracted);
+    const ext = base.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() || '';
     if (!ext) continue;
     const kind =
       ext === 'tex'
@@ -8701,7 +8719,7 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
       idNode?.getAttribute?.('data-file-type')?.trim() || undefined;
 
     addEntry({
-      path: text,
+      path: extracted,
       name: base,
       ext,
       kind,
