@@ -13,8 +13,8 @@ class AgeafHost < Formula
   #
   # Example (preferred): GitHub Releases asset URL
   #   url "https://github.com/OniReimu/Ageaf/releases/download/v0.1.0/ageaf-host-macos-node-bundle.tar.gz"
-url "https://github.com/OniReimu/Ageaf/tree/main/releases/download/v0.1.0/ageaf-host-macos-node-bundle.tar.gz"  # Placeholder checksum (must be replaced for real distribution)
-  sha256 "7aa3760a630a38abdc9c880cc59d4452e963e14292121ae272dadcb380eb6088"
+  url ""  # Placeholder: replace with actual release URL
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"  # Placeholder: replace with actual checksum
   version "0.1.0"
 
   depends_on "node"
