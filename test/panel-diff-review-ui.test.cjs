@@ -16,7 +16,8 @@ test('Panel has diff review hook', () => {
   assert.match(diffContents, /Diff unavailable/);
   assert.match(diffContents, /catch/);
   assert.match(contents, /SelectionSnapshot/);
-  assert.match(contents, /Map<.*jobId/i);
+  assert.match(contents, /useRef<\s*Map<\s*string\s*,\s*SelectionSnapshot\s*>/);
+  assert.match(contents, /jobId\s*->\s*snapshot/);
   assert.match(contents, /Review changes/);
   assert.match(contents, /patchReview\.kind\s*===\s*['"]replaceSelection['"]/);
   assert.match(contents, /replaceRangeInFile/);
