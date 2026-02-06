@@ -159,6 +159,15 @@ async function runQuery(
     PATH: getEnhancedPath(customEnv.PATH, resolvedCliPath ?? runtime.cliPath),
   };
 
+  // Track sensitive keys for cleanup
+  const sensitiveKeys = Object.keys(customEnv).filter(
+    (key) =>
+      key.includes('API_KEY') ||
+      key.includes('SECRET') ||
+      key.includes('TOKEN') ||
+      key.includes('AUTH')
+  );
+
   const apiKey =
     customEnv.ANTHROPIC_API_KEY ??
     customEnv.ANTHROPIC_AUTH_TOKEN ??
@@ -485,6 +494,22 @@ async function runQuery(
       }
       default:
         break;
+    }
+  }
+
+  // CRITICAL: Wipe sensitive env vars from memory after CLI execution
+  if (sensitiveKeys.length > 0) {
+    for (const key of sensitiveKeys) {
+      if (key in customEnv) {
+        delete customEnv[key];
+        // Overwrite memory (though JS GC will handle it eventually)
+        customEnv[key] = '';
+      }
+      if (key in combinedEnv) {
+        const envRecord = combinedEnv as Record<string, string | undefined>;
+        delete envRecord[key];
+        envRecord[key] = '';
+      }
     }
   }
 

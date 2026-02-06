@@ -82,7 +82,7 @@ const DEFAULT_MODEL_VALUE = 'sonnet';
 const DEFAULT_MODEL_LABEL = 'Sonnet';
 const INTERRUPTED_BY_USER_MARKER = 'INTERRUPTED BY USER';
 const DEBUG_DIFF = false;
-const HOW_TO_GUIDES_URL = 'https://github.com/OniReimu/Ageaf/tree/main/docs';
+const HOW_TO_GUIDES_URL = 'https://github.com/OniReimu/Ageaf/tree/main';
 const EDITOR_OVERLAY_SHOW_EVENT = 'ageaf:editor:overlay:show';
 const EDITOR_OVERLAY_CLEAR_EVENT = 'ageaf:editor:overlay:clear';
 const EDITOR_OVERLAY_READY_EVENT = 'ageaf:editor:overlay:ready';
@@ -862,6 +862,12 @@ const Panel = () => {
     runtimeWorking: false,
   });
 
+  // Ephemeral API keys (in-memory only, never persisted)
+  const [claudeApiKey, setClaudeApiKey] = useState<string>('');
+  const [openaiApiKey, setOpenaiApiKey] = useState<string>('');
+  const [showClaudeKey, setShowClaudeKey] = useState(false);
+  const [showOpenaiKey, setShowOpenaiKey] = useState(false);
+
   // Tool execution visibility tracking
   type ToolExecutionState = {
     toolId: string;
@@ -1066,6 +1072,39 @@ const Panel = () => {
     if (!thinking) return [];
     return thinking.map((content) => ({ type: 'thinking', content }));
   };
+
+  // Detect if user accidentally put API key in env vars field
+  const detectApiKeyInEnvVars = (envVars?: string): boolean => {
+    if (!envVars) return false;
+
+    const lines = envVars.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('#')) continue; // Skip comments
+
+      const match = trimmed.match(/^([^=]+)=(.+)$/);
+      if (!match) continue;
+
+      const [, key, value] = match;
+      const keyUpper = key.trim().toUpperCase();
+
+      // Detect API key patterns
+      if (
+        keyUpper.includes('API_KEY') ||
+        keyUpper.includes('APIKEY') ||
+        keyUpper.includes('SECRET') ||
+        keyUpper.includes('TOKEN')
+      ) {
+        // Check if value looks like an API key (starts with sk-, contains hyphens/long alphanum)
+        if (value.trim().match(/^sk-[a-zA-Z0-9_-]{20,}/) || value.length > 30) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  };
+
   const isSendingRef = useRef(false);
   const queueRef = useRef<QueuedMessage[]>([]);
   const chatRef = useRef<HTMLDivElement | null>(null);
@@ -1461,11 +1500,11 @@ const Panel = () => {
 
       try {
         if (chatProvider === 'codex') {
-          // Check cache first - 5 minute TTL
+          // Check cache first - 1 minute TTL for faster model discovery
           const cached = metadataCacheRef.current.codex;
           const now = Date.now();
           const cacheAge = cached ? now - cached.fetchedAt : Infinity;
-          const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+          const CACHE_TTL = 1 * 60 * 1000; // 1 minute for faster model discovery
 
           let models: RuntimeModel[];
           let metadata: any;
@@ -1555,11 +1594,11 @@ const Panel = () => {
           return;
         }
 
-        // Check cache first - 5 minute TTL
+        // Check cache first - 1 minute TTL for faster model discovery
         const cached = metadataCacheRef.current.claude;
         const now = Date.now();
         const cacheAge = cached ? now - cached.fetchedAt : Infinity;
-        const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+        const CACHE_TTL = 1 * 60 * 1000; // 1 minute for faster model discovery
 
         let models: RuntimeModel[];
         let thinkingModes: ThinkingMode[];
@@ -4553,6 +4592,33 @@ const Panel = () => {
     await persistRuntimeOptions({ claudeYoloMode: next });
   };
 
+  // Helper to merge stored env vars with ephemeral API key
+  const buildEnvVarsWithApiKey = (
+    storedEnvVars: string | undefined,
+    apiKey: string,
+    keyVarName: string
+  ): string => {
+    // If no API key provided in UI, just return stored env vars
+    if (!apiKey) {
+      return storedEnvVars || '';
+    }
+
+    // Merge: API key takes precedence
+    const lines = (storedEnvVars || '').split('\n').filter((line) => {
+      const trimmed = line.trim();
+      // Remove any existing API_KEY lines from stored vars
+      return (
+        !trimmed.startsWith('ANTHROPIC_API_KEY=') &&
+        !trimmed.startsWith('OPENAI_API_KEY=')
+      );
+    });
+
+    // Add API key at the beginning
+    lines.unshift(`${keyVarName}=${apiKey}`);
+
+    return lines.join('\n');
+  };
+
   const getRuntimeConfig = async () => {
     const options = await getOptions();
     if (chatProvider === 'codex') {
@@ -4586,10 +4652,16 @@ const Panel = () => {
         codexRuntimeModel?.defaultReasoningEffort ??
         null
         : null;
+      // Build env vars with ephemeral API key if provided
+      const runtimeEnvVars = buildEnvVarsWithApiKey(
+        options.openaiEnvVars,
+        openaiApiKey,
+        'OPENAI_API_KEY'
+      );
       return {
         codex: {
           cliPath: options.openaiCodexCliPath,
-          envVars: options.openaiEnvVars,
+          envVars: runtimeEnvVars,
           approvalPolicy: options.openaiApprovalPolicy,
           ...(codexModel ? { model: codexModel } : {}),
           ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
@@ -4602,10 +4674,16 @@ const Panel = () => {
       const runtimeThinkingTokens =
         currentThinkingTokens ?? options.claudeMaxThinkingTokens ?? null;
       const conversationId = chatConversationIdRef.current;
+      // Build env vars with ephemeral API key if provided
+      const runtimeEnvVars = buildEnvVarsWithApiKey(
+        options.claudeEnvVars,
+        claudeApiKey,
+        'ANTHROPIC_API_KEY'
+      );
       return {
         claude: {
           cliPath: options.claudeCliPath,
-          envVars: options.claudeEnvVars,
+          envVars: runtimeEnvVars,
           loadUserSettings: options.claudeLoadUserSettings,
           model: runtimeModel ?? undefined,
           maxThinkingTokens: runtimeThinkingTokens ?? undefined,
@@ -6863,9 +6941,34 @@ const Panel = () => {
 
   const onSaveSettings = async () => {
     if (!settings) return;
+
+    // Warn if user has API key in env vars
+    const hasClaudeKey = detectApiKeyInEnvVars(settings.claudeEnvVars);
+    const hasOpenaiKey = detectApiKeyInEnvVars(settings.openaiEnvVars);
+
+    if (hasClaudeKey || hasOpenaiKey) {
+      const confirmed = confirm(
+        '⚠️ Warning: You appear to have an API key in the environment ' +
+          'variables field. This will be saved to browser storage.\n\n' +
+          'For better security, use the "API Key" field instead, which ' +
+          'keeps keys in memory only.\n\n' +
+          'Continue saving?'
+      );
+
+      if (!confirmed) {
+        setSettingsMessage('Save canceled');
+        return;
+      }
+    }
+
     try {
       await chrome.storage.local.set({ [LOCAL_STORAGE_KEY_OPTIONS]: settings });
-      setSettingsMessage('Saved');
+      // API keys entered in dedicated fields are NOT saved
+      const message =
+        claudeApiKey || openaiApiKey
+          ? 'Saved (API keys kept in memory only)'
+          : 'Saved';
+      setSettingsMessage(message);
       void refreshContextUsage({ force: true });
     } catch (error) {
       // Extension context invalidated - show error message
@@ -7333,423 +7436,423 @@ const Panel = () => {
           {hasSessions ? (
             <>
               <div class="ageaf-panel__chat" ref={chatRef}>
-            {messages.map((message) => {
-              const content = renderMessageContent(message);
-              if (!content) return null;
-              const copyResponseText =
-                message.role === 'assistant'
-                  ? stripInterruptedByUserSuffix(message.content)
-                  : '';
-              const canCopyResponse =
-                message.role === 'assistant' &&
-                copyResponseText.trim().length > 0;
-              const cotForMessage =
-                message.role === 'assistant' && settings?.showThinkingAndTools
-                  ? message.cot || convertThinkingToCoT(message.thinking)
-                  : null;
-              const hasCoTForMessage = Boolean(
-                cotForMessage && cotForMessage.length > 0
-              );
-              const isStatusCoTToggle = Boolean(
-                message.role === 'assistant' &&
-                message.statusLine &&
-                hasCoTForMessage &&
-                message.id
-              );
-              const isStatusCoTExpanded = isStatusCoTToggle
-                ? expandedThinkingMessages.has(message.id)
-                : false;
-              return (
-                <div
-                  class={`ageaf-message ageaf-message--${message.role}`}
-                  key={message.id}
-                >
-                  {message.role === 'assistant' && message.statusLine ? (
-                    isStatusCoTToggle ? (
-                      <button
-                        class="ageaf-message__status ageaf-message__status--toggle"
-                        type="button"
-                        aria-expanded={isStatusCoTExpanded}
-                        onClick={() => toggleThinkingExpanded(message.id)}
-                      >
-                        <span class="ageaf-message__status-toggle-arrow">
-                          {isStatusCoTExpanded ? '▼' : '▶'}
-                        </span>
-                        <span class="ageaf-message__status-toggle-text">
-                          {message.statusLine}
-                        </span>
-                      </button>
-                    ) : (
-                      <div class="ageaf-message__status">
-                        {message.statusLine}
-                      </div>
-                    )
-                  ) : null}
-                  {hasCoTForMessage
-                    ? renderCoTBlock(
-                      cotForMessage!,
-                      false,
-                      message.role === 'assistant' ? message.id : undefined,
-                      {
-                        hideHeader: isStatusCoTToggle,
-                      }
-                    )
-                    : null}
-                  {content}
-                  {canCopyResponse ? (
-                    <div class="ageaf-message__response-actions">
-                      <button
-                        class="ageaf-message__copy-response"
-                        type="button"
-                        aria-label="Copy response"
-                        title="Copy response"
-                        onClick={() => {
-                          const copyId = `${message.id}-response`;
-                          void (async () => {
-                            const success = await copyToClipboard(
-                              copyResponseText
-                            );
-                            if (success) markCopied(copyId);
-                          })();
-                        }}
-                      >
-                        {copiedItems[`${message.id}-response`] ? (
-                          <CheckIcon />
-                        ) : (
-                          <CopyIcon />
-                        )}
-                        <span>Copy response</span>
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-            {streamingStatus ? (
-              <div class="ageaf-message ageaf-message--assistant">
-                {(() => {
-                  const hasStreamingCoT = Boolean(
-                    settings?.showThinkingAndTools && streamingCoT.length > 0
+                {messages.map((message) => {
+                  const content = renderMessageContent(message);
+                  if (!content) return null;
+                  const copyResponseText =
+                    message.role === 'assistant'
+                      ? stripInterruptedByUserSuffix(message.content)
+                      : '';
+                  const canCopyResponse =
+                    message.role === 'assistant' &&
+                    copyResponseText.trim().length > 0;
+                  const cotForMessage =
+                    message.role === 'assistant' && settings?.showThinkingAndTools
+                      ? message.cot || convertThinkingToCoT(message.thinking)
+                      : null;
+                  const hasCoTForMessage = Boolean(
+                    cotForMessage && cotForMessage.length > 0
                   );
-                  const isStreamingCoTToggle = Boolean(hasStreamingCoT);
-                  const isStreamingCoTExpanded = isStreamingCoTToggle
-                    ? expandedThinkingMessages.has('streaming-thinking')
+                  const isStatusCoTToggle = Boolean(
+                    message.role === 'assistant' &&
+                    message.statusLine &&
+                    hasCoTForMessage &&
+                    message.id
+                  );
+                  const isStatusCoTExpanded = isStatusCoTToggle
+                    ? expandedThinkingMessages.has(message.id)
                     : false;
-
                   return (
-                    <>
-                      {isStreamingCoTToggle ? (
-                        <button
-                          class={`ageaf-message__status ageaf-message__status--toggle ${isStreamingActive ? 'is-active' : ''
-                            }`}
-                          type="button"
-                          aria-expanded={isStreamingCoTExpanded}
-                          onClick={() =>
-                            toggleThinkingExpanded('streaming-thinking')
-                          }
-                        >
-                          <span class="ageaf-message__status-toggle-arrow">
-                            {isStreamingCoTExpanded ? '▼' : '▶'}
-                          </span>
-                          <span class="ageaf-message__status-toggle-text">
-                            {streamingStatus}
-                          </span>
-                        </button>
-                      ) : (
-                        <div
-                          class={`ageaf-message__status ${isStreamingActive ? 'is-active' : ''
-                            }`}
-                        >
-                          {streamingStatus}
-                        </div>
-                      )}
-                      {hasStreamingCoT
+                    <div
+                      class={`ageaf-message ageaf-message--${message.role}`}
+                      key={message.id}
+                    >
+                      {message.role === 'assistant' && message.statusLine ? (
+                        isStatusCoTToggle ? (
+                          <button
+                            class="ageaf-message__status ageaf-message__status--toggle"
+                            type="button"
+                            aria-expanded={isStatusCoTExpanded}
+                            onClick={() => toggleThinkingExpanded(message.id)}
+                          >
+                            <span class="ageaf-message__status-toggle-arrow">
+                              {isStatusCoTExpanded ? '▼' : '▶'}
+                            </span>
+                            <span class="ageaf-message__status-toggle-text">
+                              {message.statusLine}
+                            </span>
+                          </button>
+                        ) : (
+                          <div class="ageaf-message__status">
+                            {message.statusLine}
+                          </div>
+                        )
+                      ) : null}
+                      {hasCoTForMessage
                         ? renderCoTBlock(
-                          streamingCoT,
-                          isStreamingActive,
-                          'streaming-thinking',
+                          cotForMessage!,
+                          false,
+                          message.role === 'assistant' ? message.id : undefined,
                           {
-                            hideHeader: isStreamingCoTToggle,
+                            hideHeader: isStatusCoTToggle,
                           }
                         )
                         : null}
-                    </>
+                      {content}
+                      {canCopyResponse ? (
+                        <div class="ageaf-message__response-actions">
+                          <button
+                            class="ageaf-message__copy-response"
+                            type="button"
+                            aria-label="Copy response"
+                            title="Copy response"
+                            onClick={() => {
+                              const copyId = `${message.id}-response`;
+                              void (async () => {
+                                const success = await copyToClipboard(
+                                  copyResponseText
+                                );
+                                if (success) markCopied(copyId);
+                              })();
+                            }}
+                          >
+                            {copiedItems[`${message.id}-response`] ? (
+                              <CheckIcon />
+                            ) : (
+                              <CopyIcon />
+                            )}
+                            <span>Copy response</span>
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   );
-                })()}
-                {streamingText ? (
-                  <div
-                    class="ageaf-message__content"
-                    dangerouslySetInnerHTML={{
-                      __html: renderMarkdown(streamingText),
-                    }}
-                  />
+                })}
+                {streamingStatus ? (
+                  <div class="ageaf-message ageaf-message--assistant">
+                    {(() => {
+                      const hasStreamingCoT = Boolean(
+                        settings?.showThinkingAndTools && streamingCoT.length > 0
+                      );
+                      const isStreamingCoTToggle = Boolean(hasStreamingCoT);
+                      const isStreamingCoTExpanded = isStreamingCoTToggle
+                        ? expandedThinkingMessages.has('streaming-thinking')
+                        : false;
+
+                      return (
+                        <>
+                          {isStreamingCoTToggle ? (
+                            <button
+                              class={`ageaf-message__status ageaf-message__status--toggle ${isStreamingActive ? 'is-active' : ''
+                                }`}
+                              type="button"
+                              aria-expanded={isStreamingCoTExpanded}
+                              onClick={() =>
+                                toggleThinkingExpanded('streaming-thinking')
+                              }
+                            >
+                              <span class="ageaf-message__status-toggle-arrow">
+                                {isStreamingCoTExpanded ? '▼' : '▶'}
+                              </span>
+                              <span class="ageaf-message__status-toggle-text">
+                                {streamingStatus}
+                              </span>
+                            </button>
+                          ) : (
+                            <div
+                              class={`ageaf-message__status ${isStreamingActive ? 'is-active' : ''
+                                }`}
+                            >
+                              {streamingStatus}
+                            </div>
+                          )}
+                          {hasStreamingCoT
+                            ? renderCoTBlock(
+                              streamingCoT,
+                              isStreamingActive,
+                              'streaming-thinking',
+                              {
+                                hideHeader: isStreamingCoTToggle,
+                              }
+                            )
+                            : null}
+                        </>
+                      );
+                    })()}
+                    {streamingText ? (
+                      <div
+                        class="ageaf-message__content"
+                        dangerouslySetInnerHTML={{
+                          __html: renderMarkdown(streamingText),
+                        }}
+                      />
+                    ) : null}
+                  </div>
+                ) : null}
+                {DEBUG_DIFF ? (
+                  <div class="ageaf-message ageaf-message--system">
+                    <DiffReview
+                      oldText={'\\section{Intro}\\nWe write the paper here.'}
+                      newText={'\\section{Introduction}\\nWe write the paper here.'}
+                    />
+                  </div>
+                ) : null}
+                {activeToolRequest ? (
+                  <div class="ageaf-message ageaf-message--system">
+                    {activeToolRequest.kind === 'approval' ? (
+                      <div class="ageaf-toolcall">
+                        <div class="ageaf-toolcall__title">Approval needed</div>
+                        <div class="ageaf-toolcall__detail">
+                          {activeToolRequest.params?.command
+                            ? String(activeToolRequest.params.command)
+                            : activeToolRequest.method}
+                        </div>
+                        <div class="ageaf-toolcall__actions">
+                          <button
+                            class="ageaf-panel__apply is-secondary"
+                            type="button"
+                            disabled={toolRequestBusy}
+                            onClick={() => {
+                              void respondToToolRequest(
+                                activeToolRequest,
+                                'decline'
+                              );
+                            }}
+                          >
+                            Decline
+                          </button>
+                          <button
+                            class="ageaf-panel__apply"
+                            type="button"
+                            disabled={toolRequestBusy}
+                            onClick={() => {
+                              void respondToToolRequest(
+                                activeToolRequest,
+                                'accept'
+                              );
+                            }}
+                          >
+                            Approve
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <form
+                        class="ageaf-toolcall"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const answers: Record<string, { answers: string[] }> = {};
+                          for (const question of activeToolQuestions) {
+                            const value = (
+                              toolRequestInputs[question.id] ?? ''
+                            ).trim();
+                            answers[question.id] = {
+                              answers: value ? [value] : [],
+                            };
+                          }
+                          void respondToToolRequest(activeToolRequest, { answers });
+                        }}
+                      >
+                        <div class="ageaf-toolcall__title">Input needed</div>
+                        {activeToolQuestions.map((question) => (
+                          <div class="ageaf-toolcall__question" key={question.id}>
+                            {question.header ? (
+                              <div class="ageaf-toolcall__question-title">
+                                {question.header}
+                              </div>
+                            ) : null}
+                            {question.question ? (
+                              <div class="ageaf-toolcall__question-text">
+                                {question.question}
+                              </div>
+                            ) : null}
+                            {question.options ? (
+                              <div class="ageaf-toolcall__options">
+                                {question.options.map((option: any) => (
+                                  <button
+                                    class="ageaf-toolcall__option"
+                                    type="button"
+                                    key={option.label}
+                                    onClick={() => {
+                                      setToolRequestInputs((prev) => ({
+                                        ...prev,
+                                        [question.id]: option.label,
+                                      }));
+                                    }}
+                                  >
+                                    {option.label}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                            <textarea
+                              class="ageaf-toolcall__input"
+                              rows={2}
+                              value={toolRequestInputs[question.id] ?? ''}
+                              onInput={(e) => {
+                                const value = (
+                                  e.currentTarget as HTMLTextAreaElement
+                                ).value;
+                                setToolRequestInputs((prev) => ({
+                                  ...prev,
+                                  [question.id]: value,
+                                }));
+                              }}
+                              placeholder="Type your answer…"
+                            />
+                          </div>
+                        ))}
+                        <div class="ageaf-toolcall__actions">
+                          <button
+                            class="ageaf-panel__apply is-secondary"
+                            type="button"
+                            disabled={toolRequestBusy}
+                            onClick={() => {
+                              void respondToToolRequest(activeToolRequest, {
+                                answers: Object.fromEntries(
+                                  activeToolQuestions.map((question) => [
+                                    question.id,
+                                    { answers: [] },
+                                  ])
+                                ),
+                              });
+                            }}
+                          >
+                            Skip
+                          </button>
+                          <button
+                            class="ageaf-panel__apply"
+                            type="submit"
+                            disabled={toolRequestBusy}
+                          >
+                            Submit
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                ) : null}
+                {!isAtBottom ? (
+                  <button
+                    class="ageaf-panel__scroll"
+                    type="button"
+                    onClick={scrollToBottom}
+                  >
+                    Scroll to bottom
+                  </button>
                 ) : null}
               </div>
-            ) : null}
-            {DEBUG_DIFF ? (
-              <div class="ageaf-message ageaf-message--system">
-                <DiffReview
-                  oldText={'\\section{Intro}\\nWe write the paper here.'}
-                  newText={'\\section{Introduction}\\nWe write the paper here.'}
-                />
-              </div>
-            ) : null}
-            {activeToolRequest ? (
-              <div class="ageaf-message ageaf-message--system">
-                {activeToolRequest.kind === 'approval' ? (
-                  <div class="ageaf-toolcall">
-                    <div class="ageaf-toolcall__title">Approval needed</div>
-                    <div class="ageaf-toolcall__detail">
-                      {activeToolRequest.params?.command
-                        ? String(activeToolRequest.params.command)
-                        : activeToolRequest.method}
-                    </div>
-                    <div class="ageaf-toolcall__actions">
-                      <button
-                        class="ageaf-panel__apply is-secondary"
-                        type="button"
-                        disabled={toolRequestBusy}
-                        onClick={() => {
-                          void respondToToolRequest(
-                            activeToolRequest,
-                            'decline'
-                          );
-                        }}
-                      >
-                        Decline
-                      </button>
-                      <button
-                        class="ageaf-panel__apply"
-                        type="button"
-                        disabled={toolRequestBusy}
-                        onClick={() => {
-                          void respondToToolRequest(
-                            activeToolRequest,
-                            'accept'
-                          );
-                        }}
-                      >
-                        Approve
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <form
-                    class="ageaf-toolcall"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      const answers: Record<string, { answers: string[] }> = {};
-                      for (const question of activeToolQuestions) {
-                        const value = (
-                          toolRequestInputs[question.id] ?? ''
-                        ).trim();
-                        answers[question.id] = {
-                          answers: value ? [value] : [],
-                        };
-                      }
-                      void respondToToolRequest(activeToolRequest, { answers });
-                    }}
+              <div class="ageaf-runtime">
+                <div class="ageaf-runtime__picker">
+                  <button
+                    class="ageaf-runtime__button"
+                    type="button"
+                    aria-haspopup="listbox"
                   >
-                    <div class="ageaf-toolcall__title">Input needed</div>
-                    {activeToolQuestions.map((question) => (
-                      <div class="ageaf-toolcall__question" key={question.id}>
-                        {question.header ? (
-                          <div class="ageaf-toolcall__question-title">
-                            {question.header}
-                          </div>
-                        ) : null}
-                        {question.question ? (
-                          <div class="ageaf-toolcall__question-text">
-                            {question.question}
-                          </div>
-                        ) : null}
-                        {question.options ? (
-                          <div class="ageaf-toolcall__options">
-                            {question.options.map((option: any) => (
-                              <button
-                                class="ageaf-toolcall__option"
-                                type="button"
-                                key={option.label}
-                                onClick={() => {
-                                  setToolRequestInputs((prev) => ({
-                                    ...prev,
-                                    [question.id]: option.label,
-                                  }));
-                                }}
-                              >
-                                {option.label}
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                        <textarea
-                          class="ageaf-toolcall__input"
-                          rows={2}
-                          value={toolRequestInputs[question.id] ?? ''}
-                          onInput={(e) => {
-                            const value = (
-                              e.currentTarget as HTMLTextAreaElement
-                            ).value;
-                            setToolRequestInputs((prev) => ({
-                              ...prev,
-                              [question.id]: value,
-                            }));
-                          }}
-                          placeholder="Type your answer…"
-                        />
-                      </div>
+                    <span class="ageaf-runtime__value">
+                      {getSelectedModelLabel()}
+                    </span>
+                  </button>
+                  <div class="ageaf-runtime__menu" role="listbox">
+                    {getOrderedRuntimeModels().map((model) => (
+                      <button
+                        class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''
+                          }`}
+                        type="button"
+                        onClick={() => onSelectModel(model.value)}
+                        key={model.value}
+                        aria-selected={isRuntimeModelSelected(model)}
+                      >
+                        <div class="ageaf-runtime__option-title">
+                          {getRuntimeModelLabel(model)}
+                        </div>
+                        <div class="ageaf-runtime__option-description">
+                          {getRuntimeModelDescription(model)}
+                        </div>
+                      </button>
                     ))}
-                    <div class="ageaf-toolcall__actions">
+                  </div>
+                </div>
+                <div class="ageaf-runtime__picker">
+                  <button
+                    class="ageaf-runtime__button"
+                    type="button"
+                    aria-haspopup="listbox"
+                  >
+                    <span class="ageaf-runtime__label">Thinking</span>
+                    <span class="ageaf-runtime__value ageaf-runtime__value--accent">
+                      {selectedThinkingMode.label}
+                    </span>
+                  </button>
+                  <div class="ageaf-runtime__menu" role="listbox">
+                    {thinkingModes.map((mode) => (
                       <button
-                        class="ageaf-panel__apply is-secondary"
+                        class={`ageaf-runtime__option ${mode.id === currentThinkingMode ? 'is-selected' : ''
+                          }`}
                         type="button"
-                        disabled={toolRequestBusy}
-                        onClick={() => {
-                          void respondToToolRequest(activeToolRequest, {
-                            answers: Object.fromEntries(
-                              activeToolQuestions.map((question) => [
-                                question.id,
-                                { answers: [] },
-                              ])
-                            ),
-                          });
-                        }}
+                        onClick={() => onSelectThinkingMode(mode.id)}
+                        key={mode.id}
+                        aria-selected={mode.id === currentThinkingMode}
                       >
-                        Skip
+                        <div class="ageaf-runtime__option-title">{mode.label}</div>
                       </button>
-                      <button
-                        class="ageaf-panel__apply"
-                        type="submit"
-                        disabled={toolRequestBusy}
-                      >
-                        Submit
-                      </button>
-                    </div>
-                  </form>
-                )}
-              </div>
-            ) : null}
-            {!isAtBottom ? (
-              <button
-                class="ageaf-panel__scroll"
-                type="button"
-                onClick={scrollToBottom}
-              >
-                Scroll to bottom
-              </button>
-            ) : null}
-          </div>
-          <div class="ageaf-runtime">
-            <div class="ageaf-runtime__picker">
-              <button
-                class="ageaf-runtime__button"
-                type="button"
-                aria-haspopup="listbox"
-              >
-                <span class="ageaf-runtime__value">
-                  {getSelectedModelLabel()}
-                </span>
-              </button>
-              <div class="ageaf-runtime__menu" role="listbox">
-                {getOrderedRuntimeModels().map((model) => (
-                  <button
-                    class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''
-                      }`}
-                    type="button"
-                    onClick={() => onSelectModel(model.value)}
-                    key={model.value}
-                    aria-selected={isRuntimeModelSelected(model)}
+                    ))}
+                  </div>
+                </div>
+                <div class="ageaf-runtime__usage" data-tooltip={usageLabel}>
+                  <svg
+                    class="ageaf-runtime__ring"
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
                   >
-                    <div class="ageaf-runtime__option-title">
-                      {getRuntimeModelLabel(model)}
-                    </div>
-                    <div class="ageaf-runtime__option-description">
-                      {getRuntimeModelDescription(model)}
-                    </div>
-                  </button>
-                ))}
+                    <title>{usageLabel}</title>
+                    <circle
+                      class="ageaf-runtime__ring-track"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      strokeWidth="3"
+                    />
+                    <circle
+                      class="ageaf-runtime__ring-value"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      strokeWidth="3"
+                      ref={contextRingRef}
+                      strokeDasharray={ringCircumference}
+                      strokeDashoffset={ringCircumference}
+                    />
+                  </svg>
+                  <span class="ageaf-runtime__value">{usagePercent}%</span>
+                </div>
+                <button
+                  class={`ageaf-runtime__yolo ${yoloMode ? 'is-on' : ''}`}
+                  type="button"
+                  role="switch"
+                  aria-checked={yoloMode}
+                  aria-label={
+                    chatProvider === 'codex'
+                      ? yoloMode
+                        ? 'Codex YOLO mode enabled'
+                        : 'Codex safe mode enabled'
+                      : yoloMode
+                        ? 'YOLO mode enabled'
+                        : 'Safe mode enabled'
+                  }
+                  data-tooltip={yoloMode ? 'YOLO mode' : 'Safe mode'}
+                  onClick={() => {
+                    void onToggleYoloMode();
+                  }}
+                >
+                  <span class="ageaf-runtime__yolo-text">
+                    {yoloMode ? 'YOLO' : 'Safe'}
+                  </span>
+                  <span class="ageaf-runtime__yolo-switch" aria-hidden="true">
+                    <span class="ageaf-runtime__yolo-thumb" />
+                  </span>
+                </button>
               </div>
-            </div>
-            <div class="ageaf-runtime__picker">
-              <button
-                class="ageaf-runtime__button"
-                type="button"
-                aria-haspopup="listbox"
-              >
-                <span class="ageaf-runtime__label">Thinking</span>
-                <span class="ageaf-runtime__value ageaf-runtime__value--accent">
-                  {selectedThinkingMode.label}
-                </span>
-              </button>
-              <div class="ageaf-runtime__menu" role="listbox">
-                {thinkingModes.map((mode) => (
-                  <button
-                    class={`ageaf-runtime__option ${mode.id === currentThinkingMode ? 'is-selected' : ''
-                      }`}
-                    type="button"
-                    onClick={() => onSelectThinkingMode(mode.id)}
-                    key={mode.id}
-                    aria-selected={mode.id === currentThinkingMode}
-                  >
-                    <div class="ageaf-runtime__option-title">{mode.label}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div class="ageaf-runtime__usage" data-tooltip={usageLabel}>
-              <svg
-                class="ageaf-runtime__ring"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <title>{usageLabel}</title>
-                <circle
-                  class="ageaf-runtime__ring-track"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  strokeWidth="3"
-                />
-                <circle
-                  class="ageaf-runtime__ring-value"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  strokeWidth="3"
-                  ref={contextRingRef}
-                  strokeDasharray={ringCircumference}
-                  strokeDashoffset={ringCircumference}
-                />
-              </svg>
-              <span class="ageaf-runtime__value">{usagePercent}%</span>
-            </div>
-            <button
-              class={`ageaf-runtime__yolo ${yoloMode ? 'is-on' : ''}`}
-              type="button"
-              role="switch"
-              aria-checked={yoloMode}
-              aria-label={
-                chatProvider === 'codex'
-                  ? yoloMode
-                    ? 'Codex YOLO mode enabled'
-                    : 'Codex safe mode enabled'
-                  : yoloMode
-                    ? 'YOLO mode enabled'
-                    : 'Safe mode enabled'
-              }
-              data-tooltip={yoloMode ? 'YOLO mode' : 'Safe mode'}
-              onClick={() => {
-                void onToggleYoloMode();
-              }}
-            >
-              <span class="ageaf-runtime__yolo-text">
-                {yoloMode ? 'YOLO' : 'Safe'}
-              </span>
-              <span class="ageaf-runtime__yolo-switch" aria-hidden="true">
-                <span class="ageaf-runtime__yolo-thumb" />
-              </span>
-            </button>
-          </div>
             </>
           ) : (
             landingPage
@@ -7763,345 +7866,345 @@ const Panel = () => {
             onDragLeave={(event) => handleDragLeave(event as DragEvent)}
             onDrop={(event) => handleDrop(event as DragEvent)}
           >
-          <div class="ageaf-panel__toolbar">
-            <div
-              class="ageaf-session-tabs"
-              role="tablist"
-              aria-label="Sessions"
-            >
-              {sessionIds.map((id, index) => {
-                const state = chatStateRef.current;
-                const conversation = state ? findConversation(state, id) : null;
-                const providerLabel =
-                  conversation?.provider === 'codex' ? 'OpenAI' : 'Anthropic';
-
-                // Get per-session activity status
-                const sessionState = sessionStates.current.get(id);
-                const isActive =
-                  sessionState?.isSending ||
-                  (sessionState?.queue.length ?? 0) > 0;
-                const statusIcon = sessionState?.isSending
-                  ? '⟳' // spinning/thinking
-                  : (sessionState?.queue.length ?? 0) > 0
-                    ? `${sessionState?.queue.length ?? 0}` // queue count
-                    : null;
-
-                return (
-                  <button
-                    class={`ageaf-session-tab ${id === activeSessionId ? 'is-active' : ''
-                      } ${isActive ? 'is-busy' : ''}`}
-                    type="button"
-                    role="tab"
-                    aria-selected={id === activeSessionId}
-                    aria-label={`Session ${index + 1} (${providerLabel})`}
-                    data-tooltip={providerLabel}
-                    onClick={() => onSelectSession(id)}
-                    key={id}
-                  >
-                    {index + 1}
-                    {statusIcon && (
-                      <span class="ageaf-session__status">{statusIcon}</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-            <div class="ageaf-toolbar-actions">
-              <button
-                class="ageaf-toolbar-button"
-                type="button"
-                onClick={() => void onRewriteSelection()}
-                aria-label="Rewrite selection"
-                data-tooltip="Rewrite selection"
+            <div class="ageaf-panel__toolbar">
+              <div
+                class="ageaf-session-tabs"
+                role="tablist"
+                aria-label="Sessions"
               >
-                <RewriteIcon />
-              </button>
-              <button
-                class="ageaf-toolbar-button"
-                type="button"
-                onClick={() => void onOpenFilePicker()}
-                aria-label="Attach files"
-                data-tooltip="Attach files"
-              >
-                <AttachFilesIcon />
-              </button>
-              <div class="ageaf-toolbar-menu">
+                {sessionIds.map((id, index) => {
+                  const state = chatStateRef.current;
+                  const conversation = state ? findConversation(state, id) : null;
+                  const providerLabel =
+                    conversation?.provider === 'codex' ? 'OpenAI' : 'Anthropic';
+
+                  // Get per-session activity status
+                  const sessionState = sessionStates.current.get(id);
+                  const isActive =
+                    sessionState?.isSending ||
+                    (sessionState?.queue.length ?? 0) > 0;
+                  const statusIcon = sessionState?.isSending
+                    ? '⟳' // spinning/thinking
+                    : (sessionState?.queue.length ?? 0) > 0
+                      ? `${sessionState?.queue.length ?? 0}` // queue count
+                      : null;
+
+                  return (
+                    <button
+                      class={`ageaf-session-tab ${id === activeSessionId ? 'is-active' : ''
+                        } ${isActive ? 'is-busy' : ''}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={id === activeSessionId}
+                      aria-label={`Session ${index + 1} (${providerLabel})`}
+                      data-tooltip={providerLabel}
+                      onClick={() => onSelectSession(id)}
+                      key={id}
+                    >
+                      {index + 1}
+                      {statusIcon && (
+                        <span class="ageaf-session__status">{statusIcon}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              <div class="ageaf-toolbar-actions">
                 <button
                   class="ageaf-toolbar-button"
                   type="button"
-                  aria-haspopup="menu"
-                  aria-label="New chat"
-                  data-tooltip="New chat"
+                  onClick={() => void onRewriteSelection()}
+                  aria-label="Rewrite selection"
+                  data-tooltip="Rewrite selection"
                 >
-                  <NewChatIconAlt />
+                  <RewriteIcon />
                 </button>
-                <div
-                  class="ageaf-toolbar-menu__list"
-                  role="menu"
-                  aria-label="Select provider"
+                <button
+                  class="ageaf-toolbar-button"
+                  type="button"
+                  onClick={() => void onOpenFilePicker()}
+                  aria-label="Attach files"
+                  data-tooltip="Attach files"
                 >
+                  <AttachFilesIcon />
+                </button>
+                <div class="ageaf-toolbar-menu">
                   <button
-                    class="ageaf-toolbar-menu__option"
+                    class="ageaf-toolbar-button"
                     type="button"
-                    onClick={() => void onNewChat('claude')}
-                    role="menuitem"
+                    aria-haspopup="menu"
+                    aria-label="New chat"
+                    data-tooltip="New chat"
                   >
-                    Anthropic
+                    <NewChatIconAlt />
                   </button>
-                  <button
-                    class="ageaf-toolbar-menu__option"
-                    type="button"
-                    onClick={() => void onNewChat('codex')}
-                    role="menuitem"
+                  <div
+                    class="ageaf-toolbar-menu__list"
+                    role="menu"
+                    aria-label="Select provider"
                   >
-                    OpenAI
-                  </button>
-                </div>
-              </div>
-              <button
-                class="ageaf-toolbar-button"
-                type="button"
-                onClick={onClearChat}
-                aria-label="Clear chat"
-                data-tooltip="Clear chat"
-              >
-                <ClearChatIcon />
-              </button>
-              <button
-                class="ageaf-toolbar-button"
-                type="button"
-                onClick={onCloseSession}
-                aria-label="Close session"
-                data-tooltip="Close session"
-              >
-                <CloseSessionIcon />
-              </button>
-              <button
-                class="ageaf-panel__settings ageaf-toolbar-button"
-                type="button"
-                onClick={() => setSettingsOpen(true)}
-                aria-label="Open settings"
-                data-tooltip="Settings"
-              >
-                <SettingsIcon />
-              </button>
-            </div>
-          </div>
-          {fileAttachments.length > 0 ? (
-            <div
-              class="ageaf-panel__file-attachments"
-              aria-label="Attached files"
-            >
-              {fileAttachments.map((attachment) => (
-                <div
-                  class="ageaf-panel__file-chip"
-                  key={attachment.id}
-                  title={attachment.path ?? attachment.name}
-                >
-                  <span class="ageaf-panel__file-chip-name">
-                    {truncateName(attachment.name)}
-                  </span>
-                  <span class="ageaf-panel__file-chip-meta">
-                    {attachment.ext.replace('.', '').toUpperCase()} ·{' '}
-                    {formatLineCount(attachment.lineCount)} lines
-                  </span>
-                  <button
-                    class="ageaf-panel__file-chip-remove"
-                    type="button"
-                    aria-label={`Remove ${attachment.name}`}
-                    onClick={() =>
-                      updateFileAttachments(
-                        fileAttachmentsRef.current.filter(
-                          (item) => item.id !== attachment.id
-                        )
-                      )
-                    }
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          {imageAttachments.length > 0 ? (
-            <div class="ageaf-panel__attachments" aria-label="Attached images">
-              {imageAttachments.map((image) => (
-                <div class="ageaf-panel__attachment" key={image.id}>
-                  <img
-                    class="ageaf-panel__attachment-thumb"
-                    src={getImageDataUrl(image)}
-                    alt={image.name}
-                    loading="lazy"
-                  />
-                  <div class="ageaf-panel__attachment-meta">
-                    <div class="ageaf-panel__attachment-name">
-                      {truncateName(image.name)}
-                    </div>
-                    <div class="ageaf-panel__attachment-size">
-                      {formatBytes(image.size)}
-                    </div>
+                    <button
+                      class="ageaf-toolbar-menu__option"
+                      type="button"
+                      onClick={() => void onNewChat('claude')}
+                      role="menuitem"
+                    >
+                      Anthropic
+                    </button>
+                    <button
+                      class="ageaf-toolbar-menu__option"
+                      type="button"
+                      onClick={() => void onNewChat('codex')}
+                      role="menuitem"
+                    >
+                      OpenAI
+                    </button>
                   </div>
-                  <button
-                    class="ageaf-panel__attachment-remove"
-                    type="button"
-                    aria-label={`Remove ${image.name}`}
-                    onClick={() => removeImageAttachment(image.id)}
-                  >
-                    ×
-                  </button>
                 </div>
-              ))}
-            </div>
-          ) : null}
-          {attachmentError ? (
-            <div class="ageaf-panel__attachment-error">{attachmentError}</div>
-          ) : null}
-          <div
-            class={`ageaf-panel__editor ${editorEmpty ? 'is-empty' : ''}`}
-            contentEditable="true"
-            role="textbox"
-            aria-multiline="true"
-            aria-label="Message input"
-            data-placeholder="Ask anything (⌘K), @ to mention, / for workflows"
-            ref={editorRef}
-            onInput={() => {
-              syncEditorEmpty();
-              updateMentionState();
-              void updateSkillState();
-            }}
-            onPaste={(event) => handlePaste(event as ClipboardEvent)}
-            onKeyDown={(event) => onInputKeyDown(event as KeyboardEvent)}
-            onCompositionStart={() => {
-              isComposingRef.current = true;
-            }}
-            onCompositionEnd={() => {
-              isComposingRef.current = false;
-              updateMentionState();
-              void updateSkillState();
-            }}
-          />
-          {mentionOpen ? (
-            <div
-              class="ageaf-mention"
-              ref={mentionListRef}
-              onWheel={(event) => {
-                // Ensure the dropdown itself scrolls (trackpad wheel often scrolls the chat instead).
-                // We scroll manually to be robust across browsers' passive wheel defaults.
-                const el = event.currentTarget as HTMLElement | null;
-                if (!el) return;
-                if (el.scrollHeight <= el.clientHeight) return;
-                el.scrollTop += (event as unknown as WheelEvent).deltaY;
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-            >
-              {mentionResults.length > 0 ? (
-                mentionResults.map((file, index) => (
-                  <button
-                    key={file.path}
-                    type="button"
-                    class={`ageaf-mention__option ${index === mentionIndex ? 'is-active' : ''
-                      }`}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      insertMentionEntry(file);
-                    }}
-                    title={file.path}
-                  >
-                    <span class={`ageaf-mention__icon is-${file.kind}`}>
-                      {file.kind === 'folder'
-                        ? 'Dir'
-                        : file.kind === 'tex'
-                          ? 'TeX'
-                          : file.kind === 'bib'
-                            ? 'Bib'
-                            : file.kind === 'img'
-                              ? 'Img'
-                              : 'File'}
-                    </span>
-                    <span class="ageaf-mention__name">{file.name}</span>
-                  </button>
-                ))
-              ) : (
-                <div class="ageaf-mention__empty">No project files found.</div>
-              )}
-            </div>
-          ) : null}
-          {skillOpen ? (
-            <div
-              class="ageaf-skill"
-              ref={skillListRef}
-              onWheel={(event) => {
-                const el = event.currentTarget as HTMLElement | null;
-                if (!el) return;
-                if (el.scrollHeight <= el.clientHeight) return;
-                el.scrollTop += (event as unknown as WheelEvent).deltaY;
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-            >
-              {skillResults.length > 0 ? (
-                skillResults.map((skill, index) => (
-                  <button
-                    key={skill.id}
-                    type="button"
-                    class={`ageaf-skill__option ${index === skillIndex ? 'is-active' : ''
-                      }`}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      insertSkill(skill);
-                    }}
-                    title={skill.description}
-                  >
-                    <div class="ageaf-skill__name">/{skill.name}</div>
-                    <div class="ageaf-skill__description">
-                      {skill.description}
-                    </div>
-                  </button>
-                ))
-              ) : (
-                <div class="ageaf-skill__empty">No skills found.</div>
-              )}
-            </div>
-          ) : null}
-          {isDropActive ? (
-            <div class="ageaf-panel__dropzone" aria-hidden="true">
-              <svg
-                class="ageaf-panel__dropzone-icon"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-                focusable="false"
-              >
-                <path
-                  d="M12 16V7M8.5 10.5L12 7l3.5 3.5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="1.6"
-                />
-                <path
-                  d="M5 17.5c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="1.6"
-                />
-              </svg>
-              <div class="ageaf-panel__dropzone-label">
-                Drop files to attach
+                <button
+                  class="ageaf-toolbar-button"
+                  type="button"
+                  onClick={onClearChat}
+                  aria-label="Clear chat"
+                  data-tooltip="Clear chat"
+                >
+                  <ClearChatIcon />
+                </button>
+                <button
+                  class="ageaf-toolbar-button"
+                  type="button"
+                  onClick={onCloseSession}
+                  aria-label="Close session"
+                  data-tooltip="Close session"
+                >
+                  <CloseSessionIcon />
+                </button>
+                <button
+                  class="ageaf-panel__settings ageaf-toolbar-button"
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  aria-label="Open settings"
+                  data-tooltip="Settings"
+                >
+                  <SettingsIcon />
+                </button>
               </div>
             </div>
-          ) : null}
-          {isSending || queueCount > 0 ? (
-            <div class="ageaf-panel__queue">
-              {isSending ? 'Sending…' : 'Queued'}
-              {queueCount > 0 ? ` (${queueCount})` : ''}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+            {fileAttachments.length > 0 ? (
+              <div
+                class="ageaf-panel__file-attachments"
+                aria-label="Attached files"
+              >
+                {fileAttachments.map((attachment) => (
+                  <div
+                    class="ageaf-panel__file-chip"
+                    key={attachment.id}
+                    title={attachment.path ?? attachment.name}
+                  >
+                    <span class="ageaf-panel__file-chip-name">
+                      {truncateName(attachment.name)}
+                    </span>
+                    <span class="ageaf-panel__file-chip-meta">
+                      {attachment.ext.replace('.', '').toUpperCase()} ·{' '}
+                      {formatLineCount(attachment.lineCount)} lines
+                    </span>
+                    <button
+                      class="ageaf-panel__file-chip-remove"
+                      type="button"
+                      aria-label={`Remove ${attachment.name}`}
+                      onClick={() =>
+                        updateFileAttachments(
+                          fileAttachmentsRef.current.filter(
+                            (item) => item.id !== attachment.id
+                          )
+                        )
+                      }
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {imageAttachments.length > 0 ? (
+              <div class="ageaf-panel__attachments" aria-label="Attached images">
+                {imageAttachments.map((image) => (
+                  <div class="ageaf-panel__attachment" key={image.id}>
+                    <img
+                      class="ageaf-panel__attachment-thumb"
+                      src={getImageDataUrl(image)}
+                      alt={image.name}
+                      loading="lazy"
+                    />
+                    <div class="ageaf-panel__attachment-meta">
+                      <div class="ageaf-panel__attachment-name">
+                        {truncateName(image.name)}
+                      </div>
+                      <div class="ageaf-panel__attachment-size">
+                        {formatBytes(image.size)}
+                      </div>
+                    </div>
+                    <button
+                      class="ageaf-panel__attachment-remove"
+                      type="button"
+                      aria-label={`Remove ${image.name}`}
+                      onClick={() => removeImageAttachment(image.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {attachmentError ? (
+              <div class="ageaf-panel__attachment-error">{attachmentError}</div>
+            ) : null}
+            <div
+              class={`ageaf-panel__editor ${editorEmpty ? 'is-empty' : ''}`}
+              contentEditable="true"
+              role="textbox"
+              aria-multiline="true"
+              aria-label="Message input"
+              data-placeholder="Ask anything (⌘K), @ to mention, / for workflows"
+              ref={editorRef}
+              onInput={() => {
+                syncEditorEmpty();
+                updateMentionState();
+                void updateSkillState();
+              }}
+              onPaste={(event) => handlePaste(event as ClipboardEvent)}
+              onKeyDown={(event) => onInputKeyDown(event as KeyboardEvent)}
+              onCompositionStart={() => {
+                isComposingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                isComposingRef.current = false;
+                updateMentionState();
+                void updateSkillState();
+              }}
+            />
+            {mentionOpen ? (
+              <div
+                class="ageaf-mention"
+                ref={mentionListRef}
+                onWheel={(event) => {
+                  // Ensure the dropdown itself scrolls (trackpad wheel often scrolls the chat instead).
+                  // We scroll manually to be robust across browsers' passive wheel defaults.
+                  const el = event.currentTarget as HTMLElement | null;
+                  if (!el) return;
+                  if (el.scrollHeight <= el.clientHeight) return;
+                  el.scrollTop += (event as unknown as WheelEvent).deltaY;
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                {mentionResults.length > 0 ? (
+                  mentionResults.map((file, index) => (
+                    <button
+                      key={file.path}
+                      type="button"
+                      class={`ageaf-mention__option ${index === mentionIndex ? 'is-active' : ''
+                        }`}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        insertMentionEntry(file);
+                      }}
+                      title={file.path}
+                    >
+                      <span class={`ageaf-mention__icon is-${file.kind}`}>
+                        {file.kind === 'folder'
+                          ? 'Dir'
+                          : file.kind === 'tex'
+                            ? 'TeX'
+                            : file.kind === 'bib'
+                              ? 'Bib'
+                              : file.kind === 'img'
+                                ? 'Img'
+                                : 'File'}
+                      </span>
+                      <span class="ageaf-mention__name">{file.name}</span>
+                    </button>
+                  ))
+                ) : (
+                  <div class="ageaf-mention__empty">No project files found.</div>
+                )}
+              </div>
+            ) : null}
+            {skillOpen ? (
+              <div
+                class="ageaf-skill"
+                ref={skillListRef}
+                onWheel={(event) => {
+                  const el = event.currentTarget as HTMLElement | null;
+                  if (!el) return;
+                  if (el.scrollHeight <= el.clientHeight) return;
+                  el.scrollTop += (event as unknown as WheelEvent).deltaY;
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                {skillResults.length > 0 ? (
+                  skillResults.map((skill, index) => (
+                    <button
+                      key={skill.id}
+                      type="button"
+                      class={`ageaf-skill__option ${index === skillIndex ? 'is-active' : ''
+                        }`}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        insertSkill(skill);
+                      }}
+                      title={skill.description}
+                    >
+                      <div class="ageaf-skill__name">/{skill.name}</div>
+                      <div class="ageaf-skill__description">
+                        {skill.description}
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  <div class="ageaf-skill__empty">No skills found.</div>
+                )}
+              </div>
+            ) : null}
+            {isDropActive ? (
+              <div class="ageaf-panel__dropzone" aria-hidden="true">
+                <svg
+                  class="ageaf-panel__dropzone-icon"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path
+                    d="M12 16V7M8.5 10.5L12 7l3.5 3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.6"
+                  />
+                  <path
+                    d="M5 17.5c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="1.6"
+                  />
+                </svg>
+                <div class="ageaf-panel__dropzone-label">
+                  Drop files to attach
+                </div>
+              </div>
+            ) : null}
+            {isSending || queueCount > 0 ? (
+              <div class="ageaf-panel__queue">
+                {isSending ? 'Sending…' : 'Queued'}
+                {queueCount > 0 ? ` (${queueCount})` : ''}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       {settingsOpen ? (
         <div class="ageaf-settings">
@@ -8235,11 +8338,69 @@ const Panel = () => {
                     <div class="ageaf-settings__section">
                       <h3>Authentication</h3>
                       <h4 class="ageaf-settings__subhead">Anthropic</h4>
-                      <p class="ageaf-settings__hint">
-                        If you already logged into Claude Code in your terminal,
-                        you can leave the API key blank. Otherwise set it via
-                        environment variables below.
-                      </p>
+                      <div
+                        class="ageaf-settings__info-box"
+                        style="background: rgba(57, 185, 138, 0.08); border: 1px solid rgba(57, 185, 138, 0.25); border-left: 4px solid #39b98a; padding: 12px; margin-bottom: 16px; border-radius: 6px;"
+                      >
+                        <strong>🔐 Secure API Key Input</strong>
+                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
+                          Enter your API key here for use with Claude CLI. The
+                          key is kept in memory only and never saved to browser
+                          storage. You'll need to re-enter it after browser
+                          restart.
+                        </p>
+                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
+                          <strong>Alternatively:</strong> Set ANTHROPIC_API_KEY
+                          in your terminal environment and leave this field
+                          empty.
+                        </p>
+                      </div>
+                      <label
+                        class="ageaf-settings__label"
+                        for="ageaf-claude-api-key"
+                      >
+                        API Key (Session Only - Not Saved)
+                      </label>
+                      <div
+                        style="display: flex; gap: 8px; margin-bottom: 16px;"
+                      >
+                        <input
+                          id="ageaf-claude-api-key"
+                          class="ageaf-settings__input"
+                          type={showClaudeKey ? 'text' : 'password'}
+                          value={claudeApiKey}
+                          onInput={(event) =>
+                            setClaudeApiKey(
+                              (event.target as HTMLInputElement).value
+                            )
+                          }
+                          onPaste={(event) =>
+                            setClaudeApiKey(
+                              event.clipboardData?.getData('text') || ''
+                            )
+                          }
+                          placeholder="sk-ant-... (optional if set in terminal)"
+                          style="flex: 1;"
+                        />
+                        <button
+                          type="button"
+                          class="ageaf-settings__button"
+                          onClick={() => setShowClaudeKey(!showClaudeKey)}
+                          style="min-width: 80px;"
+                        >
+                          {showClaudeKey ? 'Hide' : 'Show'}
+                        </button>
+                        {claudeApiKey && (
+                          <button
+                            type="button"
+                            class="ageaf-settings__button"
+                            onClick={() => setClaudeApiKey('')}
+                            style="min-width: 80px;"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
                       <label
                         class="ageaf-settings__label"
                         for="ageaf-claude-cli"
@@ -8266,8 +8427,9 @@ const Panel = () => {
                         Environment variables (KEY=VALUE)
                       </label>
                       <p class="ageaf-settings__hint">
-                        Optional: you can also set ANTHROPIC_BASE_URL and
-                        ANTHROPIC_MODEL here, in addition to ANTHROPIC_API_KEY.
+                        <strong>Note:</strong> Use the API Key field above for
+                        sensitive keys. This field is for non-sensitive
+                        variables like ANTHROPIC_BASE_URL or ANTHROPIC_MODEL.
                       </p>
                       <textarea
                         id="ageaf-claude-env"
@@ -8281,9 +8443,23 @@ const Panel = () => {
                           })
                         }
                         placeholder={
-                          'ANTHROPIC_API_KEY=your-key\nANTHROPIC_BASE_URL=https://api.anthropic.com\nANTHROPIC_MODEL=claude-sonnet-4-5'
+                          'ANTHROPIC_BASE_URL=https://api.anthropic.com\nANTHROPIC_MODEL=claude-sonnet-4-5'
                         }
                       />
+                      {detectApiKeyInEnvVars(settings.claudeEnvVars) && (
+                        <div
+                          class="ageaf-settings__warning-box"
+                          style="background: rgba(255, 179, 87, 0.08); border: 1px solid rgba(255, 179, 87, 0.25); border-left: 4px solid #ffb357; padding: 12px; margin-top: 12px; margin-bottom: 12px; border-radius: 6px;"
+                        >
+                          <strong>⚠️ API Key Detected in Environment Variables</strong>
+                          <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
+                            You appear to have entered an API key in the
+                            environment variables field. For better security, use
+                            the "API Key" field above instead. Keys entered there
+                            are kept in memory only and never saved.
+                          </p>
+                        </div>
+                      )}
                       <label class="ageaf-settings__checkbox">
                         <input
                           type="checkbox"
@@ -8298,11 +8474,68 @@ const Panel = () => {
                         Load ~/.claude/settings.json (user permissions)
                       </label>
                       <h4 class="ageaf-settings__subhead">OpenAI</h4>
-                      <p class="ageaf-settings__hint">
-                        If you already logged into the Codex CLI in your
-                        terminal, you can leave the API key blank. Otherwise set
-                        it via environment variables below.
-                      </p>
+                      <div
+                        class="ageaf-settings__info-box"
+                        style="background: rgba(57, 185, 138, 0.08); border: 1px solid rgba(57, 185, 138, 0.25); border-left: 4px solid #39b98a; padding: 12px; margin-bottom: 16px; border-radius: 6px;"
+                      >
+                        <strong>🔐 Secure API Key Input</strong>
+                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
+                          Enter your API key here for use with Codex CLI. The
+                          key is kept in memory only and never saved to browser
+                          storage. You'll need to re-enter it after browser
+                          restart.
+                        </p>
+                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
+                          <strong>Alternatively:</strong> Set OPENAI_API_KEY in
+                          your terminal environment and leave this field empty.
+                        </p>
+                      </div>
+                      <label
+                        class="ageaf-settings__label"
+                        for="ageaf-openai-api-key"
+                      >
+                        API Key (Session Only - Not Saved)
+                      </label>
+                      <div
+                        style="display: flex; gap: 8px; margin-bottom: 16px;"
+                      >
+                        <input
+                          id="ageaf-openai-api-key"
+                          class="ageaf-settings__input"
+                          type={showOpenaiKey ? 'text' : 'password'}
+                          value={openaiApiKey}
+                          onInput={(event) =>
+                            setOpenaiApiKey(
+                              (event.target as HTMLInputElement).value
+                            )
+                          }
+                          onPaste={(event) =>
+                            setOpenaiApiKey(
+                              event.clipboardData?.getData('text') || ''
+                            )
+                          }
+                          placeholder="sk-... (optional if set in terminal)"
+                          style="flex: 1;"
+                        />
+                        <button
+                          type="button"
+                          class="ageaf-settings__button"
+                          onClick={() => setShowOpenaiKey(!showOpenaiKey)}
+                          style="min-width: 80px;"
+                        >
+                          {showOpenaiKey ? 'Hide' : 'Show'}
+                        </button>
+                        {openaiApiKey && (
+                          <button
+                            type="button"
+                            class="ageaf-settings__button"
+                            onClick={() => setOpenaiApiKey('')}
+                            style="min-width: 80px;"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
                       <label
                         class="ageaf-settings__label"
                         for="ageaf-codex-cli"
@@ -8330,8 +8563,9 @@ const Panel = () => {
                         Environment variables (KEY=VALUE)
                       </label>
                       <p class="ageaf-settings__hint">
-                        Optional: you can set OPENAI_BASE_URL (proxy) here in
-                        addition to OPENAI_API_KEY.
+                        <strong>Note:</strong> Use the API Key field above for
+                        sensitive keys. This field is for non-sensitive
+                        variables like OPENAI_BASE_URL.
                       </p>
                       <textarea
                         id="ageaf-openai-env"
@@ -8345,9 +8579,23 @@ const Panel = () => {
                           })
                         }
                         placeholder={
-                          'OPENAI_API_KEY=your-key\nOPENAI_BASE_URL=https://api.openai.com'
+                          'OPENAI_BASE_URL=https://api.openai.com'
                         }
                       />
+                      {detectApiKeyInEnvVars(settings.openaiEnvVars) && (
+                        <div
+                          class="ageaf-settings__warning-box"
+                          style="background: rgba(255, 179, 87, 0.08); border: 1px solid rgba(255, 179, 87, 0.25); border-left: 4px solid #ffb357; padding: 12px; margin-top: 12px; margin-bottom: 12px; border-radius: 6px;"
+                        >
+                          <strong>⚠️ API Key Detected in Environment Variables</strong>
+                          <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
+                            You appear to have entered an API key in the
+                            environment variables field. For better security, use
+                            the "API Key" field above instead. Keys entered there
+                            are kept in memory only and never saved.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   ) : null}
                   {settingsTab === 'customization' ? (
