@@ -270,12 +270,58 @@ async function runQuery(
   const payloadStartRe =
     /```(?:ageaf[-_]?patch)|<<<\s*AGEAF_REWRITE\s*>>>|<<<\s*AGEAF_FILE_UPDATE\b/i;
   const HOLD_BACK_CHARS = 32;
+  let insideDiagramFence = false;
+  let diagramBuffer = '';
+  const diagramOpenRe = /```ageaf-diagram[^\n]*\n/i;
 
   const emitVisibleDelta = (text: string) => {
     if (!text) return;
     if (payloadStarted) return;
 
+    // --- Diagram fence accumulation mode ---
+    if (insideDiagramFence) {
+      diagramBuffer += text;
+      const closeIdx = diagramBuffer.indexOf('\n```');
+      if (closeIdx !== -1) {
+        const afterBackticks = closeIdx + 4;
+        const ch = diagramBuffer[afterBackticks];
+        if (ch === undefined || ch === '\n' || ch === '\r' || ch === ' ' || ch === '\t') {
+          // Found the closing fence
+          const restAfterClose = diagramBuffer.slice(afterBackticks);
+          const nlPos = restAfterClose.indexOf('\n');
+          const closingLineLen = nlPos >= 0 ? nlPos + 1 : restAfterClose.length;
+          const fenceContent = diagramBuffer.slice(0, closeIdx);
+          const completeFence = '```ageaf-diagram\n' + fenceContent + '\n```\n';
+          emitEvent({ event: 'delta', data: { text: completeFence } });
+          insideDiagramFence = false;
+          const remaining = diagramBuffer.slice(afterBackticks + closingLineLen);
+          diagramBuffer = '';
+          if (remaining) {
+            emitVisibleDelta(remaining);
+          }
+          return;
+        }
+      }
+      return;
+    }
+
     visibleBuffer += text;
+
+    // --- Check for diagram fence opening ---
+    const diagMatch = visibleBuffer.match(diagramOpenRe);
+    if (diagMatch && diagMatch.index !== undefined) {
+      const before = visibleBuffer.slice(0, diagMatch.index);
+      if (before) {
+        emitEvent({ event: 'delta', data: { text: before } });
+      }
+      emitEvent({ event: 'delta', data: { text: '\n*Rendering diagram\u2026*\n' } });
+      insideDiagramFence = true;
+      diagramBuffer = visibleBuffer.slice(diagMatch.index + diagMatch[0].length);
+      visibleBuffer = '';
+      return;
+    }
+
+    // --- Check for payload start (existing logic) ---
     const matchIndex = visibleBuffer.search(payloadStartRe);
     if (matchIndex >= 0) {
       const beforePayload = visibleBuffer.slice(0, matchIndex);
@@ -297,6 +343,12 @@ async function runQuery(
   };
 
   const flushVisible = () => {
+    if (insideDiagramFence) {
+      const partialFence = '```ageaf-diagram\n' + diagramBuffer + '\n```\n';
+      emitEvent({ event: 'delta', data: { text: partialFence } });
+      insideDiagramFence = false;
+      diagramBuffer = '';
+    }
     if (payloadStarted) return;
     if (!visibleBuffer) return;
     emitEvent({ event: 'delta', data: { text: visibleBuffer } });

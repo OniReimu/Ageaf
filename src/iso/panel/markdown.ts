@@ -531,6 +531,9 @@ function normalizeAssistantOutput(content: string) {
 
   next = next.replace(/```(?:ageaf[-_]?patch)[^\n]*\n[\s\S]*?```/gi, '');
 
+  // Strip diagram-loading placeholder when followed by the complete fence
+  next = next.replace(/\n?\*Rendering diagram\u2026\*\n(?=```ageaf-diagram)/g, '');
+
   next = next.replace(/```(?:json)?\s*\n([\s\S]*?)```/gi, (match, body) => {
     const patchText = extractPatchText(body);
     return patchText ?? match;

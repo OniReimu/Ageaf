@@ -38,18 +38,18 @@ Always structure your response like this:
 ````
 Here's the diagram:
 
+```ageaf-diagram
+<svg ...>...</svg>
+```
+
 ```mermaid
 graph TD
     A[Start] --> B[End]
 ```
-
-```ageaf-diagram
-<svg ...>...</svg>
-```
 ````
 
-- First include the Mermaid source in a ` ```mermaid ` fence (for the user to copy/reference).
-- Then include the rendered SVG output from the tool in an ` ```ageaf-diagram ` fence. The Ageaf extension will render this as a visual diagram inline.
+- First include the rendered SVG output from the tool in an ` ```ageaf-diagram ` fence. The Ageaf extension will render this as a visual diagram with a download button.
+- Then include the Mermaid source in a ` ```mermaid ` fence (for the user to copy/reference).
 - Do NOT escape or modify the SVG output from the tool — paste it exactly as returned.
 - If the tool returns an error, skip the `ageaf-diagram` fence and explain the error instead.
 
