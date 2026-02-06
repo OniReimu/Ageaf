@@ -568,24 +568,6 @@ function buildPrompt(
     '- Do NOT include the full updated file contents in the visible response (only inside the markers).',
   ].join('\n');
 
-  const mermaidToolGuidance = [
-    'Mermaid Diagram Rendering (CRITICAL - MCP Tool):',
-    '- You have a `render_mermaid` MCP tool available. When creating ANY diagram (flowchart, sequence, state, class, ER), you MUST call this tool.',
-    '- Do NOT just output raw Mermaid code in a ```mermaid fence. You MUST call the `render_mermaid` tool first to get the rendered SVG.',
-    '- After calling `render_mermaid`, output the result in this exact format:',
-    '  1. Put the SVG output from the tool in a ```ageaf-diagram fence (the extension renders this as a visual diagram with download button)',
-    '  2. Then put the Mermaid source in a ```mermaid fence (for the user to copy/reference)',
-    '- Example output structure:',
-    '  ```ageaf-diagram',
-    '  <svg ...>...</svg>',
-    '  ```',
-    '  ```mermaid',
-    '  graph TD',
-    '      A[Start] --> B[End]',
-    '  ```',
-    '- If `render_mermaid` returns an error, skip the ageaf-diagram fence and explain the error.',
-  ].join('\n');
-
   const skillsGuidance = [
     'Available Skills (CRITICAL):',
     '- Ageaf supports built-in skill directives (e.g. /humanizer).',
@@ -611,7 +593,6 @@ function buildPrompt(
     contextForPrompt ? `Context:\n${JSON.stringify(contextForPrompt, null, 2)}` : '',
     action === 'rewrite' ? rewriteInstructions : '',
     hasOverleafFileBlocks ? fileUpdateInstructions : '',
-    mermaidToolGuidance,
     skillsGuidance,
   ].filter(Boolean);
 
