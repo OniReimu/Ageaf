@@ -1,5 +1,6 @@
 import { query, type OutputFormat, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { mermaidMcpServer } from '../../mcp/mermaidServer.js';
 
 import type { JobEvent, Patch } from '../../types.js';
 import { getClaudeSessionCwd } from './cwd.js';
@@ -250,6 +251,13 @@ async function runQuery(
       },
       settingSources: runtime.loadUserSettings ? ['user', 'project'] : ['project'],
       env: combinedEnv,
+      mcpServers: {
+        'ageaf-mermaid': mermaidMcpServer,
+      },
+      allowedTools: [
+        'mcp__ageaf-mermaid__render_mermaid',
+        'mcp__ageaf-mermaid__list_mermaid_themes',
+      ],
       ...(outputFormat ? { outputFormat } : {}),
     },
   });

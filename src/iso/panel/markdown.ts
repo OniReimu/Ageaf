@@ -76,6 +76,7 @@ function getLanguageDisplayName(lang: string): string {
     'scss': 'SCSS',
     'latex': 'LaTeX',
     'diff': 'Diff',
+    'mermaid': 'Mermaid',
   };
   return displayNames[lang] || lang.charAt(0).toUpperCase() + lang.slice(1);
 }
@@ -313,6 +314,26 @@ renderer.renderer.rules.fence = (tokens, idx) => {
       return `<div class="ageaf-latex-fence" data-latex="${escapeHtml(normalized)}">${rendered}</div>\n`;
     }
     // If it's LaTeX but not math, fall through to render as raw code block
+  }
+
+  // Rendered diagram output from the MCP render_mermaid tool.
+  // The SVG is from a trusted source (beautiful-mermaid), so we render it inline.
+  // IMPORTANT: Do NOT use <pre> here — Panel extracts <pre> into the "quote" UI.
+  if (rawLang.toLowerCase() === 'ageaf-diagram') {
+    const svg = content.trim();
+    if (svg.startsWith('<svg')) {
+      // Strip <script> tags and event handlers as a safety measure
+      const sanitized = svg
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/\bon\w+\s*=\s*["'][^"']*["']/gi, '');
+      const downloadBtn =
+        `<button class="ageaf-diagram__download" type="button" data-diagram-download="true" aria-label="Download SVG" title="Download SVG">` +
+        `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+        `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>` +
+        `</svg> Download SVG</button>`;
+      return `<div class="ageaf-diagram"><div class="ageaf-diagram__svg">${sanitized}</div><div class="ageaf-diagram__actions">${downloadBtn}</div></div>\n`;
+    }
+    // If it doesn't look like SVG, fall through to render as a code block
   }
 
   let highlightedCode = escapeHtml(content);

@@ -38,6 +38,14 @@
       "path": "skills/custom/humanizer/SKILL.md"
     },
     {
+      "id": "custom/mermaid",
+      "name": "mermaid",
+      "description": "Render Mermaid diagrams using the built-in render_mermaid MCP tool.\nSupports flowcharts, sequence diagrams, state diagrams, class diagrams,\nand ER diagrams. Use when the user asks for any visual diagram, flowchart,\nor architecture visualization. Produces SVG or ASCII output with theming.\n",
+      "tags": [],
+      "source": "custom",
+      "path": "skills/custom/mermaid/SKILL.md"
+    },
+    {
       "id": "custom/paper-reviewer",
       "name": "paper-reviewer",
       "description": "This skill should be used when users request peer reviews of academic papers or manuscripts. It produces structured, evidence-based reviews following top-tier venue standards with no scores or accept/reject decisions. Activates on requests like \"review this paper\", \"provide a peer review\", or \"analyze this manuscript\".",
