@@ -4191,6 +4191,29 @@ const Panel = () => {
             dangerouslySetInnerHTML={{ __html: mainHtml }}
             onClick={(event) => {
               const target = event.target as HTMLElement | null;
+
+              // Handle diagram download button
+              const dlButton = target?.closest?.(
+                '[data-diagram-download="true"]'
+              ) as HTMLElement | null;
+              if (dlButton) {
+                event.preventDefault();
+                event.stopPropagation();
+                const diagram = dlButton.closest('.ageaf-diagram') as HTMLElement | null;
+                const svgEl = diagram?.querySelector('.ageaf-diagram__svg svg') as SVGElement | null;
+                if (!svgEl) return;
+                const svgSource = new XMLSerializer().serializeToString(svgEl);
+                const blob = new Blob([svgSource], { type: 'image/svg+xml' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'diagram.svg';
+                a.click();
+                URL.revokeObjectURL(url);
+                return;
+              }
+
+              // Handle LaTeX copy button
               const button = target?.closest?.(
                 '[data-latex-copy="true"]'
               ) as HTMLElement | null;

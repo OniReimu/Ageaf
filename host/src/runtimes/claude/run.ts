@@ -265,6 +265,7 @@ If asked about the model/runtime, use this note and do not guess.`;
     '  • /citation-management - Search papers, extract metadata, validate citations, generate BibTeX',
     '  • /ml-paper-writing - Write publication-ready ML/AI papers for NeurIPS, ICML, ICLR, ACL, AAAI, COLM',
     '  • /doc-coauthoring - Structured workflow for co-authoring documentation and technical specs',
+    '  • /mermaid - Render Mermaid diagrams (flowcharts, sequence, state, class, ER) via built-in MCP tool',
     '- If the user includes a /skillName directive, you MUST follow that skill for this request.',
     '- Skill text (instructions) may be injected under "Additional instructions" for the request; do NOT try to locate skills on disk.',
     '- These skills are part of the Ageaf system and do NOT require external installation.',

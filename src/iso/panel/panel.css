@@ -1214,6 +1214,56 @@
   font-size: 12px;
 }
 
+/* Rendered Mermaid diagrams (SVG from ageaf-diagram fence) */
+.ageaf-diagram {
+  margin: 10px 0;
+  border-radius: 10px;
+  background: rgba(18, 24, 20, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+
+.ageaf-diagram__svg {
+  padding: 12px;
+  overflow-x: auto;
+  display: flex;
+  justify-content: center;
+}
+
+.ageaf-diagram__svg svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.ageaf-diagram__actions {
+  display: flex;
+  padding: 6px 12px 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ageaf-diagram__download {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(57, 185, 138, 0.12);
+  border: 1px solid rgba(57, 185, 138, 0.25);
+  border-radius: 4px;
+  color: rgba(57, 185, 138, 1);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.ageaf-diagram__download:hover {
+  background: rgba(57, 185, 138, 0.22);
+}
+
+.ageaf-diagram__download svg {
+  flex-shrink: 0;
+}
+
 /* Ensure code blocks within quotes maintain proper styling */
 .ageaf-message__quote-block pre,
 .ageaf-message__quote-block code {
