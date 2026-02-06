@@ -1,5 +1,9 @@
 import { render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
+import {
+  expandLatexIncludes,
+  type ProjectFile,
+} from './latexExpand';
 
 import {
   createJob,
@@ -1724,10 +1728,12 @@ const Panel = () => {
     };
   }, []);
 
+  // Detect scroll position only from user-initiated events (wheel, touchmove)
+  // so that programmatic auto-scroll never overrides user intent.
   useEffect(() => {
     const chat = chatRef.current;
     if (!chat) return;
-    const onScroll = () => {
+    const checkPosition = () => {
       const distance = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
       const atBottom = distance <= 24;
       if (isAtBottomRef.current !== atBottom) {
@@ -1735,9 +1741,14 @@ const Panel = () => {
         setIsAtBottom(atBottom);
       }
     };
-    onScroll();
-    chat.addEventListener('scroll', onScroll);
-    return () => chat.removeEventListener('scroll', onScroll);
+    const onUserScroll = () => requestAnimationFrame(checkPosition);
+    checkPosition();
+    chat.addEventListener('wheel', onUserScroll, { passive: true });
+    chat.addEventListener('touchmove', onUserScroll, { passive: true });
+    return () => {
+      chat.removeEventListener('wheel', onUserScroll);
+      chat.removeEventListener('touchmove', onUserScroll);
+    };
   }, []);
 
   useEffect(() => {
@@ -5276,40 +5287,63 @@ const Panel = () => {
         return 'text';
       };
 
-      const resolveFile = async (ref: string) => {
-        // Prefer non-tab-switching doc fetch for text docs when possible.
-        // This avoids Overleaf UI tab switching which is disruptive.
-        const cached = fileContentCache.get(ref);
-        if (cached != null) {
-          const requested = ref;
-          const lang = langForExt(requested);
-          return `\n\n[Overleaf file: ${requested}]\n\`\`\`${lang}\n${cached}\n\`\`\`\n`;
+      /**
+       * Fetch the content of an Overleaf doc by its project file path.
+       * Returns the content string, or null if fetch fails.
+       */
+      const fetchFileContent = async (
+        filePath: string
+      ): Promise<string | null> => {
+        const cached = fileContentCache.get(filePath);
+        if (cached != null) return cached;
+        const docId = findDocIdForRef(filePath);
+        if (projectId && docId) {
+          try {
+            const content = await fetchDocDownload(docId);
+            fileContentCache.set(filePath, content);
+            return content;
+          } catch {
+            // fall through
+          }
         }
+        return null;
+      };
+
+      /**
+       * Wrap file content into an [Overleaf file:] markdown block,
+       * applying truncation if necessary.
+       */
+      const wrapFileBlock = (name: string, content: string): string => {
+        let body = content;
+        if (body.length > MAX_CHARS) {
+          const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
+          const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
+          body = `${head}\n\n… [truncated ${body.length - (head.length + tail.length)
+            } chars] …\n\n${tail}`;
+        }
+        const lang = langForExt(name);
+        return `\n\n[Overleaf file: ${name}]\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
+      };
+
+      /**
+       * Fetch raw file content by ref. Returns null if unavailable.
+       */
+      const fetchRawContent = async (ref: string): Promise<string | null> => {
+        const cached = fileContentCache.get(ref);
+        if (cached != null) return cached;
 
         const docId = findDocIdForRef(ref);
         if (projectId && docId) {
           try {
             const content = await fetchDocDownload(docId);
             fileContentCache.set(ref, content);
-            let body = content;
-            if (body.length > MAX_CHARS) {
-              const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
-              const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
-              body = `${head}\n\n… [truncated ${body.length - (head.length + tail.length)
-                } chars] …\n\n${tail}`;
-            }
-            const requested = ref;
-            const lang = langForExt(requested);
-            return `\n\n[Overleaf file: ${requested}]\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
-          } catch (err) {
+            return content;
+          } catch {
             // Fall through to bridge below.
           }
         }
 
-        if (!bridge.requestFileContent) {
-          return `\n\n[Overleaf file: ${ref}]\n(Unable to read file content from Overleaf editor.)\n`;
-        }
-        // eslint-disable-next-line no-await-in-loop
+        if (!bridge.requestFileContent) return null;
         const resp = await bridge
           .requestFileContent(ref)
           .catch((err: unknown) => ({
@@ -5320,8 +5354,6 @@ const Panel = () => {
             name: ref,
           }));
         const content = typeof resp?.content === 'string' ? resp.content : '';
-        // Guard against a critical failure mode: bridge may return the *current* tab's
-        // content if it can't activate the requested file. In that case, treat as failure.
         const requested = typeof resp?.name === 'string' ? resp.name : ref;
         const normalizedRequested =
           normalizeMentionRef(requested).toLowerCase();
@@ -5331,22 +5363,31 @@ const Panel = () => {
         const activeMatches =
           !!normalizedRequested && normalizedActive === normalizedRequested;
         const ok = !!resp?.ok && content.length > 0 && activeMatches;
+        if (!ok) return null;
+        fileContentCache.set(ref, content);
+        return content;
+      };
 
-        const injection = ok
-          ? (() => {
-            let body = content;
-            if (body.length > MAX_CHARS) {
-              const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
-              const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
-              body = `${head}\n\n… [truncated ${body.length - (head.length + tail.length)
-                } chars] …\n\n${tail}`;
-            }
-            const lang = langForExt(requested);
-            return `\n\n[Overleaf file: ${requested}]\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
-          })()
-          : `\n\n[Overleaf file: ${requested}]\n(Unable to read file content from Overleaf editor.)\n`;
-
-        return injection;
+      const resolveFile = async (ref: string) => {
+        const raw = await fetchRawContent(ref);
+        if (raw == null) {
+          return `\n\n[Overleaf file: ${ref}]\n(Unable to read file content from Overleaf editor.)\n`;
+        }
+        // For .tex files, inline-expand all \input{}/\include{} directives
+        // so the CLI receives one complete merged document.
+        if (getFileExtension(ref).toLowerCase() === '.tex') {
+          const projectFiles: ProjectFile[] = projectFilesRef.current
+            .filter((e) => e.kind !== 'folder')
+            .map((e) => ({ path: e.path, name: e.name }));
+          const expanded = await expandLatexIncludes(
+            raw,
+            fetchFileContent,
+            projectFiles,
+            ref
+          );
+          return wrapFileBlock(ref, expanded);
+        }
+        return wrapFileBlock(ref, raw);
       };
 
       let nextText = rawText;
@@ -5405,6 +5446,12 @@ const Panel = () => {
 
         // Check if humanizer is already invoked
         if (/\/humanizer/.test(messageText)) {
+          return messageText;
+        }
+
+        // Do not auto-invoke humanizer if the user already has an
+        // explicit skill directive (e.g. /paper-reviewer, /commit).
+        if (/(^|[\s([{])\/[A-Za-z0-9._-]+/.test(messageText)) {
           return messageText;
         }
 
