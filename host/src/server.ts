@@ -8,7 +8,7 @@ import { registerRuntime } from './routes/runtime.js';
 import registerSessionRoutes from './routes/sessions.js';
 
 export function buildServer() {
-  const server = Fastify({ logger: false });
+  const server = Fastify({ logger: false, bodyLimit: 50 * 1024 * 1024 });
 
   server.addHook('onRequest', (request, reply, done) => {
     const origin = request.headers.origin;

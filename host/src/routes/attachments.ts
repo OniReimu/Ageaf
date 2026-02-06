@@ -9,6 +9,12 @@ import {
   validateAttachmentEntries,
   type TextAttachmentEntry,
 } from '../attachments/textAttachments.js';
+import {
+  ALLOWED_DOCUMENT_EXTENSIONS,
+  getDocumentLimits,
+  validateDocumentEntries,
+  type DocumentAttachmentEntry,
+} from '../attachments/documentAttachments.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -60,7 +66,7 @@ export function registerAttachments(server: FastifyInstance) {
     const multiple = body?.multiple === true;
     const extensions = Array.isArray(body?.extensions)
       ? body?.extensions.filter((entry) => typeof entry === 'string')
-      : ALLOWED_TEXT_EXTENSIONS;
+      : [...ALLOWED_TEXT_EXTENSIONS, ...ALLOWED_DOCUMENT_EXTENSIONS];
     const normalized = new Set(
       extensions.map((entry) =>
         entry.startsWith('.') ? entry.toLowerCase() : `.${entry.toLowerCase()}`
@@ -103,6 +109,19 @@ export function registerAttachments(server: FastifyInstance) {
     const limits = getAttachmentLimits(body?.limits);
     const { attachments, errors } = await validateAttachmentEntries(entries, limits);
     reply.send({ attachments, errors });
+  });
+
+  server.post('/v1/attachments/validate-documents', async (request, reply) => {
+    const body = request.body as
+      | {
+          entries?: DocumentAttachmentEntry[];
+          limits?: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number };
+        }
+      | undefined;
+    const entries = Array.isArray(body?.entries) ? body.entries : [];
+    const limits = getDocumentLimits(body?.limits);
+    const { documents, errors } = await validateDocumentEntries(entries, limits);
+    reply.send({ documents, errors });
   });
 }
 

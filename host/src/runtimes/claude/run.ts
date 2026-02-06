@@ -1,5 +1,11 @@
 import type { JobEvent } from '../../types.js';
 import { buildAttachmentBlock, getAttachmentLimits } from '../../attachments/textAttachments.js';
+import {
+  buildDocumentAttachmentBlock,
+  resolveDocumentContent,
+  type DocumentAttachmentEntry,
+  type ResolvedDocument,
+} from '../../attachments/documentAttachments.js';
 import { runClaudeText, type ClaudeRuntimeConfig } from './agent.js';
 import { getClaudeRuntimeStatus } from './client.js';
 import type { CommandBlocklistConfig } from './safety.js';
@@ -18,7 +24,8 @@ type ClaudeImageAttachment = {
 
 type ClaudeContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | { type: 'document'; source: { type: 'base64'; media_type: string; data: string } };
 
 type ClaudeUserMessage = {
   role: 'user';
@@ -83,6 +90,31 @@ function getContextImages(context: unknown): ClaudeImageAttachment[] {
     );
 }
 
+function getContextDocuments(context: unknown): DocumentAttachmentEntry[] {
+  if (!context || typeof context !== 'object') return [];
+  const raw = (context as { documents?: unknown }).documents;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((entry: unknown): entry is DocumentAttachmentEntry => {
+      if (!entry || typeof entry !== 'object') return false;
+      const candidate = entry as Record<string, unknown>;
+      return (
+        typeof candidate.name === 'string' &&
+        typeof candidate.mediaType === 'string' &&
+        typeof candidate.size === 'number' &&
+        (typeof candidate.data === 'string' || typeof candidate.path === 'string')
+      );
+    })
+    .map((entry) => ({
+      id: typeof entry.id === 'string' ? entry.id : undefined,
+      name: entry.name,
+      mediaType: entry.mediaType,
+      data: typeof entry.data === 'string' ? entry.data : undefined,
+      path: typeof entry.path === 'string' ? entry.path : undefined,
+      size: entry.size,
+    }));
+}
+
 function getContextForPrompt(
   context: unknown,
   images: ClaudeImageAttachment[],
@@ -125,9 +157,10 @@ function getContextForPrompt(
   return Object.keys(base).length > 0 ? base : null;
 }
 
-function buildImagePromptStream(
+function buildMediaPromptStream(
   promptText: string,
-  images: ClaudeImageAttachment[]
+  images: ClaudeImageAttachment[],
+  pdfDocuments: ResolvedDocument[] = []
 ): AsyncIterable<SDKUserMessage> {
   const contentBlocks: ClaudeContentBlock[] = [
     ...images.map((image) => ({
@@ -136,6 +169,14 @@ function buildImagePromptStream(
         type: 'base64' as const,
         media_type: image.mediaType,
         data: image.data,
+      },
+    })),
+    ...pdfDocuments.map((doc) => ({
+      type: 'document' as const,
+      source: {
+        type: 'base64' as const,
+        media_type: doc.mediaType,
+        data: doc.base64,
       },
     })),
     { type: 'text', text: promptText },
@@ -176,11 +217,33 @@ export async function runClaudeJob(
   const message = getUserMessage(payload.context);
   const attachments = getContextAttachments(payload.context);
   const images = getContextImages(payload.context);
+  const documentEntries = getContextDocuments(payload.context);
+
+  // Resolve documents: separate PDFs (native content blocks) from others (text extraction)
+  const pdfDocuments: ResolvedDocument[] = [];
+  const nonPdfDocumentEntries: DocumentAttachmentEntry[] = [];
+  for (const entry of documentEntries) {
+    if (entry.mediaType === 'application/pdf') {
+      try {
+        const resolved = await resolveDocumentContent(entry);
+        pdfDocuments.push(resolved);
+      } catch {
+        // Fallback: treat as non-PDF (text extraction)
+        nonPdfDocumentEntries.push(entry);
+      }
+    } else {
+      nonPdfDocumentEntries.push(entry);
+    }
+  }
+
   const { block: attachmentBlock } = await buildAttachmentBlock(
     attachments,
     getAttachmentLimits()
   );
-  const messageWithAttachments = [message, attachmentBlock]
+  const { block: documentBlock } = await buildDocumentAttachmentBlock(
+    nonPdfDocumentEntries
+  );
+  const messageWithAttachments = [message, attachmentBlock, documentBlock]
     .filter((part) => typeof part === 'string' && part.trim().length > 0)
     .join('\n\n');
   const hasOverleafFileBlocks = messageWithAttachments.includes('[Overleaf file:');
@@ -320,7 +383,9 @@ If asked about the model/runtime, use this note and do not guess.`;
     runtime: runtimeStatus.cliPath ? 'Claude Code CLI' : 'Anthropic API',
   });
   const resultText = await runClaudeText({
-    prompt: images.length > 0 ? buildImagePromptStream(promptText, images) : promptText,
+    prompt: (images.length > 0 || pdfDocuments.length > 0)
+      ? buildMediaPromptStream(promptText, images, pdfDocuments)
+      : promptText,
     emitEvent: wrappedEmit,
     runtime: payload.runtime?.claude,
     safety,
