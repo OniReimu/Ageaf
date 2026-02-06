@@ -1,5 +1,6 @@
 import { render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
+import morphdom from 'morphdom';
 import {
   expandLatexIncludes,
   type ProjectFile,
@@ -1060,6 +1061,7 @@ const Panel = () => {
   const pendingWidthRef = useRef(DEFAULT_WIDTH);
   const resizeFrameRef = useRef<number | null>(null);
   const streamingTextRef = useRef('');
+  const streamingContentRef = useRef<HTMLDivElement | null>(null);
   const streamingThinkingRef = useRef('');
   const streamingCoTRef = useRef<CoTItem[]>([]);
 
@@ -1755,6 +1757,64 @@ const Panel = () => {
     if (!chatRef.current || !isAtBottomRef.current) return;
     chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [messages, streamingText]);
+
+  // Incremental DOM patching for the streaming message content.
+  // Instead of replacing innerHTML on every token (destroying KaTeX blocks),
+  // morphdom diffs the old and new DOM trees, preserving unchanged elements.
+  useEffect(() => {
+    const container = streamingContentRef.current;
+    if (!container) return;
+
+    if (!streamingText) {
+      container.innerHTML = '';
+      return;
+    }
+
+    const newHtml = renderMarkdown(streamingText);
+
+    if (!container.innerHTML) {
+      container.innerHTML = newHtml;
+      return;
+    }
+
+    const target = document.createElement('div');
+    target.innerHTML = newHtml;
+
+    morphdom(container, target, {
+      childrenOnly: true,
+      onBeforeElUpdated(fromEl, toEl) {
+        // Preserve KaTeX elements whose source LaTeX hasn't changed
+        const fromLatex = fromEl.getAttribute('data-latex');
+        const toLatex = toEl.getAttribute('data-latex');
+        if (fromLatex !== null && fromLatex === toLatex) {
+          return false;
+        }
+
+        // Preserve diagram blocks with identical SVG
+        if (
+          fromEl.classList.contains('ageaf-diagram') &&
+          toEl.classList.contains('ageaf-diagram')
+        ) {
+          const fromSvg = fromEl.querySelector('.ageaf-diagram__svg')?.innerHTML;
+          const toSvg = toEl.querySelector('.ageaf-diagram__svg')?.innerHTML;
+          if (fromSvg && fromSvg === toSvg) {
+            return false;
+          }
+        }
+
+        // Preserve unchanged code blocks
+        if (
+          fromEl.classList.contains('ageaf-code-block') &&
+          toEl.classList.contains('ageaf-code-block') &&
+          fromEl.isEqualNode(toEl)
+        ) {
+          return false;
+        }
+
+        return true;
+      },
+    });
+  }, [streamingText]);
 
   const onResizeStart = (event: MouseEvent) => {
     if (event.button !== 0) return;
@@ -7599,7 +7659,7 @@ const Panel = () => {
                   );
                 })}
                 {streamingStatus ? (
-                  <div class="ageaf-message ageaf-message--assistant">
+                  <div class="ageaf-message ageaf-message--assistant ageaf-message--streaming">
                     {(() => {
                       const hasStreamingCoT = Boolean(
                         settings?.showThinkingAndTools && streamingCoT.length > 0
@@ -7649,14 +7709,11 @@ const Panel = () => {
                         </>
                       );
                     })()}
-                    {streamingText ? (
-                      <div
-                        class="ageaf-message__content"
-                        dangerouslySetInnerHTML={{
-                          __html: renderMarkdown(streamingText),
-                        }}
-                      />
-                    ) : null}
+                    <div
+                      class="ageaf-message__content"
+                      ref={streamingContentRef}
+                      style={streamingText ? undefined : { display: 'none' }}
+                    />
                   </div>
                 ) : null}
                 {DEBUG_DIFF ? (

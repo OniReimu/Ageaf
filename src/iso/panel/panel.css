@@ -1264,6 +1264,11 @@
   flex-shrink: 0;
 }
 
+/* Hide diagram download button during streaming to prevent layout thrashing */
+.ageaf-message--streaming .ageaf-diagram__actions {
+  display: none;
+}
+
 /* Ensure code blocks within quotes maintain proper styling */
 .ageaf-message__quote-block pre,
 .ageaf-message__quote-block code {
