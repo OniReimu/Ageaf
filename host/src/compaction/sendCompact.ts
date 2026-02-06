@@ -3,8 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { runClaudeText, type ClaudeRuntimeConfig } from '../runtimes/claude/agent.js';
+import { getClaudeContextUsage } from '../runtimes/claude/context.js';
 import type { CodexRuntimeConfig } from '../runtimes/codex/run.js';
 import { getCodexAppServer } from '../runtimes/codex/appServer.js';
+import { getCodexContextUsage } from '../runtimes/codex/context.js';
 import { parseCodexTokenUsage } from '../runtimes/codex/tokenUsage.js';
 import type { JobEvent } from '../types.js';
 
@@ -97,10 +99,19 @@ async function sendClaudeCompact(
       }, COMPACT_TIMEOUT_MS);
     });
 
+    // Wrap emitEvent to suppress 'done' events from the compaction sub-query.
+    // runClaudeText always emits a 'done' event when finished, but during
+    // auto-compaction the job must continue to process the user's actual request.
+    // Forwarding 'done' here would prematurely terminate the job's SSE stream.
+    const compactEmit: EmitEvent = (event) => {
+      if (event.event === 'done') return;
+      emitEvent(event);
+    };
+
     // Send "/compact" as a regular prompt with timeout
     const compactPromise = runClaudeText({
       prompt: '/compact',
-      emitEvent,
+      emitEvent: compactEmit,
       runtime,
       safety: { enabled: false },
       enableTools: false,
@@ -377,10 +388,8 @@ async function sendCodexCompact(
 
 export async function getContextUsage(provider: string, payload: any) {
   if (provider === 'claude') {
-    const { getClaudeContextUsage } = await import('../runtimes/claude/context.js');
     return await getClaudeContextUsage(payload.runtime?.claude);
   } else {
-    const { getCodexContextUsage } = await import('../runtimes/codex/context.js');
     return await getCodexContextUsage({
       cliPath: payload.runtime?.codex?.cliPath,
       envVars: payload.runtime?.codex?.envVars,
