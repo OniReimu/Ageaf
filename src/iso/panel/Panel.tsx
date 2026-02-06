@@ -78,6 +78,7 @@ import {
   NewChatIconAlt,
   CloseSessionIcon,
   ClearChatIcon,
+  CloseIcon,
 } from './ageaf-icons';
 
 const DEFAULT_WIDTH = 360;
@@ -374,6 +375,7 @@ const PatchReviewCard = ({
             type="button"
             onClick={() => setShowModal(true)}
             title="Expand diff"
+            aria-label="Expand diff to full screen"
           >
             <ExpandIcon />
           </button>
@@ -428,6 +430,7 @@ const PatchReviewCard = ({
                 type="button"
                 disabled={busy}
                 onClick={onFeedback}
+                aria-label="Provide feedback on this change"
               >
                 Feedback
               </button>
@@ -484,14 +487,16 @@ const PatchReviewCard = ({
               <div class="ageaf-diff-modal__title">
                 {title}
                 {fileLabel ? <span> · {fileLabel}</span> : null}
+                <span class="ageaf-diff-modal__shortcut-hint">ESC to close</span>
               </div>
               <button
                 class="ageaf-diff-modal__close"
                 type="button"
                 onClick={() => setShowModal(false)}
                 title="Close (ESC)"
+                aria-label="Close diff modal"
               >
-                ✕
+                <CloseIcon />
               </button>
             </div>
             <div class="ageaf-diff-modal__content">

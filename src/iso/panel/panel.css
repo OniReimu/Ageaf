@@ -33,17 +33,20 @@
     U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
+/* Base/structural variables — ageaf-complete-redesign.css provides the canonical
+   design tokens (--ageaf-*). These --ageaf-panel-* aliases exist for backward
+   compatibility with rules in this file that haven't been migrated yet. */
 :root {
-  --ageaf-panel-bg: #0f1411;
-  --ageaf-panel-surface: #141b17;
-  --ageaf-panel-border: #27322a;
-  --ageaf-panel-accent: #39b98a;
-  --ageaf-panel-accent-soft: rgba(57, 185, 138, 0.15);
-  --ageaf-panel-text: #f7fbf9;
-  --ageaf-panel-muted: #dbe6e0;
-  --ageaf-panel-status: #ffb357;
-  --ageaf-panel-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
-  --ageaf-panel-font: 'Space Grotesk', 'IBM Plex Sans', 'Fira Sans', sans-serif;
+  --ageaf-panel-bg: var(--ageaf-charcoal, #0f1411);
+  --ageaf-panel-surface: var(--ageaf-surface, #141b17);
+  --ageaf-panel-border: var(--ageaf-border, #27322a);
+  --ageaf-panel-accent: var(--ageaf-emerald, #39b98a);
+  --ageaf-panel-accent-soft: var(--ageaf-emerald-soft, rgba(57, 185, 138, 0.15));
+  --ageaf-panel-text: var(--ageaf-text-primary, #f7fbf9);
+  --ageaf-panel-muted: var(--ageaf-text-secondary, #dbe6e0);
+  --ageaf-panel-status: var(--ageaf-warning, #ffb357);
+  --ageaf-panel-shadow: var(--ageaf-shadow-xl, 0 24px 60px rgba(0, 0, 0, 0.35));
+  --ageaf-panel-font: var(--ageaf-font-body, 'Work Sans', -apple-system, sans-serif);
   --ageaf-divider-hit: 12px;
   --ageaf-divider-line: rgba(255, 255, 255, 0.75);
   --ageaf-divider-hover-bg: rgba(0, 0, 0, 0.04);

@@ -60,7 +60,7 @@
   --ageaf-text-primary: #f7fbf9;
   --ageaf-text-secondary: #dbe6e0;
   --ageaf-text-muted: #a8bfb3;
-  --ageaf-text-dim: #6b7d73;
+  --ageaf-text-dim: #7f9389;
 
   /* Semantic Colors */
   --ageaf-success: #39b98a;
@@ -109,6 +109,43 @@
   --ageaf-transition-fast: 150ms var(--ageaf-ease-in-out);
   --ageaf-transition-base: 250ms var(--ageaf-ease-out);
   --ageaf-transition-slow: 400ms var(--ageaf-ease-out);
+
+  /* Citation Indicator Colors (Emerald Studio palette) */
+  --ageaf-cite-used: #39b98a;
+  --ageaf-cite-used-bg: rgba(57, 185, 138, 0.14);
+  --ageaf-cite-used-border: rgba(57, 185, 138, 0.4);
+  --ageaf-cite-unused: #7f9389;
+  --ageaf-cite-unused-bg: rgba(107, 125, 115, 0.12);
+  --ageaf-cite-unused-border: rgba(107, 125, 115, 0.3);
+  --ageaf-cite-dup: #ffb357;
+  --ageaf-cite-dup-bg: rgba(255, 179, 87, 0.14);
+  --ageaf-cite-dup-border: rgba(255, 179, 87, 0.4);
+
+  /* Citation Dark Mode */
+  --ageaf-cite-used-dark: #4dd4a4;
+  --ageaf-cite-used-bg-dark: rgba(57, 185, 138, 0.10);
+  --ageaf-cite-used-border-dark: rgba(57, 185, 138, 0.3);
+  --ageaf-cite-unused-dark: #a8bfb3;
+  --ageaf-cite-unused-bg-dark: rgba(107, 125, 115, 0.08);
+  --ageaf-cite-unused-border-dark: rgba(107, 125, 115, 0.2);
+  --ageaf-cite-dup-dark: #ffb357;
+  --ageaf-cite-dup-bg-dark: rgba(255, 179, 87, 0.10);
+  --ageaf-cite-dup-border-dark: rgba(255, 179, 87, 0.3);
+
+  /* Popup / Floating UI */
+  --ageaf-popup-bg: rgba(15, 20, 17, 0.94);
+  --ageaf-popup-border: rgba(57, 185, 138, 0.18);
+  --ageaf-popup-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(57, 185, 138, 0.08);
+
+  /* Inline Diff */
+  --ageaf-diff-old-bg: rgba(255, 107, 107, 0.14);
+  --ageaf-diff-new-bg: rgba(57, 185, 138, 0.14);
+  --ageaf-diff-btn-accept-bg: rgba(57, 185, 138, 0.2);
+  --ageaf-diff-btn-accept-border: rgba(57, 185, 138, 0.4);
+  --ageaf-diff-btn-reject-bg: rgba(255, 107, 107, 0.2);
+  --ageaf-diff-btn-reject-border: rgba(255, 107, 107, 0.4);
+  --ageaf-diff-btn-feedback-bg: rgba(77, 184, 232, 0.16);
+  --ageaf-diff-btn-feedback-border: rgba(77, 184, 232, 0.35);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -381,6 +418,7 @@
 .ageaf-message {
   margin-bottom: var(--ageaf-space-xl);
   animation: ageaf-message-fade-in 0.4s var(--ageaf-ease-out) backwards;
+  animation-delay: var(--stagger-delay, 0ms);
 }
 
 @keyframes ageaf-message-fade-in {
@@ -556,6 +594,19 @@
   background: var(--ageaf-emerald-soft);
   border-color: var(--ageaf-emerald);
   color: var(--ageaf-emerald-light);
+}
+
+.ageaf-message__copy-response.is-copied {
+  background: rgba(57, 185, 138, 0.15);
+  border-color: rgba(57, 185, 138, 0.4);
+  color: var(--ageaf-emerald);
+  animation: ageaf-copy-flash 0.3s ease;
+}
+
+@keyframes ageaf-copy-flash {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); }
 }
 
 .ageaf-message__copy-icon,
@@ -1048,6 +1099,7 @@
   position: relative;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+  animation: ageaf-modal-enter 0.3s var(--ageaf-ease-out);
 }
 
 .ageaf-diff-modal::before {
@@ -1063,6 +1115,8 @@
       transparent 50%);
   pointer-events: none;
   z-index: 0;
+  opacity: 0.3;
+  border-radius: inherit;
 }
 
 .ageaf-diff-modal__header {
@@ -1074,15 +1128,51 @@
 
 .ageaf-diff-modal__title {
   color: var(--ageaf-text-primary);
+  display: flex;
+  align-items: center;
+  gap: var(--ageaf-space-sm);
+}
+
+.ageaf-diff-modal__shortcut-hint {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ageaf-text-dim);
+  margin-left: var(--ageaf-space-md);
+  opacity: 0.7;
+  font-family: var(--ageaf-font-mono);
 }
 
 .ageaf-diff-modal__close {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  border-radius: var(--ageaf-radius-md);
   color: var(--ageaf-text-secondary);
+  transition: all var(--ageaf-transition-fast);
+}
+
+.ageaf-diff-modal__close:hover {
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--ageaf-error);
+}
+
+.ageaf-diff-modal__close:focus-visible {
+  outline: 2px solid var(--ageaf-emerald);
+  outline-offset: 2px;
 }
 
 .ageaf-diff-modal__content {
   position: relative;
   z-index: 1;
+}
+
+@keyframes ageaf-modal-enter {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 .ageaf-settings__panel {
@@ -1278,6 +1368,14 @@
 
 .ageaf-settings__section:nth-child(4) {
   animation-delay: 200ms;
+}
+
+.ageaf-settings__section:nth-child(5) {
+  animation-delay: 250ms;
+}
+
+.ageaf-settings__section:nth-child(n+6) {
+  animation-delay: 300ms;
 }
 
 @keyframes ageaf-section-fade-in {
@@ -1636,6 +1734,7 @@ select.ageaf-settings__input {
   transition: all var(--ageaf-transition-base);
   z-index: 10;
   white-space: nowrap;
+  overflow: visible;
 }
 
 .ageaf-panel__scroll:hover {
@@ -1647,6 +1746,26 @@ select.ageaf-settings__input {
 
 .ageaf-panel__scroll:active {
   transform: translateX(-50%) translateY(0) scale(1);
+}
+
+.ageaf-panel__scroll-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: var(--ageaf-emerald);
+  color: var(--ageaf-black);
+  font-family: var(--ageaf-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: var(--ageaf-radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--ageaf-charcoal);
+  animation: ageaf-badge-pop 0.3s var(--ageaf-ease-out);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1687,6 +1806,18 @@ select.ageaf-settings__input {
 
 /* Focus visible for keyboard navigation */
 :focus-visible {
+  outline: 2px solid var(--ageaf-emerald);
+  outline-offset: 2px;
+}
+
+/* Re-apply focus-visible for buttons that use all:unset (which resets outline) */
+.ageaf-patch-review__expand-btn:focus-visible,
+.ageaf-panel__apply:focus-visible,
+.ageaf-message__copy-response:focus-visible,
+.ageaf-session-tab:focus-visible,
+.ageaf-toolbar-action:focus-visible,
+.ageaf-selector:focus-visible,
+.ageaf-yolo-toggle__switch:focus-visible {
   outline: 2px solid var(--ageaf-emerald);
   outline-offset: 2px;
 }
