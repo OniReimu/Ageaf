@@ -306,6 +306,47 @@ export async function validateAttachmentEntries(
   }>;
 }
 
+export type DocumentAttachmentMeta = {
+  id: string;
+  name: string;
+  mediaType: string;
+  size: number;
+};
+
+export async function validateDocumentEntries(
+  options: Options,
+  payload: {
+    entries: Array<{
+      id?: string;
+      name: string;
+      mediaType: string;
+      data?: string;
+      path?: string;
+      size: number;
+    }>;
+    limits?: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number };
+  }
+) {
+  if (!options.hostUrl) {
+    throw new Error('Host URL not configured');
+  }
+  const response = await fetch(
+    new URL('/v1/attachments/validate-documents', options.hostUrl).toString(),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!response.ok) {
+    throw new Error(`Document validation failed (${response.status})`);
+  }
+  return response.json() as Promise<{
+    documents: DocumentAttachmentMeta[];
+    errors: Array<{ id?: string; path?: string; message: string }>;
+  }>;
+}
+
 export async function updateClaudeRuntimePreferences(
   options: Options,
   payload: { model?: string | null; thinkingMode?: string | null }

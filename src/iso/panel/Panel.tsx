@@ -21,6 +21,7 @@ import {
   streamJobEvents,
   updateClaudeRuntimePreferences,
   validateAttachmentEntries,
+  validateDocumentEntries,
   type JobEvent,
   type AttachmentMeta,
 } from '../api/client';
@@ -614,6 +615,7 @@ type Message = {
   thinking?: string[];
   images?: ImageAttachment[];
   attachments?: FileAttachment[];
+  documents?: DocumentAttachment[];
   patchReview?: StoredPatchReview;
 };
 
@@ -628,6 +630,7 @@ type QueuedMessage = {
   text: string;
   images?: ImageAttachment[];
   attachments?: FileAttachment[];
+  documents?: DocumentAttachment[];
   patchFeedbackTarget?: PatchFeedbackTarget;
 };
 
@@ -699,6 +702,15 @@ type FileAttachment = {
   lineCount: number;
   mime?: string;
   content?: string;
+};
+
+type DocumentAttachment = {
+  id: string;
+  name: string;
+  mediaType: string;
+  data?: string;
+  path?: string;
+  size: number;
 };
 
 type OverleafEntry = {
@@ -839,6 +851,8 @@ const Panel = () => {
   const imageAttachmentsRef = useRef<ImageAttachment[]>([]);
   const [fileAttachments, setFileAttachments] = useState<FileAttachment[]>([]);
   const fileAttachmentsRef = useRef<FileAttachment[]>([]);
+  const [documentAttachments, setDocumentAttachments] = useState<DocumentAttachment[]>([]);
+  const documentAttachmentsRef = useRef<DocumentAttachment[]>([]);
   const overlayActiveDetailsRef = useRef<Map<string, string>>(new Map());
   const [projectFiles, setProjectFiles] = useState<OverleafEntry[]>([]);
   const projectFilesRef = useRef<OverleafEntry[]>([]);
@@ -920,6 +934,7 @@ const Panel = () => {
       text: string;
       images?: ImageAttachment[];
       attachments?: FileAttachment[];
+      documents?: DocumentAttachment[];
       patchFeedbackTarget?: PatchFeedbackTarget;
       timestamp: number;
     }>;
@@ -2072,6 +2087,14 @@ const Panel = () => {
       ...(message.attachments && message.attachments.length > 0
         ? { attachments: message.attachments }
         : {}),
+      ...(message.documents && message.documents.length > 0
+        ? { documents: message.documents.map((doc) => ({
+            id: doc.id,
+            name: doc.name,
+            mediaType: doc.mediaType,
+            size: doc.size,
+          })) }
+        : {}),
       ...(message.patchReview ? { patchReview: message.patchReview } : {}),
     }));
 
@@ -2270,6 +2293,13 @@ const Panel = () => {
   const MAX_FILE_ATTACHMENTS = 10;
   const MAX_FILE_BYTES = 10 * 1024 * 1024;
   const MAX_TOTAL_FILE_BYTES = 100 * 1024 * 1024;
+  const DOCUMENT_EXTENSIONS: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  };
+  const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
 
   const updateImageAttachments = (next: ImageAttachment[]) => {
     imageAttachmentsRef.current = next;
@@ -2280,6 +2310,12 @@ const Panel = () => {
   const updateFileAttachments = (next: FileAttachment[]) => {
     fileAttachmentsRef.current = next;
     setFileAttachments(next);
+    syncEditorEmpty();
+  };
+
+  const updateDocumentAttachments = (next: DocumentAttachment[]) => {
+    documentAttachmentsRef.current = next;
+    setDocumentAttachments(next);
     syncEditorEmpty();
   };
 
@@ -2416,6 +2452,49 @@ const Panel = () => {
   const getFileExtension = (name: string) => {
     const match = name.match(/\.[a-z0-9]+$/i);
     return match ? match[0].toLowerCase() : '';
+  };
+
+  const getDocumentMediaType = (file: File): string | null => {
+    const ext = getFileExtension(file.name);
+    return ext ? DOCUMENT_EXTENSIONS[ext] ?? null : null;
+  };
+
+  const makeDocumentAttachmentId = () =>
+    `doc-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const addDocumentFromFile = async (file: File) => {
+    if (file.size > MAX_DOCUMENT_BYTES) {
+      showAttachmentError(
+        `Document exceeds ${formatBytes(MAX_DOCUMENT_BYTES)} limit.`
+      );
+      return;
+    }
+    const mediaType = getDocumentMediaType(file);
+    if (!mediaType) {
+      showAttachmentError(
+        'Unsupported document type. Use PDF, DOCX, PPTX, or XLSX.'
+      );
+      return;
+    }
+    try {
+      const data = await fileToBase64(file);
+      const attachment: DocumentAttachment = {
+        id: makeDocumentAttachmentId(),
+        name: file.name || 'document',
+        mediaType,
+        data,
+        size: file.size,
+      };
+      updateDocumentAttachments([...documentAttachmentsRef.current, attachment]);
+    } catch {
+      showAttachmentError('Failed to read document.');
+    }
+  };
+
+  const addDocumentsFromFiles = async (files: File[]) => {
+    for (const file of files) {
+      await addDocumentFromFile(file);
+    }
   };
 
   const classifyOverleafFile = (name: string): OverleafEntry['kind'] => {
@@ -3072,20 +3151,76 @@ const Panel = () => {
       }
       const { paths } = await openAttachmentDialog(options, {
         multiple: true,
-        extensions: FILE_ATTACHMENT_EXTENSIONS,
+        extensions: [...FILE_ATTACHMENT_EXTENSIONS, ...Object.keys(DOCUMENT_EXTENSIONS)],
       });
       if (!paths.length) return;
-      const { attachments, errors } = await requestAttachmentValidation(
-        paths.map((path) => ({ path }))
-      );
-      if (errors.length > 0) {
-        showAttachmentError(errors[0].message);
+
+      // Partition picked paths into text files vs documents
+      const textPaths: string[] = [];
+      const docPaths: string[] = [];
+      for (const p of paths) {
+        const ext = getFileExtension(p.split('/').pop() ?? '');
+        if (ext && DOCUMENT_EXTENSIONS[ext]) {
+          docPaths.push(p);
+        } else {
+          textPaths.push(p);
+        }
       }
-      const next = mergeFileAttachments(
-        fileAttachmentsRef.current,
-        attachments
-      );
-      updateFileAttachments(next);
+
+      if (textPaths.length > 0) {
+        const { attachments, errors } = await requestAttachmentValidation(
+          textPaths.map((filePath) => ({ path: filePath }))
+        );
+        if (errors.length > 0) {
+          showAttachmentError(errors[0].message);
+        }
+        const next = mergeFileAttachments(
+          fileAttachmentsRef.current,
+          attachments
+        );
+        updateFileAttachments(next);
+      }
+
+      if (docPaths.length > 0) {
+        const docEntries = docPaths.map((p) => {
+          const name = p.split('/').pop() ?? 'document';
+          const ext = getFileExtension(name);
+          return {
+            name,
+            mediaType: ext ? DOCUMENT_EXTENSIONS[ext] ?? 'application/octet-stream' : 'application/octet-stream',
+            path: p,
+            size: 0,
+          };
+        });
+        const opts = await getOptions();
+        const { documents, errors } = await validateDocumentEntries(opts, {
+          entries: docEntries,
+          limits: {
+            maxFiles: MAX_FILE_ATTACHMENTS,
+            maxFileBytes: MAX_DOCUMENT_BYTES,
+            maxTotalBytes: MAX_TOTAL_FILE_BYTES,
+          },
+        });
+        if (errors.length > 0) {
+          showAttachmentError(errors[0].message);
+        }
+        if (documents.length > 0) {
+          const newDocs: DocumentAttachment[] = documents.map((doc) => {
+            const matchingPath = docPaths.find((p) => p.endsWith(doc.name));
+            return {
+              id: doc.id,
+              name: doc.name,
+              mediaType: doc.mediaType,
+              path: matchingPath,
+              size: doc.size,
+            };
+          });
+          updateDocumentAttachments([
+            ...documentAttachmentsRef.current,
+            ...newDocs,
+          ]);
+        }
+      }
     } catch (error) {
       showAttachmentError(
         error instanceof Error ? error.message : 'Failed to attach files.'
@@ -3717,6 +3852,7 @@ const Panel = () => {
   const clearEditor = () => {
     updateImageAttachments([]);
     updateFileAttachments([]);
+    updateDocumentAttachments([]);
     const editor = editorRef.current;
     if (!editor) {
       setEditorEmpty(true);
@@ -3738,8 +3874,9 @@ const Panel = () => {
     const text = (editor.textContent ?? '').replace(/\u200B/g, '').trim();
     const hasImages = imageAttachmentsRef.current.length > 0;
     const hasFiles = fileAttachmentsRef.current.length > 0;
+    const hasDocs = documentAttachmentsRef.current.length > 0;
     setEditorEmpty(
-      !hasChip && !hasMention && text.length === 0 && !hasImages && !hasFiles
+      !hasChip && !hasMention && text.length === 0 && !hasImages && !hasFiles && !hasDocs
     );
   };
 
@@ -4028,17 +4165,23 @@ const Panel = () => {
     if (!files || files.length === 0) return;
     const list = Array.from(files);
     const imageFiles = list.filter((file) => getImageMediaType(file));
-    const textFiles = list.filter((file) =>
-      FILE_ATTACHMENT_EXTENSIONS.includes(getFileExtension(file.name))
+    const docFiles = list.filter((file) => getDocumentMediaType(file));
+    const textFiles = list.filter(
+      (file) =>
+        FILE_ATTACHMENT_EXTENSIONS.includes(getFileExtension(file.name)) &&
+        !getDocumentMediaType(file)
     );
     void (async () => {
       if (imageFiles.length > 0) {
         await addImagesFromFiles(imageFiles, 'drop');
       }
+      if (docFiles.length > 0) {
+        await addDocumentsFromFiles(docFiles);
+      }
       if (textFiles.length > 0) {
         await addDroppedTextFiles(textFiles);
       }
-      if (imageFiles.length === 0 && textFiles.length === 0) {
+      if (imageFiles.length === 0 && docFiles.length === 0 && textFiles.length === 0) {
         showAttachmentError('Unsupported file type.');
       }
     })();
@@ -4169,6 +4312,27 @@ const Panel = () => {
         </div>
       ) : null;
 
+    const documentAttachmentsBlock =
+      message.documents && message.documents.length > 0 ? (
+        <div class="ageaf-message__file-attachments">
+          {message.documents.map((doc) => (
+            <div
+              class="ageaf-message__file-chip"
+              key={doc.id}
+              title={doc.path ?? doc.name}
+            >
+              <span class="ageaf-message__file-chip-name">
+                {truncateName(doc.name, 28)}
+              </span>
+              <span class="ageaf-message__file-chip-meta">
+                {(doc.name.split('.').pop() ?? '').toUpperCase()} ·{' '}
+                {formatBytes(doc.size)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null;
+
     const imageAttachmentsBlock =
       message.images && message.images.length > 0 ? (
         <div class="ageaf-message__attachments">
@@ -4249,6 +4413,7 @@ const Panel = () => {
     return (
       <>
         {fileAttachmentsBlock}
+        {documentAttachmentsBlock}
         {imageAttachmentsBlock}
         {hasMain ? (
           <div
@@ -5070,6 +5235,7 @@ const Panel = () => {
     text: string,
     images?: ImageAttachment[],
     attachments?: FileAttachment[],
+    documents?: DocumentAttachment[],
     patchFeedbackTarget?: PatchFeedbackTarget
   ) => {
     const sessionState = getSessionState(conversationId);
@@ -5077,13 +5243,14 @@ const Panel = () => {
       text,
       images,
       attachments,
+      documents,
       patchFeedbackTarget,
       timestamp: Date.now(),
     });
 
     // Update queue count for current session
     if (conversationId === chatConversationIdRef.current) {
-      queueRef.current.push({ text, images, attachments, patchFeedbackTarget });
+      queueRef.current.push({ text, images, attachments, documents, patchFeedbackTarget });
       setQueueCount(sessionState.queue.length);
     }
   };
@@ -5131,6 +5298,7 @@ const Panel = () => {
         next.text,
         next.images ?? [],
         next.attachments ?? [],
+        next.documents ?? [],
         'chat',
         next.patchFeedbackTarget
       );
@@ -5219,6 +5387,7 @@ const Panel = () => {
     text: string,
     images: ImageAttachment[] = [],
     attachments: FileAttachment[] = [],
+    documents: DocumentAttachment[] = [],
     action: JobAction = 'chat',
     patchFeedbackTarget?: PatchFeedbackTarget
   ) => {
@@ -5255,6 +5424,7 @@ const Panel = () => {
 
     const messageImages = images.length > 0 ? images : undefined;
     const messageAttachments = attachments.length > 0 ? attachments : undefined;
+    const messageDocuments = documents.length > 0 ? documents : undefined;
     // Update UI for current session
     setMessages((prev) => [
       ...prev,
@@ -5263,6 +5433,7 @@ const Panel = () => {
         content: text,
         ...(messageImages ? { images: messageImages } : {}),
         ...(messageAttachments ? { attachments: messageAttachments } : {}),
+        ...(messageDocuments ? { documents: messageDocuments } : {}),
       }),
     ]);
     // Scroll to bottom after the message is added to the DOM
@@ -5656,6 +5827,18 @@ const Panel = () => {
                   })),
                 }
                 : {}),
+              ...(messageDocuments
+                ? {
+                  documents: messageDocuments.map((doc) => ({
+                    id: doc.id,
+                    name: doc.name,
+                    mediaType: doc.mediaType,
+                    data: doc.data,
+                    path: doc.path,
+                    size: doc.size,
+                  })),
+                }
+                : {}),
             },
             policy: {
               requireApproval: false,
@@ -5713,6 +5896,18 @@ const Panel = () => {
                     sizeBytes: attachment.sizeBytes,
                     lineCount: attachment.lineCount,
                     content: attachment.content,
+                  })),
+                }
+                : {}),
+              ...(messageDocuments
+                ? {
+                  documents: messageDocuments.map((doc) => ({
+                    id: doc.id,
+                    name: doc.name,
+                    mediaType: doc.mediaType,
+                    data: doc.data,
+                    path: doc.path,
+                    size: doc.size,
                   })),
                 }
                 : {}),
@@ -6351,13 +6546,15 @@ const Panel = () => {
     const { text, hasContent } = serializeEditorContent();
     const imageList = imageAttachmentsRef.current;
     const fileList = fileAttachmentsRef.current;
+    const docList = documentAttachmentsRef.current;
     const hasImages = imageList.length > 0;
     const hasFiles = fileList.length > 0;
-    if (!bridge || (!hasContent && !hasImages && !hasFiles)) return;
+    const hasDocs = docList.length > 0;
+    if (!bridge || (!hasContent && !hasImages && !hasFiles && !hasDocs)) return;
 
     // Allow users to approve a pending tool request by pasting a request id.
     // Example: "Get on with Request ID: f9e2dd31-000b-469f-be7a-939230e455c7"
-    if (!hasImages && !hasFiles) {
+    if (!hasImages && !hasFiles && !hasDocs) {
       const match = text.trim().match(/^Get on with Request ID:\s*(.+)\s*$/i);
       if (match) {
         const requestId = match[1]?.trim();
@@ -6399,6 +6596,7 @@ const Panel = () => {
 
     const messageImages = hasImages ? [...imageList] : [];
     const messageFiles = hasFiles ? [...fileList] : [];
+    const messageDocs = hasDocs ? [...docList] : [];
     clearEditor();
     scrollToBottom();
     if (sessionState.isSending) {
@@ -6407,6 +6605,7 @@ const Panel = () => {
         text,
         messageImages,
         messageFiles,
+        messageDocs,
         patchFeedbackTarget
       );
       return;
@@ -6415,6 +6614,7 @@ const Panel = () => {
       text,
       messageImages,
       messageFiles,
+      messageDocs,
       'chat',
       patchFeedbackTarget
     );
@@ -6485,7 +6685,7 @@ const Panel = () => {
       return;
     }
 
-    void sendMessage('Rewrite selection', [], [], 'rewrite');
+    void sendMessage('Rewrite selection', [], [], [], 'rewrite');
   };
 
   const onInputKeyDown = (event: KeyboardEvent) => {
@@ -8148,6 +8348,42 @@ const Panel = () => {
                         updateFileAttachments(
                           fileAttachmentsRef.current.filter(
                             (item) => item.id !== attachment.id
+                          )
+                        )
+                      }
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {documentAttachments.length > 0 ? (
+              <div
+                class="ageaf-panel__file-attachments"
+                aria-label="Attached documents"
+              >
+                {documentAttachments.map((doc) => (
+                  <div
+                    class="ageaf-panel__file-chip"
+                    key={doc.id}
+                    title={doc.path ?? doc.name}
+                  >
+                    <span class="ageaf-panel__file-chip-name">
+                      {truncateName(doc.name)}
+                    </span>
+                    <span class="ageaf-panel__file-chip-meta">
+                      {(doc.name.split('.').pop() ?? '').toUpperCase()} ·{' '}
+                      {formatBytes(doc.size)}
+                    </span>
+                    <button
+                      class="ageaf-panel__file-chip-remove"
+                      type="button"
+                      aria-label={`Remove ${doc.name}`}
+                      onClick={() =>
+                        updateDocumentAttachments(
+                          documentAttachmentsRef.current.filter(
+                            (item) => item.id !== doc.id
                           )
                         )
                       }

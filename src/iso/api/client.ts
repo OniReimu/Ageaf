@@ -9,10 +9,11 @@ import {
   type HostHealthResponse,
   type HostToolsStatus,
   type JobPayload,
+  validateDocumentEntries,
 } from './httpClient';
 import { streamEvents, type JobEvent } from './sse';
 
-export { streamEvents };
+export { streamEvents, validateDocumentEntries };
 export type {
   AttachmentMeta,
   ClaudeContextUsageResponse,

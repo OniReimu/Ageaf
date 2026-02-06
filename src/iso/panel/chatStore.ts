@@ -34,6 +34,13 @@ export type StoredFileAttachment = {
   mime?: string;
 };
 
+export type StoredDocumentAttachment = {
+  id: string;
+  name: string;
+  mediaType: string;
+  size: number;
+};
+
 export type StoredPatchReviewStatus = 'pending' | 'accepted' | 'rejected';
 
 export type StoredPatchReview =
@@ -74,6 +81,7 @@ export type StoredMessage = {
   thinking?: string[];
   images?: StoredImageAttachment[];
   attachments?: StoredFileAttachment[];
+  documents?: StoredDocumentAttachment[];
   patchReview?: StoredPatchReview;
 };
 
@@ -198,6 +206,18 @@ function normalizeStoredFileAttachment(raw: any): StoredFileAttachment | null {
   return { id, name, ext, sizeBytes, lineCount, ...(pathValue ? { path: pathValue } : {}), ...(mime ? { mime } : {}) };
 }
 
+function normalizeStoredDocumentAttachment(raw: any): StoredDocumentAttachment | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = typeof raw.id === 'string' ? raw.id : null;
+  const name = typeof raw.name === 'string' ? raw.name : null;
+  const mediaType = typeof raw.mediaType === 'string' ? raw.mediaType : null;
+  const size = Number(raw.size ?? NaN);
+  if (!id || !name || !mediaType || !Number.isFinite(size) || size < 0) {
+    return null;
+  }
+  return { id, name, mediaType, size };
+}
+
 function normalizeCoTItem(raw: any): CoTItem | null {
   if (!raw || typeof raw !== 'object') return null;
   const type = raw.type;
@@ -250,6 +270,13 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
       (entry: StoredFileAttachment | null): entry is StoredFileAttachment =>
         Boolean(entry)
     );
+  const documentsRaw = Array.isArray(raw.documents) ? raw.documents : [];
+  const documents = documentsRaw
+    .map((entry: unknown) => normalizeStoredDocumentAttachment(entry))
+    .filter(
+      (entry: StoredDocumentAttachment | null): entry is StoredDocumentAttachment =>
+        Boolean(entry)
+    );
 
   const patchReview = normalizeStoredPatchReview(raw.patchReview ?? raw.patch_review);
   return {
@@ -259,6 +286,7 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
     ...(cot.length > 0 ? { cot } : {}),
     ...(images.length > 0 ? { images } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
+    ...(documents.length > 0 ? { documents } : {}),
     ...(patchReview ? { patchReview } : {}),
   };
 }

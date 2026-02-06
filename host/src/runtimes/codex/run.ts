@@ -7,6 +7,10 @@ import { promisify } from 'node:util';
 
 import type { JobEvent } from '../../types.js';
 import { buildAttachmentBlock, getAttachmentLimits } from '../../attachments/textAttachments.js';
+import {
+  buildDocumentAttachmentBlock,
+  type DocumentAttachmentEntry,
+} from '../../attachments/documentAttachments.js';
 import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
 import { buildReplaceRangePatchesFromFileUpdates } from '../../patch/fileUpdate.js';
 import { validatePatch } from '../../validate.js';
@@ -97,6 +101,31 @@ function getContextImages(context: unknown): CodexImageAttachment[] {
       (entry: CodexImageAttachment | null): entry is CodexImageAttachment =>
         Boolean(entry)
     );
+}
+
+function getContextDocuments(context: unknown): DocumentAttachmentEntry[] {
+  if (!context || typeof context !== 'object') return [];
+  const raw = (context as { documents?: unknown }).documents;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((entry: unknown): entry is DocumentAttachmentEntry => {
+      if (!entry || typeof entry !== 'object') return false;
+      const candidate = entry as Record<string, unknown>;
+      return (
+        typeof candidate.name === 'string' &&
+        typeof candidate.mediaType === 'string' &&
+        typeof candidate.size === 'number' &&
+        (typeof candidate.data === 'string' || typeof candidate.path === 'string')
+      );
+    })
+    .map((entry) => ({
+      id: typeof entry.id === 'string' ? entry.id : undefined,
+      name: entry.name,
+      mediaType: entry.mediaType,
+      data: typeof entry.data === 'string' ? entry.data : undefined,
+      path: typeof entry.path === 'string' ? entry.path : undefined,
+      size: entry.size,
+    }));
 }
 
 function getContextForPrompt(
@@ -697,12 +726,16 @@ export async function runCodexJob(
   };
   const images = getContextImages(payload.context);
   const attachments = getContextAttachments(payload.context);
+  const documentEntries = getContextDocuments(payload.context);
   const { block: attachmentBlock } = await buildAttachmentBlock(
     attachments,
     getAttachmentLimits()
   );
+  const { block: documentBlock } = await buildDocumentAttachmentBlock(
+    documentEntries
+  );
   const rawMessage = getUserMessage(payload.context);
-  const messageWithAttachments = [rawMessage, attachmentBlock]
+  const messageWithAttachments = [rawMessage, attachmentBlock, documentBlock]
     .filter((part) => typeof part === 'string' && part.trim().length > 0)
     .join('\n\n');
   const contextWithAttachments =
