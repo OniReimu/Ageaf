@@ -1749,7 +1749,7 @@ const Panel = () => {
       chat.removeEventListener('wheel', onUserScroll);
       chat.removeEventListener('touchmove', onUserScroll);
     };
-  }, []);
+  }, [sessionIds.length]);
 
   useEffect(() => {
     if (!chatRef.current || !isAtBottomRef.current) return;
