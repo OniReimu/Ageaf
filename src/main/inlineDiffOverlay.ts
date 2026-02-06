@@ -160,25 +160,55 @@ function ensureInlineDiffStyles() {
     .ageaf-inline-diff-btn {
       all: unset;
       cursor: pointer;
-      font-size: 11px;
+      font-family: 'Work Sans', -apple-system, sans-serif;
+      font-size: 12px;
       font-weight: 600;
-      padding: 3px 6px;
+      padding: 5px 10px;
+      min-height: 28px;
       border-radius: 6px;
-      background: rgba(16, 185, 129, 0.2);
-      color: rgba(10, 35, 25, 0.92);
-      border: 1px solid rgba(16, 185, 129, 0.4);
+      background: rgba(57, 185, 138, 0.2);
+      color: #0a2318;
+      border: 1px solid rgba(57, 185, 138, 0.4);
+      transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+      box-sizing: border-box;
+    }
+
+    .ageaf-inline-diff-btn:hover {
+      background: rgba(57, 185, 138, 0.3);
+      border-color: rgba(57, 185, 138, 0.6);
+      transform: translateY(-1px);
+      box-shadow: 0 2px 8px rgba(57, 185, 138, 0.2);
+    }
+
+    .ageaf-inline-diff-btn:active {
+      transform: translateY(0);
+    }
+
+    .ageaf-inline-diff-btn:focus-visible {
+      outline: 2px solid #39b98a;
+      outline-offset: 2px;
     }
 
     .ageaf-inline-diff-btn.is-reject {
-      background: rgba(239, 68, 68, 0.2);
-      color: rgba(35, 10, 10, 0.92);
-      border: 1px solid rgba(239, 68, 68, 0.4);
+      background: rgba(255, 107, 107, 0.2);
+      color: #3d0a0a;
+      border: 1px solid rgba(255, 107, 107, 0.4);
+    }
+
+    .ageaf-inline-diff-btn.is-reject:hover {
+      background: rgba(255, 107, 107, 0.3);
+      border-color: rgba(255, 107, 107, 0.6);
     }
 
     .ageaf-inline-diff-btn.is-feedback {
-      background: rgba(59, 130, 246, 0.16);
-      color: rgba(10, 20, 35, 0.92);
-      border: 1px solid rgba(59, 130, 246, 0.35);
+      background: rgba(77, 184, 232, 0.16);
+      color: #0a1e2d;
+      border: 1px solid rgba(77, 184, 232, 0.35);
+    }
+
+    .ageaf-inline-diff-btn.is-feedback:hover {
+      background: rgba(77, 184, 232, 0.25);
+      border-color: rgba(77, 184, 232, 0.5);
     }
 
     .ageaf-inline-diff-addition {
@@ -205,7 +235,7 @@ function ensureInlineDiffStyles() {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       word-break: break-word;
-      color: rgba(10, 35, 25, 0.96);
+      color: inherit;
     }
 
     .ageaf-inline-diff-addition__actions {
@@ -241,18 +271,30 @@ function ensureInlineDiffStyles() {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       word-break: break-word;
-      color: rgba(10, 35, 25, 0.96);
+      color: inherit;
     }
 
-    /* Make the proposed text editable but visually identical to the old div. */
+    /* Make the proposed text editable with visual affordance */
     textarea.ageaf-inline-diff-widget__text {
-      border: none;
+      border: 1px dashed rgba(57, 185, 138, 0.25);
+      border-radius: 4px;
       outline: none;
       resize: none;
       min-height: 64px;
       display: block;
       overflow: hidden; /* auto-sized via JS; avoid internal scrolling */
       height: auto;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    textarea.ageaf-inline-diff-widget__text:hover {
+      border-color: rgba(57, 185, 138, 0.4);
+    }
+
+    textarea.ageaf-inline-diff-widget__text:focus {
+      border-style: solid;
+      border-color: rgba(57, 185, 138, 0.6);
+      box-shadow: 0 0 0 2px rgba(57, 185, 138, 0.15);
     }
 
     .ageaf-inline-diff-widget__actions {
@@ -280,14 +322,15 @@ function ensureInlineDiffStyles() {
       gap: 10px;
       padding: 10px 12px;
       border-radius: 12px;
-      background: rgba(24, 24, 27, 0.92);
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      color: rgba(255, 255, 255, 0.92);
-      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      background: rgba(15, 20, 17, 0.94);
+      border: 1px solid rgba(57, 185, 138, 0.18);
+      color: #f7fbf9;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(57, 185, 138, 0.08);
+      font-family: 'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       font-size: 13px;
       pointer-events: auto;
       user-select: none;
+      animation: ageaf-review-bar-enter 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     .ageaf-review-bar__count {
@@ -304,13 +347,20 @@ function ensureInlineDiffStyles() {
     .ageaf-review-bar__btn {
       all: unset;
       cursor: pointer;
-      padding: 6px 10px;
+      padding: 8px 12px;
+      min-width: 32px;
+      min-height: 32px;
       border-radius: 10px;
       border: 1px solid rgba(255, 255, 255, 0.16);
       background: rgba(255, 255, 255, 0.08);
-      color: rgba(255, 255, 255, 0.92);
+      color: #f7fbf9;
       font-weight: 600;
       line-height: 1;
+      box-sizing: border-box;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     .ageaf-review-bar__btn:hover {
@@ -321,16 +371,42 @@ function ensureInlineDiffStyles() {
       transform: translateY(1px);
     }
 
+    .ageaf-review-bar__btn:focus-visible {
+      outline: 2px solid #39b98a;
+      outline-offset: 2px;
+    }
+
     .ageaf-review-bar__btn.is-primary {
-      background: rgba(34, 197, 94, 0.22);
-      border-color: rgba(34, 197, 94, 0.45);
-      color: rgba(240, 255, 244, 0.98);
+      background: rgba(57, 185, 138, 0.22);
+      border-color: rgba(57, 185, 138, 0.45);
+      color: #f7fbf9;
+    }
+
+    .ageaf-review-bar__btn.is-primary:hover {
+      background: rgba(57, 185, 138, 0.32);
     }
 
     .ageaf-review-bar__btn.is-danger {
-      background: rgba(239, 68, 68, 0.22);
-      border-color: rgba(239, 68, 68, 0.45);
-      color: rgba(255, 244, 244, 0.98);
+      background: rgba(255, 107, 107, 0.22);
+      border-color: rgba(255, 107, 107, 0.45);
+      color: #f7fbf9;
+    }
+
+    .ageaf-review-bar__btn.is-danger:hover {
+      background: rgba(255, 107, 107, 0.32);
+    }
+
+    @keyframes ageaf-review-bar-enter {
+      from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+      to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ageaf-review-bar,
+      .ageaf-inline-diff-btn {
+        animation: none !important;
+        transition: none !important;
+      }
     }
   `;
   document.head.appendChild(style);
@@ -353,11 +429,13 @@ function ensureReviewBar() {
   prev.className = 'ageaf-review-bar__btn';
   prev.textContent = '<';
   prev.title = 'Previous hunk';
+  prev.setAttribute('aria-label', 'Previous review hunk');
 
   const next = document.createElement('button');
   next.className = 'ageaf-review-bar__btn';
   next.textContent = '>';
   next.title = 'Next hunk';
+  next.setAttribute('aria-label', 'Next review hunk');
 
   nav.appendChild(prev);
   nav.appendChild(next);
@@ -366,11 +444,13 @@ function ensureReviewBar() {
   undoAll.className = 'ageaf-review-bar__btn is-danger';
   undoAll.textContent = 'Undo All';
   undoAll.title = 'Reject all hunks in this file';
+  undoAll.setAttribute('aria-label', 'Reject all review hunks');
 
   const acceptAll = document.createElement('button');
   acceptAll.className = 'ageaf-review-bar__btn is-primary';
   acceptAll.textContent = 'Accept All';
   acceptAll.title = 'Accept all hunks in this file';
+  acceptAll.setAttribute('aria-label', 'Accept all review hunks');
 
   bar.appendChild(count);
   bar.appendChild(nav);
@@ -1019,6 +1099,8 @@ function createWidgetDOM(text: string, messageId: string): HTMLElement {
   textEl.className = 'ageaf-inline-diff-widget__text';
   (textEl as HTMLTextAreaElement).value = text;
   textEl.spellcheck = false;
+  textEl.setAttribute('aria-label', 'Edit proposed text');
+  textEl.setAttribute('placeholder', 'Edit the proposed text before accepting...');
   // Allow editing proposed text like Cursor does.
   (textEl as HTMLTextAreaElement).setAttribute(
     'data-ageaf-proposed-editor',
@@ -1047,6 +1129,7 @@ function createWidgetDOM(text: string, messageId: string): HTMLElement {
   const acceptBtn = document.createElement('button');
   acceptBtn.className = 'ageaf-inline-diff-btn';
   acceptBtn.textContent = '✓ Accept';
+  acceptBtn.setAttribute('aria-label', 'Accept proposed change');
   acceptBtn.onclick = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1062,6 +1145,7 @@ function createWidgetDOM(text: string, messageId: string): HTMLElement {
   const rejectBtn = document.createElement('button');
   rejectBtn.className = 'ageaf-inline-diff-btn is-reject';
   rejectBtn.textContent = '✕ Reject';
+  rejectBtn.setAttribute('aria-label', 'Reject proposed change');
   rejectBtn.onclick = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1072,6 +1156,7 @@ function createWidgetDOM(text: string, messageId: string): HTMLElement {
   const feedbackBtn = document.createElement('button');
   feedbackBtn.className = 'ageaf-inline-diff-btn is-feedback';
   feedbackBtn.textContent = 'Feedback';
+  feedbackBtn.setAttribute('aria-label', 'Give feedback on proposed change');
   feedbackBtn.onclick = (e) => {
     e.preventDefault();
     e.stopPropagation();

@@ -81,13 +81,34 @@ function ensureStyles() {
       position: fixed;
       z-index: 2147483647;
       max-width: 460px;
-      background: rgba(24, 24, 27, 0.92);
-      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(15, 20, 17, 0.94);
+      border: 1px solid rgba(57, 185, 138, 0.18);
       border-radius: 12px;
-      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(57, 185, 138, 0.08);
       padding: 12px 12px;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      font-family: 'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       color: rgba(255, 255, 255, 0.92);
+      animation: ageaf-popup-enter 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .ageaf-cite-popup::after {
+      content: '';
+      position: absolute;
+      top: -6px;
+      left: var(--caret-left, 20px);
+      width: 12px;
+      height: 12px;
+      background: rgba(15, 20, 17, 0.94);
+      border-left: 1px solid rgba(57, 185, 138, 0.18);
+      border-top: 1px solid rgba(57, 185, 138, 0.18);
+      transform: rotate(45deg);
+      pointer-events: none;
+    }
+
+    .ageaf-cite-popup.is-below::after {
+      top: auto;
+      bottom: -6px;
+      transform: rotate(225deg);
     }
 
     .ageaf-cite-popup__title {
@@ -110,23 +131,32 @@ function ensureStyles() {
       font-weight: 700;
       border-radius: 8px;
       padding: 2px 8px;
-      background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      color: rgba(255, 255, 255, 0.88);
+      background: rgba(57, 185, 138, 0.12);
+      border: 1px solid rgba(57, 185, 138, 0.25);
+      color: #4dd4a4;
       margin-right: 6px;
     }
 
     .ageaf-cite-popup__cite {
       margin-top: 6px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+      font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
       font-size: 12px;
       color: rgba(255, 255, 255, 0.86);
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(57, 185, 138, 0.06);
+      border: 1px solid rgba(57, 185, 138, 0.15);
       border-radius: 8px;
       padding: 6px 8px;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+    }
+
+    @keyframes ageaf-popup-enter {
+      from { opacity: 0; transform: translateY(4px) scale(0.97); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ageaf-cite-popup { animation: none; }
     }
   `;
   document.head.appendChild(style);
@@ -176,14 +206,30 @@ function renderPopup(meta: BibEntryMeta | null, key: string, citeText: string, c
     <div class="ageaf-cite-popup__meta">${badges.join('')}${escapeText(metaLine || meta?.filePath || '')}</div>
     <div class="ageaf-cite-popup__cite">${escapeText(citeText)}</div>
   `;
-  // Position
+  // Position — determine if popup should appear above or below
   const margin = 10;
-  const maxLeft = window.innerWidth - el.offsetWidth - margin;
-  const maxTop = window.innerHeight - el.offsetHeight - margin;
+  const popupHeight = el.offsetHeight;
+  const popupWidth = el.offsetWidth;
+  const maxLeft = window.innerWidth - popupWidth - margin;
+
+  // Try below first (default); if not enough space, go above
+  const spaceBelow = window.innerHeight - coords.top - margin;
+  const isBelow = spaceBelow < popupHeight + margin && coords.top - popupHeight > margin;
+
   const left = Math.max(margin, Math.min(coords.left, maxLeft));
-  const top = Math.max(margin, Math.min(coords.top, maxTop));
+  const top = isBelow
+    ? Math.max(margin, coords.top - popupHeight - 12)
+    : Math.max(margin, Math.min(coords.top, window.innerHeight - popupHeight - margin));
+
   el.style.left = `${left}px`;
   el.style.top = `${top}px`;
+
+  // Toggle caret direction class
+  el.classList.toggle('is-below', isBelow);
+
+  // Position caret horizontally near the cursor
+  const caretLeft = Math.max(12, Math.min(coords.left - left, popupWidth - 24));
+  el.style.setProperty('--caret-left', `${caretLeft}px`);
 }
 
 function extractFieldValue(entryBlock: string, fieldName: string): string | undefined {

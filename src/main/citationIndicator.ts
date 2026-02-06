@@ -83,65 +83,97 @@ function ensureCitationStyles() {
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
-    /* Citation usage indicators (editor widgets) */
+    /* Citation usage indicators (editor widgets) — Emerald Studio palette */
     .ageaf-citation-indicator {
       display: inline-block;
       margin-left: 8px;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
       font-weight: 600;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: 'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       cursor: default;
       user-select: none;
+      transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+      animation: ageaf-cite-fade-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards;
     }
 
     .ageaf-citation-used {
-      color: #22863a;
-      background-color: #dcffe4;
-      border: 1px solid #34d058;
+      color: #39b98a;
+      background-color: rgba(57, 185, 138, 0.14);
+      border: 1px solid rgba(57, 185, 138, 0.4);
+    }
+
+    .ageaf-citation-used:hover {
+      background-color: rgba(57, 185, 138, 0.22);
+      border-color: rgba(57, 185, 138, 0.5);
     }
 
     .ageaf-citation-unused {
-      color: #6a737d;
-      background-color: #f6f8fa;
-      border: 1px solid #d1d5da;
-      opacity: 0.7;
+      color: #7f9389;
+      background-color: rgba(107, 125, 115, 0.12);
+      border: 1px solid rgba(107, 125, 115, 0.3);
+      opacity: 0.65;
+    }
+
+    .ageaf-citation-unused:hover {
+      opacity: 0.85;
+      background-color: rgba(107, 125, 115, 0.18);
     }
 
     /* Dark mode support (Overleaf uses body.dark in some themes; keep both) */
     .dark .ageaf-citation-used, body.dark .ageaf-citation-used {
-      color: #7ee787;
-      background-color: #002d11;
-      border-color: #238636;
+      color: #4dd4a4;
+      background-color: rgba(57, 185, 138, 0.10);
+      border-color: rgba(57, 185, 138, 0.3);
     }
 
     .dark .ageaf-citation-unused, body.dark .ageaf-citation-unused {
-      color: #8b949e;
-      background-color: #21262d;
-      border-color: #30363d;
+      color: #a8bfb3;
+      background-color: rgba(107, 125, 115, 0.08);
+      border-color: rgba(107, 125, 115, 0.2);
     }
 
     /* Duplicate title indicator */
     .ageaf-citation-dup {
       display: inline-block;
       margin-left: 6px;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
       font-weight: 700;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: 'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       cursor: default;
       user-select: none;
-      color: #b54708;
-      background-color: #fff4d6;
-      border: 1px solid #d29922;
+      color: #ffb357;
+      background-color: rgba(255, 179, 87, 0.14);
+      border: 1px solid rgba(255, 179, 87, 0.4);
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+      animation: ageaf-cite-fade-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+    }
+
+    .ageaf-citation-dup:hover {
+      background-color: rgba(255, 179, 87, 0.22);
+      border-color: rgba(255, 179, 87, 0.5);
     }
 
     .dark .ageaf-citation-dup, body.dark .ageaf-citation-dup {
-      color: #ffdf5d;
-      background-color: #2d2400;
-      border-color: #bb8009;
+      color: #ffb357;
+      background-color: rgba(255, 179, 87, 0.10);
+      border-color: rgba(255, 179, 87, 0.3);
+    }
+
+    @keyframes ageaf-cite-fade-in {
+      from { opacity: 0; transform: translateY(-2px) scale(0.95); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ageaf-citation-indicator,
+      .ageaf-citation-dup {
+        animation: none;
+        transition: none;
+      }
     }
   `;
   document.head.appendChild(style);
