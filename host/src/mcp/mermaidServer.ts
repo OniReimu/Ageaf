@@ -1,14 +1,6 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-
-let beautifulMermaid: typeof import('beautiful-mermaid') | null = null;
-
-async function loadBeautifulMermaid() {
-  if (!beautifulMermaid) {
-    beautifulMermaid = await import('beautiful-mermaid');
-  }
-  return beautifulMermaid;
-}
+import { renderMermaidToSvg, renderMermaidToAscii, listMermaidThemes } from './renderMermaid.js';
 
 export const mermaidMcpServer = createSdkMcpServer({
   name: 'ageaf-mermaid',
@@ -31,22 +23,13 @@ export const mermaidMcpServer = createSdkMcpServer({
           ),
       },
       async (args) => {
-        const lib = await loadBeautifulMermaid();
-        const format = args.format ?? 'svg';
-
         try {
-          if (format === 'ascii') {
-            const ascii = lib.renderMermaidAscii(args.code);
+          if (args.format === 'ascii') {
+            const ascii = await renderMermaidToAscii(args.code);
             return { content: [{ type: 'text' as const, text: ascii }] };
           }
 
-          const themeName = args.theme ?? 'zinc-dark';
-          const themeColors =
-            lib.THEMES[themeName] ?? lib.THEMES['zinc-dark'];
-          const svg = await lib.renderMermaid(args.code, {
-            ...themeColors,
-            transparent: false,
-          });
+          const svg = await renderMermaidToSvg(args.code, args.theme);
           return { content: [{ type: 'text' as const, text: svg }] };
         } catch (error) {
           const message =
@@ -70,8 +53,7 @@ export const mermaidMcpServer = createSdkMcpServer({
       'List available Mermaid diagram color themes',
       {},
       async () => {
-        const lib = await loadBeautifulMermaid();
-        const themes = Object.keys(lib.THEMES);
+        const themes = await listMermaidThemes();
         return {
           content: [
             {

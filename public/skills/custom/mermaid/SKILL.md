@@ -119,6 +119,11 @@ erDiagram
     ORDER ||--|{ LINE-ITEM : contains
 ```
 
+## Fallback
+
+**If the `render_mermaid` tool is NOT available**, just output the Mermaid code
+in a ```mermaid fence. The Ageaf host will render it automatically.
+
 ## Tips
 
 - Keep diagrams focused and readable; avoid excessive nesting.

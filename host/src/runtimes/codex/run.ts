@@ -1,6 +1,9 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import type { JobEvent } from '../../types.js';
 import { buildAttachmentBlock, getAttachmentLimits } from '../../attachments/textAttachments.js';
@@ -9,6 +12,7 @@ import { buildReplaceRangePatchesFromFileUpdates } from '../../patch/fileUpdate.
 import { validatePatch } from '../../validate.js';
 import { getCodexAppServer } from './appServer.js';
 import { parseCodexTokenUsage } from './tokenUsage.js';
+import { getEnhancedPath, parseEnvironmentVariables } from '../claude/cli.js';
 
 // Debug logging to console (enabled via AGEAF_DEBUG_CLI=true)
 const debugToConsole = process.env.AGEAF_DEBUG_CLI === 'true';
@@ -564,6 +568,24 @@ function buildPrompt(
     '- Do NOT include the full updated file contents in the visible response (only inside the markers).',
   ].join('\n');
 
+  const mermaidToolGuidance = [
+    'Mermaid Diagram Rendering (CRITICAL - MCP Tool):',
+    '- You have a `render_mermaid` MCP tool available. When creating ANY diagram (flowchart, sequence, state, class, ER), you MUST call this tool.',
+    '- Do NOT just output raw Mermaid code in a ```mermaid fence. You MUST call the `render_mermaid` tool first to get the rendered SVG.',
+    '- After calling `render_mermaid`, output the result in this exact format:',
+    '  1. Put the SVG output from the tool in a ```ageaf-diagram fence (the extension renders this as a visual diagram with download button)',
+    '  2. Then put the Mermaid source in a ```mermaid fence (for the user to copy/reference)',
+    '- Example output structure:',
+    '  ```ageaf-diagram',
+    '  <svg ...>...</svg>',
+    '  ```',
+    '  ```mermaid',
+    '  graph TD',
+    '      A[Start] --> B[End]',
+    '  ```',
+    '- If `render_mermaid` returns an error, skip the ageaf-diagram fence and explain the error.',
+  ].join('\n');
+
   const skillsGuidance = [
     'Available Skills (CRITICAL):',
     '- Ageaf supports built-in skill directives (e.g. /humanizer).',
@@ -573,6 +595,7 @@ function buildPrompt(
     '  • /citation-management - Search papers, extract metadata, validate citations, generate BibTeX',
     '  • /ml-paper-writing - Write publication-ready ML/AI papers for NeurIPS, ICML, ICLR, ACL, AAAI, COLM',
     '  • /doc-coauthoring - Structured workflow for co-authoring documentation and technical specs',
+    '  • /mermaid - Render Mermaid diagrams (flowcharts, sequence, state, class, ER) via built-in MCP tool',
     '- If the user includes a /skillName directive, you MUST follow that skill for this request.',
     '- Skill text (instructions) may be injected under "Additional instructions" for the request; do NOT try to locate skills on disk.',
     '- These skills are part of the Ageaf system and do NOT require external installation.',
@@ -588,6 +611,7 @@ function buildPrompt(
     contextForPrompt ? `Context:\n${JSON.stringify(contextForPrompt, null, 2)}` : '',
     action === 'rewrite' ? rewriteInstructions : '',
     hasOverleafFileBlocks ? fileUpdateInstructions : '',
+    mermaidToolGuidance,
     skillsGuidance,
   ].filter(Boolean);
 
@@ -596,6 +620,77 @@ function buildPrompt(
   }
 
   return baseParts.join('\n\n');
+}
+
+// Path to the standalone MCP stdio server for Mermaid rendering.
+// In production (compiled JS): import.meta.url is in dist/src/runtimes/codex/run.js
+// In dev mode (tsx):           import.meta.url is in src/runtimes/codex/run.ts
+// We always need the compiled file at dist/src/mcp/mermaidStdioServer.js.
+function resolveMermaidStdioServerPath(): string {
+  const thisFile = fileURLToPath(import.meta.url);
+  const thisDir = path.dirname(thisFile);
+  // Walk up to find the host/ root (contains package.json)
+  let dir = thisDir;
+  for (let i = 0; i < 10; i++) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) {
+      return path.join(dir, 'dist', 'src', 'mcp', 'mermaidStdioServer.js');
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // Fallback: relative path from this file (works in production)
+  return path.resolve(thisDir, '../../mcp/mermaidStdioServer.js');
+}
+const mermaidStdioServerPath = resolveMermaidStdioServerPath();
+
+// One-time MCP registration via `codex mcp add` (idempotent).
+// The `config` field in thread/start does NOT register MCP servers,
+// so we pre-register using the CLI before the first thread.
+const execFileAsync = promisify(execFile);
+const mcpRegisteredForCli = new Set<string>();
+
+async function ensureMermaidMcpRegistered(
+  cliPath?: string,
+  envVars?: string
+): Promise<void> {
+  const rawCliPath = cliPath?.trim();
+  const resolvedCliPath =
+    rawCliPath === '~'
+      ? os.homedir()
+      : rawCliPath?.startsWith('~/')
+        ? path.join(os.homedir(), rawCliPath.slice(2))
+        : rawCliPath;
+  const command =
+    resolvedCliPath && resolvedCliPath.length > 0 ? resolvedCliPath : 'codex';
+  if (mcpRegisteredForCli.has(command)) return;
+  mcpRegisteredForCli.add(command);
+
+  const customEnv = parseEnvironmentVariables(envVars ?? '');
+  const env = {
+    ...process.env,
+    ...customEnv,
+    PATH: getEnhancedPath(customEnv.PATH, resolvedCliPath),
+  };
+
+  try {
+    await execFileAsync(
+      command,
+      ['mcp', 'add', 'ageaf-mermaid', '--', 'node', mermaidStdioServerPath],
+      { timeout: 15000, env }
+    );
+    if (debugToConsole) {
+      console.log('[CODEX DEBUG] registered ageaf-mermaid MCP server via codex mcp add');
+    }
+  } catch (err) {
+    // Silently ignore — old CLI versions may not support `mcp add`.
+    // The model will fall back to outputting raw mermaid code.
+    if (debugToConsole) {
+      console.log('[CODEX DEBUG] codex mcp add failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }
 
 export async function runCodexJob(
@@ -666,6 +761,10 @@ export async function runCodexJob(
     typeof runtime.reasoningEffort === 'string' && runtime.reasoningEffort.trim()
       ? runtime.reasoningEffort.trim()
       : null;
+  // Pre-register Mermaid MCP server before starting app-server.
+  // This is idempotent and runs `codex mcp add` once per CLI path.
+  await ensureMermaidMcpRegistered(runtime.cliPath, runtime.envVars);
+
   const appServer = await getCodexAppServer({
     cliPath: runtime.cliPath,
     envVars: runtime.envVars,
@@ -769,6 +868,95 @@ export async function runCodexJob(
   const patchPayloadStartRe =
     /```(?:ageaf[-_]?patch)|<<<\s*AGEAF_REWRITE\s*>>>|<<<\s*AGEAF_FILE_UPDATE\b/i;
   const HOLD_BACK_CHARS = 32;
+
+  // --- Diagram fence buffering (mirrors Claude agent.ts) ---
+  let insideDiagramFence = false;
+  let diagramBuffer = '';
+  const diagramOpenRe = /```ageaf-diagram[^\n]*\n/i;
+
+  /**
+   * Process a visible delta through diagram fence detection/buffering,
+   * then through patch payload holdback, before emitting to the client.
+   */
+  const emitVisibleDelta = (text: string) => {
+    if (!text) return;
+
+    // --- Diagram fence accumulation mode ---
+    if (insideDiagramFence) {
+      diagramBuffer += text;
+      const closeIdx = diagramBuffer.indexOf('\n```');
+      if (closeIdx !== -1) {
+        const afterBackticks = closeIdx + 4;
+        const ch = diagramBuffer[afterBackticks];
+        if (ch === undefined || ch === '\n' || ch === '\r' || ch === ' ' || ch === '\t') {
+          const restAfterClose = diagramBuffer.slice(afterBackticks);
+          const nlPos = restAfterClose.indexOf('\n');
+          const closingLineLen = nlPos >= 0 ? nlPos + 1 : restAfterClose.length;
+          const fenceContent = diagramBuffer.slice(0, closeIdx);
+          const completeFence = '```ageaf-diagram\n' + fenceContent + '\n```\n';
+          emitEvent({ event: 'delta', data: { text: completeFence } });
+          insideDiagramFence = false;
+          const remaining = diagramBuffer.slice(afterBackticks + closingLineLen);
+          diagramBuffer = '';
+          if (remaining) {
+            emitVisibleDelta(remaining);
+          }
+          return;
+        }
+      }
+      return;
+    }
+
+    // --- Check for diagram fence opening in visibleBuffer ---
+    visibleBuffer += text;
+
+    const diagMatch = visibleBuffer.match(diagramOpenRe);
+    if (diagMatch && diagMatch.index !== undefined) {
+      const before = visibleBuffer.slice(0, diagMatch.index);
+      if (before) {
+        emitEvent({ event: 'delta', data: { text: before } });
+      }
+      emitEvent({ event: 'delta', data: { text: '\n*Rendering diagram\u2026*\n' } });
+      insideDiagramFence = true;
+      diagramBuffer = visibleBuffer.slice(diagMatch.index + diagMatch[0].length);
+      visibleBuffer = '';
+      return;
+    }
+
+    // --- Patch payload holdback logic ---
+    const matchIndex = visibleBuffer.search(patchPayloadStartRe);
+    if (matchIndex >= 0) {
+      const beforeFence = visibleBuffer.slice(0, matchIndex);
+      if (beforeFence) {
+        emitEvent({ event: 'delta', data: { text: beforeFence } });
+      }
+      patchPayloadStarted = true;
+      visibleBuffer = '';
+      return;
+    }
+
+    if (visibleBuffer.length > HOLD_BACK_CHARS) {
+      const flush = visibleBuffer.slice(0, visibleBuffer.length - HOLD_BACK_CHARS);
+      visibleBuffer = visibleBuffer.slice(-HOLD_BACK_CHARS);
+      if (flush) {
+        emitEvent({ event: 'delta', data: { text: flush } });
+      }
+    }
+  };
+
+  const flushVisibleBuffer = () => {
+    if (insideDiagramFence) {
+      const partialFence = '```ageaf-diagram\n' + diagramBuffer + '\n```\n';
+      emitEvent({ event: 'delta', data: { text: partialFence } });
+      insideDiagramFence = false;
+      diagramBuffer = '';
+    }
+    if (patchPayloadStarted) return;
+    if (!visibleBuffer) return;
+    emitEvent({ event: 'delta', data: { text: visibleBuffer } });
+    visibleBuffer = '';
+  };
+
   // Filled synchronously by the Promise executor below.
   // (Promise executors run immediately.)
   let resolveDone!: () => void;
@@ -1049,25 +1237,7 @@ export async function runCodexJob(
             return;
           }
 
-          visibleBuffer += delta;
-          const matchIndex = visibleBuffer.search(patchPayloadStartRe);
-          if (matchIndex >= 0) {
-            const beforeFence = visibleBuffer.slice(0, matchIndex);
-            if (beforeFence) {
-              emitEvent({ event: 'delta', data: { text: beforeFence } });
-            }
-            patchPayloadStarted = true;
-            visibleBuffer = '';
-            return;
-          }
-
-          if (visibleBuffer.length > HOLD_BACK_CHARS) {
-            const flush = visibleBuffer.slice(0, visibleBuffer.length - HOLD_BACK_CHARS);
-            visibleBuffer = visibleBuffer.slice(-HOLD_BACK_CHARS);
-            if (flush) {
-              emitEvent({ event: 'delta', data: { text: flush } });
-            }
-          }
+          emitVisibleDelta(delta);
         }
         return;
       }
@@ -1101,25 +1271,7 @@ export async function runCodexJob(
           return;
         }
 
-        visibleBuffer += delta;
-        const matchIndex = visibleBuffer.search(patchPayloadStartRe);
-        if (matchIndex >= 0) {
-          const beforeFence = visibleBuffer.slice(0, matchIndex);
-          if (beforeFence) {
-            emitEvent({ event: 'delta', data: { text: beforeFence } });
-          }
-          patchPayloadStarted = true;
-          visibleBuffer = '';
-          return;
-        }
-
-        if (visibleBuffer.length > HOLD_BACK_CHARS) {
-          const flush = visibleBuffer.slice(0, visibleBuffer.length - HOLD_BACK_CHARS);
-          visibleBuffer = visibleBuffer.slice(-HOLD_BACK_CHARS);
-          if (flush) {
-            emitEvent({ event: 'delta', data: { text: flush } });
-          }
-        }
+        emitVisibleDelta(delta);
         return;
       }
 
@@ -1424,9 +1576,8 @@ export async function runCodexJob(
       if (method === 'turn/completed') {
         if (!done) {
           done = true;
-          if (shouldHidePatchPayload && !patchPayloadStarted && visibleBuffer) {
-            emitEvent({ event: 'delta', data: { text: visibleBuffer } });
-            visibleBuffer = '';
+          if (shouldHidePatchPayload && !patchPayloadStarted) {
+            flushVisibleBuffer();
           }
 
           if (!patchEmitted) {
@@ -1481,9 +1632,8 @@ export async function runCodexJob(
       if (method === 'codex/event/task_completed') {
         if (!done) {
           done = true;
-          if (shouldHidePatchPayload && !patchPayloadStarted && visibleBuffer) {
-            emitEvent({ event: 'delta', data: { text: visibleBuffer } });
-            visibleBuffer = '';
+          if (shouldHidePatchPayload && !patchPayloadStarted) {
+            flushVisibleBuffer();
           }
           emitEvent({ event: 'done', data: { status: 'ok', threadId } });
         }
@@ -1523,19 +1673,7 @@ export async function runCodexJob(
           if (deltaToEmit && !shouldHidePatchPayload) {
             emitEvent({ event: 'delta', data: { text: deltaToEmit } });
           } else if (deltaToEmit && !patchPayloadStarted) {
-            visibleBuffer += deltaToEmit;
-            const matchIndex = visibleBuffer.search(patchPayloadStartRe);
-            if (matchIndex >= 0) {
-              const beforeFence = visibleBuffer.slice(0, matchIndex);
-              if (beforeFence) {
-                emitEvent({ event: 'delta', data: { text: beforeFence } });
-              }
-              patchPayloadStarted = true;
-              visibleBuffer = '';
-            } else {
-              emitEvent({ event: 'delta', data: { text: visibleBuffer } });
-              visibleBuffer = '';
-            }
+            emitVisibleDelta(deltaToEmit);
           }
         }
         // Don't return: item/completed can occur alongside turn/completed.
