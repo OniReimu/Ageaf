@@ -65,6 +65,16 @@ export class CodexAppServer {
     this.started = true;
 
     const customEnv = parseEnvironmentVariables(this.config.envVars ?? '');
+
+    // Track sensitive keys for cleanup
+    const sensitiveKeys = Object.keys(customEnv).filter(
+      (key) =>
+        key.includes('API_KEY') ||
+        key.includes('SECRET') ||
+        key.includes('TOKEN') ||
+        key.includes('AUTH')
+    );
+
     const rawCliPath = this.config.cliPath?.trim();
     const cliPath =
       rawCliPath === '~'
@@ -116,6 +126,21 @@ export class CodexAppServer {
         pending.reject(new Error('Codex app-server exited'));
       }
       this.pending.clear();
+
+      // CRITICAL: Wipe sensitive env vars from memory after CLI execution
+      if (sensitiveKeys.length > 0) {
+        for (const key of sensitiveKeys) {
+          if (key in customEnv) {
+            delete customEnv[key];
+            customEnv[key] = '';
+          }
+          if (key in env) {
+            const envRecord = env as Record<string, string | undefined>;
+            delete envRecord[key];
+            envRecord[key] = '';
+          }
+        }
+      }
     });
 
     await new Promise<void>((resolve, reject) => {
