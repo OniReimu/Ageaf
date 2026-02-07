@@ -737,7 +737,7 @@
 }
 
 .ageaf-panel__body {
-  padding: 18px 20px;
+  padding: 10px 8px;
   overflow: visible;
   position: relative;
   display: grid;
@@ -754,7 +754,7 @@
   height: 100%;
   min-height: 0;
   min-width: 0;
-  padding-right: 6px;
+  padding: 4px 4px 4px 6px;
   align-content: start;
   grid-auto-rows: max-content;
 }

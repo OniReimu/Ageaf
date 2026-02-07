@@ -386,7 +386,7 @@
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--ageaf-space-lg);
+  padding: 4px 4px 4px 6px;
 
   /* Custom scrollbar */
   scrollbar-width: thin;
