@@ -1877,6 +1877,19 @@ const Panel = () => {
     Set<string>
   >(new Set());
 
+  // Track individually expanded thinking items within a CoT block
+  const [expandedThinkingItems, setExpandedThinkingItems] = useState<
+    Set<string>
+  >(new Set());
+
+  const toggleThinkingItemExpanded = (key: string) => {
+    setExpandedThinkingItems((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  };
+
   const toggleThinkingExpanded = (messageId: string) => {
     setExpandedThinkingMessages((prev) => {
       const next = new Set(prev);
@@ -1963,11 +1976,38 @@ const Panel = () => {
           <div class="ageaf-message__cot-body">
             {cot.map((item, idx) => {
               if (item.type === 'thinking') {
+                const thinkingKey = `${messageId ?? 'stream'}-${idx}`;
+                const isThinkingExpanded =
+                  expandedThinkingItems.has(thinkingKey);
+                const onToggleThinking = (e: MouseEvent) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  toggleThinkingItemExpanded(thinkingKey);
+                };
+                // Get first line or first ~80 chars for preview
+                const preview =
+                  item.content.split('\n')[0].slice(0, 80) +
+                  (item.content.length > 80 || item.content.includes('\n')
+                    ? '…'
+                    : '');
                 return (
-                  <div key={idx} class="ageaf-cot-thinking">
+                  <div
+                    key={idx}
+                    class={`ageaf-cot-thinking ${isThinkingExpanded ? 'is-expanded' : ''}`}
+                    onClick={onToggleThinking}
+                  >
                     <span class="ageaf-cot-thinking-icon">🧠</span>
-                    <span class="ageaf-cot-thinking-content">
-                      {item.content}
+                    {isThinkingExpanded ? (
+                      <span class="ageaf-cot-thinking-content">
+                        {item.content}
+                      </span>
+                    ) : (
+                      <span class="ageaf-cot-thinking-preview">
+                        {preview}
+                      </span>
+                    )}
+                    <span class="ageaf-cot-thinking-toggle">
+                      {isThinkingExpanded ? '▼' : '▶'}
                     </span>
                   </div>
                 );
