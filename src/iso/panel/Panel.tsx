@@ -2049,6 +2049,45 @@ const Panel = () => {
                   </div>
                 );
               }
+              // Text
+              if (item.type === 'text') {
+                const trimmed = item.content.trim();
+                if (!trimmed) return null;
+                const textKey = `${messageId ?? 'stream'}-${idx}`;
+                const isTextExpanded =
+                  expandedThinkingItems.has(textKey);
+                const onToggleText = (e: MouseEvent) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  toggleThinkingItemExpanded(textKey);
+                };
+                const textPreview =
+                  trimmed.split('\n')[0].slice(0, 80) +
+                  (trimmed.length > 80 || trimmed.includes('\n')
+                    ? '…'
+                    : '');
+                return (
+                  <div
+                    key={idx}
+                    class={`ageaf-cot-text ${isTextExpanded ? 'is-expanded' : ''}`}
+                    onClick={onToggleText}
+                  >
+                    <span class="ageaf-cot-text-icon">💬</span>
+                    {isTextExpanded ? (
+                      <span class="ageaf-cot-text-content">
+                        {trimmed}
+                      </span>
+                    ) : (
+                      <span class="ageaf-cot-text-preview">
+                        {textPreview}
+                      </span>
+                    )}
+                    <span class="ageaf-cot-text-toggle">
+                      {isTextExpanded ? '▼' : '▶'}
+                    </span>
+                  </div>
+                );
+              }
               // Tool
               const icon = getToolIcon(item.toolName, item.phase);
               return (
@@ -6202,6 +6241,24 @@ const Panel = () => {
 
               // Only stream visible text (without thinking blocks)
               if (visibleText) {
+                // Add to CoT timeline (text also goes to assistant message)
+                const currentCoTForText = streamingCoTRef.current;
+                const lastCoTItem =
+                  currentCoTForText[currentCoTForText.length - 1];
+                if (lastCoTItem && lastCoTItem.type === 'text') {
+                  lastCoTItem.content += visibleText;
+                } else {
+                  currentCoTForText.push({
+                    type: 'text',
+                    content: visibleText,
+                  });
+                }
+                if (
+                  sessionConversationId === chatConversationIdRef.current
+                ) {
+                  setStreamingCoT([...currentCoTForText]);
+                }
+
                 enqueueStreamTokens(
                   sessionConversationId,
                   provider,

@@ -3042,6 +3042,60 @@
   min-width: 0;
 }
 
+.ageaf-cot-text {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--ageaf-panel-text);
+}
+
+.ageaf-cot-text:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ageaf-cot-text.is-expanded {
+  align-items: flex-start;
+}
+
+.ageaf-cot-text-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.ageaf-cot-text.is-expanded .ageaf-cot-text-icon {
+  margin-top: 2px;
+}
+
+.ageaf-cot-text-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.ageaf-cot-text-content {
+  white-space: pre-wrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.ageaf-cot-text-toggle {
+  font-size: 9px;
+  opacity: 0.5;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
 /* Ageaf Landing Page */
 .ageaf-landing {
   display: flex;

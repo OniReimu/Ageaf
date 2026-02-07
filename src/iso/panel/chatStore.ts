@@ -5,6 +5,11 @@ export type CoTThinkingItem = {
   content: string;
 };
 
+export type CoTTextItem = {
+  type: 'text';
+  content: string;
+};
+
 export type CoTToolItem = {
   type: 'tool';
   toolId: string;
@@ -14,7 +19,7 @@ export type CoTToolItem = {
   message?: string;
 };
 
-export type CoTItem = CoTThinkingItem | CoTToolItem;
+export type CoTItem = CoTThinkingItem | CoTToolItem | CoTTextItem;
 
 export type StoredImageAttachment = {
   id: string;
@@ -226,6 +231,11 @@ function normalizeCoTItem(raw: any): CoTItem | null {
     const content = typeof raw.content === 'string' ? raw.content : null;
     if (!content) return null;
     return { type: 'thinking', content };
+  }
+  if (type === 'text') {
+    const content = typeof raw.content === 'string' ? raw.content : null;
+    if (!content) return null;
+    return { type: 'text', content };
   }
   if (type === 'tool') {
     const toolId = typeof raw.toolId === 'string' ? raw.toolId : null;
