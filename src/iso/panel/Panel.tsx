@@ -547,6 +547,27 @@ const PROVIDER_DISPLAY = {
   codex: { label: 'OpenAI' },
 } as const;
 
+/**
+ * Determines whether a user message implies a write operation (editing the file)
+ * or a read operation (needing full context including \input expansions).
+ *
+ * Write mode: send raw file content so patches match the editor.
+ * Read mode:  expand \input/\include so the AI sees the full document.
+ */
+type FileResolveMode = 'read' | 'write';
+
+const WRITE_KEYWORDS =
+  /\b(proofread|proofreading|review|fix|edit|rewrite|rephrase|refine|improve|update|correct|revise|modify|change|polish|cleanup|clean\s*up|paraphrase|reformat|restructure)\b/i;
+
+function detectFileResolveMode(message: string): FileResolveMode {
+  // Strip @[file:...] and @[folder:...] tokens so they don't interfere
+  const stripped = message
+    .replace(/@\[file:[^\]]+\]/g, '')
+    .replace(/@\[folder:[^\]]+\]/g, '')
+    .trim();
+  return WRITE_KEYWORDS.test(stripped) ? 'write' : 'read';
+}
+
 const MODEL_DISPLAY = {
   opus: { label: 'Opus', description: 'Most capable for complex work' },
   sonnet: { label: 'Sonnet', description: 'Best for everyday task' },
@@ -1175,6 +1196,7 @@ const Panel = () => {
   const copyResetTimersRef = useRef<Record<string, number>>({});
   const latexCopyTimersRef = useRef<Map<HTMLElement, number>>(new Map());
   const chatSaveTimerRef = useRef<number | null>(null);
+  const patchFlushTimerRef = useRef<number | null>(null);
   const contextRefreshInFlightRef = useRef(false);
 
   const providerDisplay =
@@ -2170,6 +2192,13 @@ const Panel = () => {
     }, 250);
   };
 
+  const cancelPatchFlush = () => {
+    if (patchFlushTimerRef.current !== null) {
+      window.clearTimeout(patchFlushTimerRef.current);
+      patchFlushTimerRef.current = null;
+    }
+  };
+
   const hydrateChatForProject = async (
     projectId: string,
     isActive: () => boolean
@@ -2258,6 +2287,7 @@ const Panel = () => {
         window.clearTimeout(chatSaveTimerRef.current);
         chatSaveTimerRef.current = null;
       }
+      cancelPatchFlush();
       void flushChatSave();
     };
   }, []);
@@ -5125,6 +5155,27 @@ const Panel = () => {
     }
   };
 
+  const flushPatchCardsSequentially = (
+    cards: Message[],
+    conversationId: string,
+    index = 0
+  ) => {
+    patchFlushTimerRef.current = null;
+    if (conversationId !== chatConversationIdRef.current) return;
+    if (index >= cards.length) return;
+
+    const card = cards[index];
+    setMessages((prev) => [...prev, card]);
+    scrollToBottom();
+
+    if (index + 1 < cards.length) {
+      patchFlushTimerRef.current = window.setTimeout(
+        () => flushPatchCardsSequentially(cards, conversationId, index + 1),
+        150
+      );
+    }
+  };
+
   const maybeFinalizeStream = (
     conversationId: string,
     provider: ProviderId
@@ -5183,17 +5234,7 @@ const Panel = () => {
             ? finalText || pending.message || ''
             : pending.message ?? `Job failed (${pending.status})`;
 
-        // Flush queued patch review cards BEFORE the assistant notes/summary
-        // so review cards appear first in the panel.
-        if (pending.status === 'ok') {
-          if (sessionState.pendingPatchReviewMessages.length > 0) {
-            updatedMessages.push(...sessionState.pendingPatchReviewMessages);
-            sessionState.pendingPatchReviewMessages = [];
-          }
-        } else {
-          sessionState.pendingPatchReviewMessages = [];
-        }
-
+        // Assistant notes/summary first, then review cards after.
         if (!shouldSkipEmptyOkMessage) {
           const content =
             pending.status === 'ok' && !responseContent
@@ -5207,6 +5248,27 @@ const Panel = () => {
             ...(thinkingToPersist ? { thinking: thinkingToPersist } : {}),
             ...(cotToPersist ? { cot: cotToPersist } : {}),
           });
+        }
+
+        // Flush queued patch review cards after the assistant message.
+        let patchCardsForUI: Message[] = [];
+        if (pending.status === 'ok') {
+          if (sessionState.pendingPatchReviewMessages.length > 0) {
+            const patchStoredMessages = [
+              ...sessionState.pendingPatchReviewMessages,
+            ];
+            sessionState.pendingPatchReviewMessages = [];
+            // Add to updatedMessages for persistence (all at once)
+            updatedMessages.push(...patchStoredMessages);
+            // Pre-create Message objects with stable IDs for staggered UI
+            if (patchStoredMessages.length > 1) {
+              patchCardsForUI = patchStoredMessages.map((m) =>
+                createMessage(m)
+              );
+            }
+          }
+        } else {
+          sessionState.pendingPatchReviewMessages = [];
         }
 
         // Reset
@@ -5228,7 +5290,27 @@ const Panel = () => {
 
         // Only update UI if this is the current session
         if (conversationId === chatConversationIdRef.current) {
-          setMessages(updatedMessages.map((m) => createMessage(m)));
+          if (patchCardsForUI.length > 0) {
+            // Render everything EXCEPT the new patch cards immediately
+            const messagesWithoutPatch = updatedMessages.slice(
+              0,
+              updatedMessages.length - patchCardsForUI.length
+            );
+            setMessages(messagesWithoutPatch.map((m) => createMessage(m)));
+            // Start sequential flush for patch cards
+            cancelPatchFlush();
+            patchFlushTimerRef.current = window.setTimeout(
+              () =>
+                flushPatchCardsSequentially(
+                  patchCardsForUI,
+                  conversationId
+                ),
+              150
+            );
+          } else {
+            // 0 or 1 patch card: render all at once (no stagger needed)
+            setMessages(updatedMessages.map((m) => createMessage(m)));
+          }
           setStreamingText('');
           setStreamingThinking('');
           streamingTextRef.current = '';
@@ -5393,6 +5475,7 @@ const Panel = () => {
     sessionState.streamTokens = [];
     sessionState.pendingDone = null;
     sessionState.pendingPatchReviewMessages = [];
+    cancelPatchFlush();
 
     // Update UI
     interruptedRef.current = true;
@@ -5471,6 +5554,7 @@ const Panel = () => {
     sessionState.activityStartTime = Date.now();
     sessionState.pendingDone = null;
     sessionState.pendingPatchReviewMessages = [];
+    cancelPatchFlush();
     // IMPORTANT: Reset streaming buffers so previous replies can't leak into this reply.
     stopStreamTimer(sessionConversationId);
     sessionState.streamTokens = [];
@@ -5684,14 +5768,17 @@ const Panel = () => {
         return content;
       };
 
-      const resolveFile = async (ref: string) => {
+      const resolveFile = async (ref: string, mode: FileResolveMode) => {
         const raw = await fetchRawContent(ref);
         if (raw == null) {
           return `\n\n[Overleaf file: ${ref}]\n(Unable to read file content from Overleaf editor.)\n`;
         }
-        // For .tex files, inline-expand all \input{}/\include{} directives
-        // so the CLI receives one complete merged document.
-        if (getFileExtension(ref).toLowerCase() === '.tex') {
+        // Read mode: expand \input/\include so the AI sees the full merged document.
+        // Write mode: send raw content so patches match the actual editor content.
+        if (
+          mode === 'read' &&
+          getFileExtension(ref).toLowerCase() === '.tex'
+        ) {
           const projectFiles: ProjectFile[] = projectFilesRef.current
             .filter((e) => e.kind !== 'folder')
             .map((e) => ({ path: e.path, name: e.name }));
@@ -5706,10 +5793,11 @@ const Panel = () => {
         return wrapFileBlock(ref, raw);
       };
 
+      const fileMode = detectFileResolveMode(rawText);
       let nextText = rawText;
       for (const ref of fileRefs) {
         // eslint-disable-next-line no-await-in-loop
-        const injection = await resolveFile(ref);
+        const injection = await resolveFile(ref, fileMode);
         const token = `@[file:${ref}]`;
         nextText = nextText.split(token).join(injection);
       }
@@ -5737,7 +5825,7 @@ const Panel = () => {
           }
           for (const entry of candidates) {
             // eslint-disable-next-line no-await-in-loop
-            const injection = await resolveFile(entry.path || entry.name);
+            const injection = await resolveFile(entry.path || entry.name, fileMode);
             folderBlock += injection;
           }
         }
@@ -6449,11 +6537,9 @@ const Panel = () => {
             }
 
             if (!storedPatchReviewMessage) return;
-            const finalPatchReviewMessage = storedPatchReviewMessage;
 
-            // For chat actions during an active job, queue the review card for
-            // persistence during maybeFinalizeStream, but ALSO append it to the
-            // React messages state immediately so it shows incrementally.
+            // For chat actions during an active job, queue the review card
+            // so it is flushed after the assistant message in maybeFinalizeStream.
             if (action === 'chat') {
               const jobStillActive =
                 sessionState.activeJobId === jobId ||
@@ -6463,16 +6549,6 @@ const Panel = () => {
                 sessionState.pendingPatchReviewMessages.push(
                   storedPatchReviewMessage
                 );
-                // Show the review card immediately in the UI (incremental display).
-                // Use setMessages(prev => ...) to preserve existing message IDs —
-                // re-creating all IDs would cause emitPendingOverlay to tear down
-                // and recreate all overlays on every patch arrival.
-                if (sessionConversationId === chatConversationIdRef.current) {
-                  setMessages((prev) => [
-                    ...prev,
-                    createMessage(finalPatchReviewMessage),
-                  ]);
-                }
                 // If done already arrived and tokens drained, finalize now.
                 maybeFinalizeStream(sessionConversationId, provider);
                 return;
@@ -7497,6 +7573,7 @@ const Panel = () => {
     setSessionIds(getOrderedSessionIds(nextState));
     setActiveSessionId(conversation.id);
     setChatProvider(provider);
+    cancelPatchFlush();
     setMessages([]);
     setToolRequests([]);
     setToolRequestInputs({});
@@ -7510,6 +7587,7 @@ const Panel = () => {
 
   const onSelectSession = (conversationId: string) => {
     // Session switching is always allowed - no blocking
+    cancelPatchFlush();
     const projectId = chatProjectIdRef.current;
     const state = chatStateRef.current;
     if (!projectId || !state) return;
@@ -7579,6 +7657,7 @@ const Panel = () => {
 
   const onCloseSession = async () => {
     // Session closing is always allowed - no blocking
+    cancelPatchFlush();
     const projectId = chatProjectIdRef.current;
     const state = chatStateRef.current;
     const currentId = chatConversationIdRef.current;
