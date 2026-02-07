@@ -348,16 +348,9 @@ const PatchReviewCard = ({
   // Calculate starting line number for absolute line number display
   const calculateStartLineNumber = (): number | undefined => {
     if (patchReview.kind === 'replaceSelection') {
-      // For replaceSelection, use lineFrom if available (this is the absolute line number)
       return patchReview.lineFrom;
     } else if (patchReview.kind === 'replaceRangeInFile') {
-      // For replaceRangeInFile, the 'from' offset is relative to the full file, not the snippet.
-      // We don't have the full file content here, so we can't calculate the absolute line number.
-      // The diff library will show relative line numbers (1, 2, 3...) which is acceptable
-      // since we're showing a snippet diff, not the full file diff.
-      // If we need absolute line numbers for replaceRangeInFile, we'd need to pass
-      // the starting line number from the host when creating the patch.
-      return undefined;
+      return patchReview.lineFrom;
     }
     return undefined;
   };
@@ -667,6 +660,7 @@ type Patch =
     text: string;
     from?: number;
     to?: number;
+    lineFrom?: number;
   };
 
 type SelectionSnapshot = {
@@ -5189,6 +5183,17 @@ const Panel = () => {
             ? finalText || pending.message || ''
             : pending.message ?? `Job failed (${pending.status})`;
 
+        // Flush queued patch review cards BEFORE the assistant notes/summary
+        // so review cards appear first in the panel.
+        if (pending.status === 'ok') {
+          if (sessionState.pendingPatchReviewMessages.length > 0) {
+            updatedMessages.push(...sessionState.pendingPatchReviewMessages);
+            sessionState.pendingPatchReviewMessages = [];
+          }
+        } else {
+          sessionState.pendingPatchReviewMessages = [];
+        }
+
         if (!shouldSkipEmptyOkMessage) {
           const content =
             pending.status === 'ok' && !responseContent
@@ -5211,15 +5216,6 @@ const Panel = () => {
         if (sessionConversationId === chatConversationIdRef.current) {
           setStreamingThinking('');
           setStreamingCoT([]);
-        }
-
-        if (pending.status === 'ok') {
-          if (sessionState.pendingPatchReviewMessages.length > 0) {
-            updatedMessages.push(...sessionState.pendingPatchReviewMessages);
-            sessionState.pendingPatchReviewMessages = [];
-          }
-        } else {
-          sessionState.pendingPatchReviewMessages = [];
         }
 
         chatStateRef.current = setConversationMessages(
@@ -6437,6 +6433,9 @@ const Panel = () => {
                     ? { from: patch.from }
                     : {}),
                   ...(typeof patch.to === 'number' ? { to: patch.to } : {}),
+                  ...(typeof patch.lineFrom === 'number'
+                    ? { lineFrom: patch.lineFrom }
+                    : {}),
                   status: 'pending',
                 },
               };
@@ -6450,14 +6449,11 @@ const Panel = () => {
             }
 
             if (!storedPatchReviewMessage) return;
+            const finalPatchReviewMessage = storedPatchReviewMessage;
 
-            // For chat, queue patch review cards so they render inline (after the assistant response),
-            // instead of appearing "pinned" above the message while streaming.
-            //
-            // NOTE: In rare cases (race / late events), a patch can arrive after we already finalized
-            // the assistant message. In that case, queueing would "lose" the review card because there
-            // is no pending done event left to flush it. If the job is already finalized, append
-            // immediately instead.
+            // For chat actions during an active job, queue the review card for
+            // persistence during maybeFinalizeStream, but ALSO append it to the
+            // React messages state immediately so it shows incrementally.
             if (action === 'chat') {
               const jobStillActive =
                 sessionState.activeJobId === jobId ||
@@ -6467,12 +6463,23 @@ const Panel = () => {
                 sessionState.pendingPatchReviewMessages.push(
                   storedPatchReviewMessage
                 );
-                // If we're already waiting on `done` but tokens are drained, flush immediately.
+                // Show the review card immediately in the UI (incremental display).
+                // Use setMessages(prev => ...) to preserve existing message IDs —
+                // re-creating all IDs would cause emitPendingOverlay to tear down
+                // and recreate all overlays on every patch arrival.
+                if (sessionConversationId === chatConversationIdRef.current) {
+                  setMessages((prev) => [
+                    ...prev,
+                    createMessage(finalPatchReviewMessage),
+                  ]);
+                }
+                // If done already arrived and tokens drained, finalize now.
                 maybeFinalizeStream(sessionConversationId, provider);
                 return;
               }
             }
 
+            // Fallback: job already finished or non-chat action — append directly.
             const updatedMessages = [
               ...conversation.messages,
               storedPatchReviewMessage,

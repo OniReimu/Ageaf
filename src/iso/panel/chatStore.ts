@@ -69,6 +69,7 @@ export type StoredPatchReview =
     text: string;
     from?: number;
     to?: number;
+    lineFrom?: number;
     status?: StoredPatchReviewStatus;
     hasAnimated?: boolean;
   };

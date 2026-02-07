@@ -60,6 +60,7 @@ test('Codex chat emits replaceRangeInFile patch from file update markers', async
       text: 'Hello there',
       from: 0,
       to: 11,
+      lineFrom: 1,
     });
   } finally {
     await resetCodexAppServerForTests();

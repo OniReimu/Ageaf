@@ -6,6 +6,7 @@ export type Patch =
     text: string;
     from?: number;
     to?: number;
+    lineFrom?: number;
   }
   | { kind: 'replaceSelection'; text: string }
   | { kind: 'insertAtCursor'; text: string };

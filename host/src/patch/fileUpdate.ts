@@ -58,6 +58,12 @@ function findOverleafFileContent(
   return null;
 }
 
+/** Returns true if the only difference between old and new is blank lines. */
+function isBlankLineOnlyChange(oldText: string, newText: string): boolean {
+  const stripBlanks = (s: string) => s.split('\n').filter((line) => line.trim() !== '').join('\n');
+  return stripBlanks(oldText) === stripBlanks(newText);
+}
+
 /**
  * Split a file update into per-hunk patches using line-level diffing.
  * Each hunk becomes its own replaceRangeInFile patch with SHORT expectedOldText,
@@ -75,49 +81,65 @@ function computePerHunkReplacements(
   const parts = diffLines(oldNorm, newNorm);
   const patches: Patch[] = [];
   let oldOffset = 0;
-  let currentHunk: { from: number; oldParts: string[]; newParts: string[] } | null = null;
+  let oldLine = 1; // 1-based line number tracking
+  let currentHunk: { from: number; lineFrom: number; oldParts: string[]; newParts: string[] } | null = null;
+
+  const countNewlines = (s: string) => {
+    let n = 0;
+    for (let i = 0; i < s.length; i++) if (s[i] === '\n') n++;
+    return n;
+  };
 
   for (const part of parts) {
+    const val = part.value ?? '';
     if (!part.added && !part.removed) {
       if (currentHunk) {
         const expectedOldText = currentHunk.oldParts.join('');
         const text = currentHunk.newParts.join('');
-        patches.push({
-          kind: 'replaceRangeInFile',
-          filePath,
-          expectedOldText,
-          text,
-          from: currentHunk.from,
-          to: currentHunk.from + expectedOldText.length,
-        });
+        if (!isBlankLineOnlyChange(expectedOldText, text)) {
+          patches.push({
+            kind: 'replaceRangeInFile',
+            filePath,
+            expectedOldText,
+            text,
+            from: currentHunk.from,
+            to: currentHunk.from + expectedOldText.length,
+            lineFrom: currentHunk.lineFrom,
+          });
+        }
         currentHunk = null;
       }
-      oldOffset += (part.value ?? '').length;
+      oldOffset += val.length;
+      oldLine += countNewlines(val);
     } else if (part.removed) {
       if (!currentHunk) {
-        currentHunk = { from: oldOffset, oldParts: [], newParts: [] };
+        currentHunk = { from: oldOffset, lineFrom: oldLine, oldParts: [], newParts: [] };
       }
-      currentHunk.oldParts.push(part.value ?? '');
-      oldOffset += (part.value ?? '').length;
+      currentHunk.oldParts.push(val);
+      oldOffset += val.length;
+      oldLine += countNewlines(val);
     } else if (part.added) {
       if (!currentHunk) {
-        currentHunk = { from: oldOffset, oldParts: [], newParts: [] };
+        currentHunk = { from: oldOffset, lineFrom: oldLine, oldParts: [], newParts: [] };
       }
-      currentHunk.newParts.push(part.value ?? '');
+      currentHunk.newParts.push(val);
     }
   }
 
   if (currentHunk) {
     const expectedOldText = currentHunk.oldParts.join('');
     const text = currentHunk.newParts.join('');
-    patches.push({
-      kind: 'replaceRangeInFile',
-      filePath,
-      expectedOldText,
-      text,
-      from: currentHunk.from,
-      to: currentHunk.from + expectedOldText.length,
-    });
+    if (!isBlankLineOnlyChange(expectedOldText, text)) {
+      patches.push({
+        kind: 'replaceRangeInFile',
+        filePath,
+        expectedOldText,
+        text,
+        from: currentHunk.from,
+        to: currentHunk.from + expectedOldText.length,
+        lineFrom: currentHunk.lineFrom,
+      });
+    }
   }
 
   return patches;
