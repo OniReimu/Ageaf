@@ -395,8 +395,13 @@ async function onApplyRequest(event: Event) {
       const rangeTo =
         typeof detail.to === 'number' && Number.isFinite(detail.to) ? detail.to : null;
 
+      // Try explicit from/to with content verification
       if (typeof rangeFrom === 'number' && typeof rangeTo === 'number' && rangeTo >= rangeFrom) {
-        return { ok: true as const, from: rangeFrom, to: rangeTo };
+        const current = view.state.sliceDoc(rangeFrom, rangeTo);
+        if (current === detail.expectedOldText) {
+          return { ok: true as const, from: rangeFrom, to: rangeTo };
+        }
+        // Offsets don't match content — fall through to indexOf search
       }
 
       const full = view.state.sliceDoc(0, view.state.doc.length);

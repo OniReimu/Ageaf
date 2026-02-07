@@ -1630,8 +1630,8 @@ export async function runCodexJob(
               output: fullText,
               message: messageWithAttachments,
             });
-            if (patches.length > 0) {
-              emitEvent({ event: 'patch', data: patches[0] });
+            for (const patch of patches) {
+              emitEvent({ event: 'patch', data: patch });
               patchEmitted = true;
             }
           }

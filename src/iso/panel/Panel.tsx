@@ -233,6 +233,7 @@ const PatchReviewCard = ({
   // One-off: animate only the very first time this card is created.
   // Persist a flag so refreshes / subsequent renders do not animate.
   const shouldAnimateRef = useRef<boolean>(!(patchReview as any).hasAnimated);
+  const [collapsed, setCollapsed] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [modalOffset, setModalOffset] = useState({ x: 0, y: 0 });
   const [headerCopied, setHeaderCopied] = useState(false);
@@ -454,22 +455,42 @@ const PatchReviewCard = ({
         </div>
       ) : null}
 
-      {patchReview.kind === 'replaceRangeInFile' ? (
-        <DiffReview
-          oldText={patchReview.expectedOldText}
-          newText={patchReview.text}
-          fileName={patchReview.filePath}
-          animate={shouldAnimateRef.current}
-          startLineNumber={startLineNumber}
-        />
-      ) : patchReview.kind === 'replaceSelection' ? (
-        <DiffReview
-          oldText={patchReview.selection}
-          newText={patchReview.text}
-          fileName={patchReview.fileName ?? undefined}
-          animate={shouldAnimateRef.current}
-          startLineNumber={startLineNumber}
-        />
+      <div class={`ageaf-patch-review__diff-wrap${collapsed ? ' is-collapsed' : ''}`}>
+        {patchReview.kind === 'replaceRangeInFile' ? (
+          <DiffReview
+            oldText={patchReview.expectedOldText}
+            newText={patchReview.text}
+            fileName={patchReview.filePath}
+            animate={shouldAnimateRef.current}
+            startLineNumber={startLineNumber}
+          />
+        ) : patchReview.kind === 'replaceSelection' ? (
+          <DiffReview
+            oldText={patchReview.selection}
+            newText={patchReview.text}
+            fileName={patchReview.fileName ?? undefined}
+            animate={shouldAnimateRef.current}
+            startLineNumber={startLineNumber}
+          />
+        ) : null}
+        {collapsed ? (
+          <button
+            class="ageaf-patch-review__toggle"
+            type="button"
+            onClick={() => setCollapsed(false)}
+          >
+            Show more
+          </button>
+        ) : null}
+      </div>
+      {!collapsed ? (
+        <button
+          class="ageaf-patch-review__toggle"
+          type="button"
+          onClick={() => setCollapsed(true)}
+        >
+          Show less
+        </button>
       ) : null}
 
       {showModal ? (

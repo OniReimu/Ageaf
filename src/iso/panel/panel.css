@@ -425,21 +425,22 @@
 .ageaf-patch-review {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .ageaf-patch-review__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
+  gap: 4px;
+  font-size: 11px;
   color: var(--ageaf-panel-muted);
   flex-wrap: nowrap;
 }
 
 .ageaf-patch-review__title {
   font-weight: 600;
+  font-size: 11px;
   color: var(--ageaf-panel-text);
   min-width: 0;
   overflow: hidden;
@@ -450,8 +451,8 @@
 .ageaf-patch-review__actions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 3px;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   flex-shrink: 0;
 }
@@ -462,6 +463,9 @@
   text-align: center;
   white-space: nowrap;
   flex: 0 0 auto;
+  padding: 2px 7px;
+  font-size: 11px;
+  border-radius: 6px;
 }
 
 .ageaf-patch-review__expand-btn {
@@ -469,12 +473,12 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   cursor: pointer;
   opacity: 0.7;
   transition: opacity 0.15s ease;
-  border-radius: 6px;
+  border-radius: 4px;
 }
 
 .ageaf-patch-review__expand-btn:hover {
@@ -578,6 +582,44 @@
 
 .ageaf-patch-review__warning .ageaf-panel__apply {
   margin-left: 0;
+}
+
+.ageaf-patch-review__diff-wrap {
+  position: relative;
+}
+
+.ageaf-patch-review__diff-wrap.is-collapsed {
+  max-height: 88px;
+  overflow: hidden;
+}
+
+.ageaf-patch-review__diff-wrap.is-collapsed::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background: linear-gradient(transparent, var(--ageaf-panel-bg, #1a1a2e));
+  pointer-events: none;
+}
+
+.ageaf-patch-review__toggle {
+  all: unset;
+  display: block;
+  width: 100%;
+  text-align: center;
+  font-size: 11px;
+  color: var(--ageaf-panel-muted);
+  cursor: pointer;
+  padding: 2px 0;
+  opacity: 0.8;
+  transition: opacity 0.15s ease;
+}
+
+.ageaf-patch-review__toggle:hover {
+  opacity: 1;
+  color: var(--ageaf-panel-text);
 }
 
 .ageaf-panel__status {

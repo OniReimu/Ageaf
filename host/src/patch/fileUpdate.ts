@@ -1,3 +1,4 @@
+import { diffLines } from 'diff';
 import type { Patch } from '../types.js';
 
 type ExtractedOverleafFile = { filePath: string; content: string };
@@ -57,32 +58,69 @@ function findOverleafFileContent(
   return null;
 }
 
-function computeSingleReplacement(oldText: string, newText: string) {
-  const oldNormalized = normalizeNewlines(oldText);
-  const newNormalized = normalizeNewlines(newText);
-  if (oldNormalized === newNormalized) return null;
+/**
+ * Split a file update into per-hunk patches using line-level diffing.
+ * Each hunk becomes its own replaceRangeInFile patch with SHORT expectedOldText,
+ * making overlay resolution strategies A-B work reliably.
+ */
+function computePerHunkReplacements(
+  filePath: string,
+  oldContent: string,
+  newContent: string
+): Patch[] {
+  const oldNorm = normalizeNewlines(oldContent);
+  const newNorm = normalizeNewlines(newContent);
+  if (oldNorm === newNorm) return [];
 
-  const oldLen = oldNormalized.length;
-  const newLen = newNormalized.length;
-  let prefix = 0;
-  while (prefix < oldLen && prefix < newLen && oldNormalized[prefix] === newNormalized[prefix]) {
-    prefix += 1;
+  const parts = diffLines(oldNorm, newNorm);
+  const patches: Patch[] = [];
+  let oldOffset = 0;
+  let currentHunk: { from: number; oldParts: string[]; newParts: string[] } | null = null;
+
+  for (const part of parts) {
+    if (!part.added && !part.removed) {
+      if (currentHunk) {
+        const expectedOldText = currentHunk.oldParts.join('');
+        const text = currentHunk.newParts.join('');
+        patches.push({
+          kind: 'replaceRangeInFile',
+          filePath,
+          expectedOldText,
+          text,
+          from: currentHunk.from,
+          to: currentHunk.from + expectedOldText.length,
+        });
+        currentHunk = null;
+      }
+      oldOffset += (part.value ?? '').length;
+    } else if (part.removed) {
+      if (!currentHunk) {
+        currentHunk = { from: oldOffset, oldParts: [], newParts: [] };
+      }
+      currentHunk.oldParts.push(part.value ?? '');
+      oldOffset += (part.value ?? '').length;
+    } else if (part.added) {
+      if (!currentHunk) {
+        currentHunk = { from: oldOffset, oldParts: [], newParts: [] };
+      }
+      currentHunk.newParts.push(part.value ?? '');
+    }
   }
 
-  let suffix = 0;
-  while (
-    suffix < oldLen - prefix &&
-    suffix < newLen - prefix &&
-    oldNormalized[oldLen - 1 - suffix] === newNormalized[newLen - 1 - suffix]
-  ) {
-    suffix += 1;
+  if (currentHunk) {
+    const expectedOldText = currentHunk.oldParts.join('');
+    const text = currentHunk.newParts.join('');
+    patches.push({
+      kind: 'replaceRangeInFile',
+      filePath,
+      expectedOldText,
+      text,
+      from: currentHunk.from,
+      to: currentHunk.from + expectedOldText.length,
+    });
   }
 
-  const from = prefix;
-  const to = oldLen - suffix;
-  const expectedOldText = oldNormalized.slice(from, to);
-  const text = newNormalized.slice(from, newLen - suffix);
-  return { from, to, expectedOldText, text };
+  return patches;
 }
 
 export function buildReplaceRangePatchesFromFileUpdates(args: {
@@ -96,16 +134,8 @@ export function buildReplaceRangePatchesFromFileUpdates(args: {
   for (const update of updates) {
     const matched = findOverleafFileContent(update.filePath, files);
     if (!matched) continue;
-    const replacement = computeSingleReplacement(matched.content, update.content);
-    if (!replacement) continue;
-    patches.push({
-      kind: 'replaceRangeInFile',
-      filePath: matched.filePath,
-      expectedOldText: replacement.expectedOldText,
-      text: replacement.text,
-      from: replacement.from,
-      to: replacement.to,
-    });
+    const hunkPatches = computePerHunkReplacements(matched.filePath, matched.content, update.content);
+    patches.push(...hunkPatches);
   }
 
   return patches;

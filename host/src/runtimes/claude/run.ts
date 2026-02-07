@@ -408,7 +408,6 @@ If asked about the model/runtime, use this note and do not guess.`;
     for (const patch of patches) {
       emitEvent({ event: 'patch', data: patch });
       patchEmitted = true;
-      break;
     }
   }
 
