@@ -422,10 +422,22 @@
   overflow: auto;
 }
 
+@keyframes ageaf-patch-card-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .ageaf-patch-review {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  animation: ageaf-patch-card-fade-in 0.25s ease-out;
 }
 
 .ageaf-patch-review__header {
