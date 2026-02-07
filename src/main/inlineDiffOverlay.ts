@@ -543,9 +543,11 @@ function ensureReviewBar() {
     if (!view || !reviewBarFileKey || reviewBarItems.length === 0) return;
     bulkActionInProgress = true;
     try {
-      const ids = [...reviewBarItems]
-        .sort((a, b) => a.from - b.from)
-        .map((x) => x.messageId);
+      const ids = [...new Set(
+        [...reviewBarItems]
+          .sort((a, b) => a.from - b.from)
+          .map((x) => x.messageId)
+      )];
       for (const id of ids) {
         if (!overlayById.has(String(id))) continue;
         dispatchPanelAction(id, action);
@@ -676,6 +678,41 @@ function findUniqueRange(fullText: string, needle: string) {
   return { from: first, to: first + needle.length };
 }
 
+function findFirstOccurrence(fullText: string, needle: string) {
+  if (!needle) return null;
+  const idx = fullText.indexOf(needle);
+  if (idx === -1) return null;
+  return { from: idx, to: idx + needle.length };
+}
+
+function findTrimmedRange(fullText: string, needle: string) {
+  const trimmed = needle.trim();
+  if (!trimmed || trimmed === needle) return null;
+  return findUniqueRange(fullText, trimmed);
+}
+
+function findNormalizedRange(fullText: string, needle: string) {
+  const normalize = (s: string) => s.replace(/[^\S\n]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
+  const normNeedle = normalize(needle);
+  const normFull = normalize(fullText);
+  if (!normNeedle) return null;
+  const idx = normFull.indexOf(normNeedle);
+  if (idx === -1) return null;
+  // Map back to original coordinates: walk both strings in parallel
+  let origIdx = 0;
+  let normIdx = 0;
+  while (normIdx < idx && origIdx < fullText.length) {
+    const nc = normalize(fullText.slice(0, origIdx + 1));
+    if (nc.length > normIdx) normIdx = nc.length;
+    origIdx++;
+  }
+  // Approximate: use the original text length for the span
+  const from = origIdx;
+  const approxLen = needle.trim().length;
+  const to = Math.min(fullText.length, from + approxLen);
+  return { from, to };
+}
+
 function resolveOverlayRange(
   view: ReturnType<typeof getCmView>,
   payload: OverlayPayload
@@ -690,6 +727,7 @@ function resolveOverlayRange(
     return { from: head, to: head, oldText: '', newText };
   }
 
+  // Strategy A: Exact from/to + content match
   if (
     typeof payload.from === 'number' &&
     typeof payload.to === 'number' &&
@@ -701,11 +739,52 @@ function resolveOverlayRange(
     }
   }
 
+  // Strategy B: Unique text search (exact indexOf, must be unique)
   if (oldText) {
     const resolved = findUniqueRange(fullText, oldText);
     if (resolved) {
       return { ...resolved, oldText, newText };
     }
+  }
+
+  // Strategy C: First occurrence (drop uniqueness constraint)
+  if (oldText) {
+    const resolved = findFirstOccurrence(fullText, oldText);
+    if (resolved) {
+      return { ...resolved, oldText, newText };
+    }
+  }
+
+  // Strategy D: Trimmed text search
+  if (oldText) {
+    const resolved = findTrimmedRange(fullText, oldText);
+    if (resolved) {
+      const trimmed = oldText.trim();
+      return { ...resolved, oldText: trimmed, newText };
+    }
+  }
+
+  // Strategy E: Normalized whitespace search
+  if (oldText && oldText.length > 20) {
+    const resolved = findNormalizedRange(fullText, oldText);
+    if (resolved) {
+      const current = state.sliceDoc(resolved.from, resolved.to);
+      return { from: resolved.from, to: resolved.to, oldText: current, newText };
+    }
+  }
+
+  if (isDebugEnabled()) {
+    logOnce(
+      'resolve-fail-' + (payload.messageId ?? ''),
+      'resolveOverlayRange: all strategies failed',
+      {
+        messageId: payload.messageId,
+        kind: payload.kind,
+        oldTextLen: oldText.length,
+        oldTextPreview: oldText.slice(0, 200),
+        hasFromTo: typeof payload.from === 'number' && typeof payload.to === 'number',
+      }
+    );
   }
 
   return null;
@@ -977,7 +1056,7 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
               );
             }
 
-            deco = Decoration.set(items);
+            deco = Decoration.set(items, true);
             ranges = nextRanges;
           } else {
             deco = Decoration.none;

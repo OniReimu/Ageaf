@@ -56,9 +56,9 @@ test('Codex chat emits replaceRangeInFile patch from file update markers', async
     assert.deepEqual(patchEvent?.data, {
       kind: 'replaceRangeInFile',
       filePath: 'main.tex',
-      expectedOldText: 'world',
-      text: 'there',
-      from: 6,
+      expectedOldText: 'Hello world',
+      text: 'Hello there',
+      from: 0,
       to: 11,
     });
   } finally {
