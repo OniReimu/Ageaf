@@ -2,7 +2,6 @@ import Fastify from 'fastify';
 
 import { registerAttachments } from './routes/attachments.js';
 import { registerHealth } from './routes/health.js';
-import { registerHostTools } from './routes/hostTools.js';
 import { registerJobs } from './routes/jobs.js';
 import { registerRuntime } from './routes/runtime.js';
 import registerSessionRoutes from './routes/sessions.js';
@@ -29,7 +28,6 @@ export function buildServer() {
 
   registerHealth(server);
   registerAttachments(server);
-  registerHostTools(server);
   registerJobs(server);
   registerRuntime(server);
   void registerSessionRoutes(server);

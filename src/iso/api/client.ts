@@ -7,7 +7,6 @@ import {
   type CodexContextUsageResponse,
   type CodexRuntimeMetadata,
   type HostHealthResponse,
-  type HostToolsStatus,
   type JobPayload,
   validateDocumentEntries,
 } from './httpClient';
@@ -21,7 +20,6 @@ export type {
   CodexContextUsageResponse,
   CodexRuntimeMetadata,
   HostHealthResponse,
-  HostToolsStatus,
   JobEvent,
   JobPayload,
 };
@@ -58,17 +56,6 @@ export async function fetchClaudeRuntimeMetadata(options: Options): Promise<Clau
 
 export async function fetchCodexRuntimeMetadata(options: Options): Promise<CodexRuntimeMetadata> {
   return createTransport(options).fetchCodexRuntimeMetadata();
-}
-
-export async function fetchHostToolsStatus(options: Options): Promise<HostToolsStatus> {
-  return createTransport(options).fetchHostToolsStatus();
-}
-
-export async function setHostToolsEnabled(
-  options: Options,
-  enabled: boolean
-): Promise<{ toolsEnabled: boolean }> {
-  return createTransport(options).setHostToolsEnabled(enabled);
 }
 
 export async function updateClaudeRuntimePreferences(

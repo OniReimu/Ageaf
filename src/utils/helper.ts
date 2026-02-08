@@ -51,7 +51,6 @@ function applyOptionDefaults(input: Options): Options {
   if (!options.blockedCommandsUnix) {
     options.blockedCommandsUnix = 'rm -rf\nchmod 777\nchmod -R 777';
   }
-  if (options.enableTools === undefined) options.enableTools = false;
   if (!options.openaiApprovalPolicy) options.openaiApprovalPolicy = 'never';
   // Backward-compatible migration:
   // - Previously `debugCliEvents` was used for "Show thinking and tool activity".

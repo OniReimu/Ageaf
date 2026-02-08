@@ -8,7 +8,6 @@ import type {
   CodexContextUsageResponse,
   CodexRuntimeMetadata,
   HostHealthResponse,
-  HostToolsStatus,
   JobPayload,
 } from '../api/httpClient';
 import type { JobEvent } from '../api/sse';
@@ -30,8 +29,6 @@ export type Transport = {
 
   fetchClaudeRuntimeMetadata: () => Promise<ClaudeRuntimeMetadata>;
   fetchCodexRuntimeMetadata: () => Promise<CodexRuntimeMetadata>;
-  fetchHostToolsStatus: () => Promise<HostToolsStatus>;
-  setHostToolsEnabled: (enabled: boolean) => Promise<{ toolsEnabled: boolean }>;
   updateClaudeRuntimePreferences: (payload: {
     model?: string | null;
     thinkingMode?: string | null;

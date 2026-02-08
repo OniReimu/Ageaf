@@ -61,7 +61,6 @@ export type JobPayload = {
   userSettings?: {
     displayName?: string;
     customSystemPrompt?: string;
-    enableTools?: boolean;
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
   };
@@ -201,12 +200,6 @@ export async function fetchCodexRuntimeMetadata(options: Options) {
   return response.json() as Promise<CodexRuntimeMetadata>;
 }
 
-export type HostToolsStatus = {
-  toolsEnabled: boolean;
-  toolsAvailable: boolean;
-  remoteToggleAllowed: boolean;
-};
-
 export type AttachmentMeta = {
   id: string;
   path?: string;
@@ -217,37 +210,6 @@ export type AttachmentMeta = {
   mime: string;
   content?: string;
 };
-
-export async function fetchHostToolsStatus(options: Options) {
-  if (!options.hostUrl) {
-    throw new Error('Host URL not configured');
-  }
-  const response = await fetch(new URL('/v1/host/tools', options.hostUrl).toString());
-  if (!response.ok) {
-    throw new Error(`Host tools status request failed (${response.status})`);
-  }
-  return response.json() as Promise<HostToolsStatus>;
-}
-
-export async function setHostToolsEnabled(options: Options, enabled: boolean) {
-  if (!options.hostUrl) {
-    throw new Error('Host URL not configured');
-  }
-  const response = await fetch(new URL('/v1/host/tools', options.hostUrl).toString(), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ enabled }),
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(
-      `Host tools update failed (${response.status})${text ? `: ${text}` : ''}`
-    );
-  }
-  return response.json() as Promise<{ toolsEnabled: boolean }>;
-}
 
 export async function openAttachmentDialog(
   options: Options,

@@ -16,10 +16,8 @@ import {
   fetchCodexRuntimeContextUsage,
   fetchCodexRuntimeMetadata,
   fetchHostHealth,
-  fetchHostToolsStatus,
   openAttachmentDialog,
   respondToJobRequest,
-  setHostToolsEnabled,
   streamJobEvents,
   updateClaudeRuntimePreferences,
   validateAttachmentEntries,
@@ -501,12 +499,6 @@ function normalizeContextUsage(input: {
   return { usedTokens, contextWindow, percentage };
 }
 
-type HostToolsStatus = {
-  toolsEnabled: boolean;
-  toolsAvailable: boolean;
-  remoteToggleAllowed: boolean;
-};
-
 type ConnectionHealth = {
   hostConnected: boolean;
   runtimeWorking: boolean;
@@ -543,8 +535,6 @@ const Panel = () => {
   >('connection');
   const [settings, setSettings] = useState<Options | null>(null);
   const [settingsMessage, setSettingsMessage] = useState('');
-  const [hostToolsStatus, setHostToolsStatus] =
-    useState<HostToolsStatus | null>(null);
   const [nativeStatus, setNativeStatus] = useState<
     'unknown' | 'available' | 'unavailable'
   >('unknown');
@@ -5597,7 +5587,6 @@ const Panel = () => {
               customSystemPrompt: skillsPrompt
                 ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
                 : options.customSystemPrompt,
-              enableTools: options.enableTools,
               enableCommandBlocklist: options.enableCommandBlocklist,
               blockedCommandsUnix: options.blockedCommandsUnix,
               debugCliEvents: options.debugCliEvents,
@@ -7010,20 +6999,6 @@ const Panel = () => {
     setSettingsMessage('');
     setSettings({ ...settings, ...next });
   };
-
-  const refreshHostToolsStatus = async (options: Options) => {
-    try {
-      const status = await fetchHostToolsStatus(options);
-      setHostToolsStatus(status);
-    } catch {
-      setHostToolsStatus(null);
-    }
-  };
-
-  useEffect(() => {
-    if (!settingsOpen || !settings) return;
-    void refreshHostToolsStatus(settings);
-  }, [settingsOpen]);
 
   const selectedThinkingMode = getSelectedThinkingMode();
   const contextWindow = contextUsage?.contextWindow ?? null;
@@ -8721,71 +8696,6 @@ const Panel = () => {
                   {settingsTab === 'tools' ? (
                     <div class="ageaf-settings__section">
                       <h3>Tools</h3>
-                      <label class="ageaf-settings__checkbox">
-                        <input
-                          type="checkbox"
-                          checked={settings.enableTools ?? false}
-                          onChange={(event) => {
-                            const next = event.currentTarget.checked;
-                            updateSettings({ enableTools: next });
-                            if (!settings.hostUrl) {
-                              setSettingsMessage('Host URL not configured');
-                              return;
-                            }
-                            void (async () => {
-                              try {
-                                await setHostToolsEnabled(settings, next);
-                                setSettingsMessage(
-                                  next
-                                    ? 'Host tools enabled'
-                                    : 'Host tools disabled'
-                                );
-                              } catch (error) {
-                                const message =
-                                  error instanceof Error
-                                    ? error.message
-                                    : 'Failed to update host tools';
-                                setSettingsMessage(message);
-                              } finally {
-                                await refreshHostToolsStatus(settings);
-                              }
-                            })();
-                          }}
-                        />
-                        Enable tools (Bash / file tools)
-                      </label>
-                      <p class="ageaf-settings__hint">
-                        When enabled, Ageaf may request to run local commands
-                        (Bash) or read files via the host runtime. This toggle
-                        updates both the extension and the host setting.
-                      </p>
-                      <p class="ageaf-settings__hint">
-                        Host status:{' '}
-                        {hostToolsStatus
-                          ? `tools=${hostToolsStatus.toolsEnabled ? 'on' : 'off'
-                          }, remote-toggle=${hostToolsStatus.remoteToggleAllowed
-                            ? 'allowed'
-                            : 'blocked'
-                          }, available=${hostToolsStatus.toolsAvailable ? 'yes' : 'no'
-                          }`
-                          : 'unavailable'}
-                      </p>
-                      {!hostToolsStatus?.remoteToggleAllowed ? (
-                        <p class="ageaf-settings__hint">
-                          To allow the extension to control host tools, restart
-                          the host with AGEAF_ALLOW_REMOTE_TOOL_TOGGLE=true.
-                        </p>
-                      ) : null}
-                      {!hostToolsStatus?.toolsAvailable ? (
-                        <p class="ageaf-settings__hint">
-                          Tools are not available. Restart the host with
-                          AGEAF_ENABLE_TOOLS=true to permit tool execution.
-                        </p>
-                      ) : null}
-                      <p class="ageaf-settings__hint">
-                        Tip: keep this off unless you explicitly need tool use.
-                        You can still chat normally with tools disabled.
-                      </p>
                       <h4 class="ageaf-settings__subhead">OpenAI</h4>
                       <label
                         class="ageaf-settings__label"

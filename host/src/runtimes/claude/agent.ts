@@ -12,7 +12,6 @@ import {
   matchBlockedCommand,
   parseBlockedCommandPatterns,
 } from './safety.js';
-import { loadHostSettings } from '../../hostSettings.js';
 import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
 import { computePerHunkReplacements } from '../../patch/fileUpdate.js';
 
@@ -24,7 +23,6 @@ type StructuredPatchInput = {
   emitEvent: EmitEvent;
   runtime?: ClaudeRuntimeConfig;
   safety?: CommandBlocklistConfig;
-  enableTools?: boolean;
   debugCliEvents?: boolean;
 };
 
@@ -33,7 +31,6 @@ type TextRunInput = {
   emitEvent: EmitEvent;
   runtime?: ClaudeRuntimeConfig;
   safety?: CommandBlocklistConfig;
-  enableTools?: boolean;
   debugCliEvents?: boolean;
 };
 
@@ -151,7 +148,6 @@ async function runQuery(
   runtime: ClaudeRuntimeConfig,
   structuredOutput?: { schema: z.ZodSchema; name: string },
   safety?: CommandBlocklistConfig,
-  enableTools?: boolean
 ): Promise<string | null> {
   const customEnv = parseEnvironmentVariables(runtime.envVars ?? '');
   const resolvedCliPath = resolveClaudeCliPath(runtime.cliPath, customEnv.PATH);
@@ -195,11 +191,6 @@ async function runQuery(
   const yoloMode = runtime.yoloMode ?? true;
   const permissionMode = yoloMode ? 'bypassPermissions' : 'default';
 
-  const hostToolsEnabled = loadHostSettings().toolsEnabled;
-  const toolsEnabled =
-    process.env.AGEAF_ENABLE_TOOLS === 'true' &&
-    hostToolsEnabled === true &&
-    enableTools === true;
   const blockedPatterns =
     safety?.enabled
       ? compileBlockedCommandPatterns(
@@ -226,14 +217,6 @@ async function runQuery(
       pathToClaudeCodeExecutable: resolvedCliPath ?? undefined,
       includePartialMessages: true,
       canUseTool: async (toolName, input, options) => {
-        if (!toolsEnabled) {
-          return {
-            behavior: 'deny',
-            message: 'Tools disabled for Ageaf host runtime',
-            toolUseID: options.toolUseID,
-          };
-        }
-
         if (blockedPatterns.length > 0) {
           const command = extractCommandFromToolInput(toolName, input);
           if (command) {
@@ -638,7 +621,6 @@ export async function runClaudeStructuredPatch(input: StructuredPatchInput) {
     input.runtime ?? {},
     { schema: PatchSchema, name: 'patch' },
     input.safety,
-    input.enableTools
   );
 }
 
@@ -663,7 +645,6 @@ export async function runClaudeText(input: TextRunInput): Promise<string | null>
     input.runtime ?? {},
     undefined,
     input.safety,
-    input.enableTools
   );
 }
 

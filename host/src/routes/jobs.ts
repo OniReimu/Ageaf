@@ -61,7 +61,6 @@ type JobRequestPayload = {
   userSettings?: {
     displayName?: string;
     customSystemPrompt?: string;
-    enableTools?: boolean;
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
     debugCliEvents?: boolean;

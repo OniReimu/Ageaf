@@ -7,7 +7,6 @@ import type {
   CodexContextUsageResponse,
   CodexRuntimeMetadata,
   HostHealthResponse,
-  HostToolsStatus,
   JobPayload,
   AttachmentMeta,
 } from '../api/httpClient';
@@ -181,24 +180,6 @@ export function nativeTransport(_options: Options): Transport {
         },
       });
       return unwrapNativeResponse(response) as CodexRuntimeMetadata;
-    },
-
-    async fetchHostToolsStatus() {
-      const response = await sendNativeRequest({
-        id: crypto.randomUUID(),
-        kind: 'request',
-        request: { method: 'GET', path: '/v1/host/tools' },
-      });
-      return unwrapNativeResponse(response) as HostToolsStatus;
-    },
-
-    async setHostToolsEnabled(enabled: boolean) {
-      const response = await sendNativeRequest({
-        id: crypto.randomUUID(),
-        kind: 'request',
-        request: { method: 'POST', path: '/v1/host/tools', body: { enabled } },
-      });
-      return unwrapNativeResponse(response) as { toolsEnabled: boolean };
     },
 
     async updateClaudeRuntimePreferences(payload: {
