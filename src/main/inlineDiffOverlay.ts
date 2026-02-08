@@ -1401,7 +1401,7 @@ function renderOverlay() {
       // ignore
     }
     overlayScrollListenerDom = scrollDOM;
-    overlayScrollListenerDom.addEventListener('scroll', scheduleOverlayUpdate);
+    overlayScrollListenerDom.addEventListener('scroll', scheduleOverlayUpdate, { passive: true });
   }
   if (isDebugEnabled()) {
     logOnce(`rendered:${overlayState.messageId}`, 'rendered overlay', {

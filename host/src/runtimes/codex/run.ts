@@ -749,13 +749,10 @@ export async function runCodexJob(
   const images = getContextImages(payload.context);
   const attachments = getContextAttachments(payload.context);
   const documentEntries = getContextDocuments(payload.context);
-  const { block: attachmentBlock } = await buildAttachmentBlock(
-    attachments,
-    getAttachmentLimits()
-  );
-  const { block: documentBlock } = await buildDocumentAttachmentBlock(
-    documentEntries
-  );
+  const [{ block: attachmentBlock }, { block: documentBlock }] = await Promise.all([
+    buildAttachmentBlock(attachments, getAttachmentLimits()),
+    buildDocumentAttachmentBlock(documentEntries),
+  ]);
   const rawMessage = getUserMessage(payload.context);
   const messageWithAttachments = [rawMessage, attachmentBlock, documentBlock]
     .filter((part) => typeof part === 'string' && part.trim().length > 0)

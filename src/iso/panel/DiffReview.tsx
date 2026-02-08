@@ -4,6 +4,7 @@ import { ResolvedThemes, parseDiffFromFile, setLanguageOverride } from '@pierre/
 import githubDark from '@shikijs/themes/github-dark';
 import { diffLines } from 'diff';
 import { startTypingReveal, type TypingRevealController } from './typingReveal';
+import { copyToClipboard } from './clipboard';
 
 type Props = {
   oldText: string;
@@ -34,33 +35,7 @@ function formatElapsed(seconds: number) {
   return `${secs}s`;
 }
 
-async function copyToClipboard(text: string) {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // fall through to legacy copy
-  }
-
-  try {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.setAttribute('readonly', 'true');
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    textarea.style.left = '-9999px';
-    textarea.style.top = '-9999px';
-    document.body.appendChild(textarea);
-    textarea.select();
-    const ok = document.execCommand('copy');
-    textarea.remove();
-    return ok;
-  } catch {
-    return false;
-  }
-}
+// copyToClipboard imported from './clipboard'
 
 function injectShadowOverrides(shadowRoot: ShadowRoot, options: { wrap: boolean }) {
   const existing = shadowRoot.querySelector(`style#${SHADOW_OVERRIDES_STYLE_ID}`) as HTMLStyleElement | null;
@@ -510,7 +485,7 @@ export function DiffReview({
       typingControllerRef.current?.cancel();
       typingControllerRef.current = null;
     };
-  }, [oldText, newText, fileName, startLineNumber]);
+  }, [oldText, newText, fileName, startLineNumber, animate, wrap]);
 
   return <div class="ageaf-diff-review" ref={wrapperRef} />;
 }

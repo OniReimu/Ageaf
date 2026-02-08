@@ -5,6 +5,8 @@ import {
   collectLatexInputPaths,
   type ProjectFile,
 } from './latexExpand';
+import { copyToClipboard } from './clipboard';
+import { PatchReviewCard, CopyIcon, CheckIcon } from './PatchReviewCard';
 
 import {
   createJob,
@@ -29,7 +31,7 @@ import type {
   NativeHostRequest,
   NativeHostResponse,
 } from '../messaging/nativeProtocol';
-import { getOptions } from '../../utils/helper';
+import { getOptions, invalidateOptionsCache } from '../../utils/helper';
 import {
   LOCAL_STORAGE_KEY_INLINE_OVERLAY,
   LOCAL_STORAGE_KEY_OPTIONS,
@@ -79,7 +81,6 @@ import {
   NewChatIconAlt,
   CloseSessionIcon,
   ClearChatIcon,
-  CloseIcon,
 } from './ageaf-icons';
 
 const DEFAULT_WIDTH = 360;
@@ -112,10 +113,118 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+const INTERRUPTED_BY_USER_REGEX = new RegExp(
+  `\\n*${escapeRegExp(INTERRUPTED_BY_USER_MARKER)}\\s*$`
+);
+
 function stripInterruptedByUserSuffix(text: string) {
   const normalized = String(text ?? '').replace(/\r\n/g, '\n');
-  const marker = escapeRegExp(INTERRUPTED_BY_USER_MARKER);
-  return normalized.replace(new RegExp(`\\n*${marker}\\s*$`), '').trimEnd();
+  return normalized.replace(INTERRUPTED_BY_USER_REGEX, '').trimEnd();
+}
+
+/* ── Module-level constants (hoisted from inside Panel) ────────────────── */
+
+const ATTACHMENT_LABEL_REGEX = /^\[Attachment: .+ · \d+ lines\]$/;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const FILE_ATTACHMENT_EXTENSIONS = [
+  '.txt',
+  '.md',
+  '.json',
+  '.yaml',
+  '.yml',
+  '.csv',
+  '.xml',
+  '.toml',
+  '.ini',
+  '.log',
+  '.tex',
+];
+const MAX_FILE_ATTACHMENTS = 10;
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_TOTAL_FILE_BYTES = 100 * 1024 * 1024;
+const DOCUMENT_EXTENSIONS: Record<string, string> = {
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
+
+const MENTION_EXTENSIONS = [
+  '.tex',
+  '.bib',
+  '.sty',
+  '.cls',
+  '.md',
+  '.json',
+  '.yaml',
+  '.yml',
+  '.csv',
+  '.xml',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.svg',
+  '.pdf',
+];
+
+const MENTION_EXTENSIONS_REGEX = new RegExp(
+  `([A-Za-z0-9_./-]+(?:${MENTION_EXTENSIONS.map((ext) => ext.replace('.', '\\.')).join('|')}))`,
+  'gi'
+);
+
+const FILE_ATTACHMENT_EXTENSIONS_REGEX = new RegExp(
+  `([A-Za-z0-9_./-]+(?:${FILE_ATTACHMENT_EXTENSIONS.map((ext) => ext.replace('.', '\\.')).join('|')}))`,
+  'gi'
+);
+
+const ATTACHMENT_LABEL_INLINE_REGEX =
+  /\[Attachment:\s+(.+?)\s+·\s+(\d+)\s+lines\]/g;
+const MENTION_INLINE_REGEX = /@\[(file|folder):([^\]]+)\]/g;
+
+const RING_CIRCUMFERENCE = 2 * Math.PI * 10;
+
+/* ── Shared tool display helpers (used by renderCoTBlock & renderToolIndicators) ─ */
+
+const TOOL_ICONS: Record<string, string> = {
+  Read: '📖',
+  Write: '✍️',
+  Edit: '✏️',
+  Bash: '🖥️',
+  Grep: '🔍',
+  Glob: '📁',
+  WebSearch: '🌐',
+  WebFetch: '🌐',
+  computer: '🖥️',
+  text_editor: '📝',
+  mcp: '🔌',
+  Compacting: '🔄',
+};
+
+function getToolIcon(toolName: string, phase: string): string {
+  if (phase === 'failed') return '❌';
+  if (phase === 'completed') return '✅';
+  return TOOL_ICONS[toolName] ?? '🔧';
+}
+
+const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  Read: 'Read file',
+  Write: 'Write file',
+  Edit: 'Edit file',
+  Bash: 'Run command',
+  Grep: 'Search code',
+  Glob: 'Find files',
+  WebSearch: 'Web search',
+  WebFetch: 'Web browse',
+  computer: 'Computer use',
+  text_editor: 'Text editor',
+  mcp: 'MCP tool',
+  Compacting: 'Compacting context',
+};
+
+function formatToolName(toolName: string): string {
+  return TOOL_DISPLAY_NAMES[toolName] ?? toolName;
 }
 
 /**
@@ -136,411 +245,6 @@ function closeUnfinishedCodeFences(text: string): string {
 
   return text;
 }
-
-const CopyIcon = () => (
-  <svg
-    class="ageaf-message__copy-icon"
-    viewBox="0 0 20 20"
-    aria-hidden="true"
-    focusable="false"
-  >
-    <rect
-      x="6.5"
-      y="3.5"
-      width="10"
-      height="12"
-      rx="2"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.6"
-    />
-    <rect
-      x="3.5"
-      y="6.5"
-      width="10"
-      height="12"
-      rx="2"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.6"
-    />
-  </svg>
-);
-
-const CheckIcon = () => (
-  <svg
-    class="ageaf-message__copy-check"
-    viewBox="0 0 20 20"
-    aria-hidden="true"
-    focusable="false"
-  >
-    <path
-      d="M5 10.5l3.2 3.2L15 7.2"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="2"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-  </svg>
-);
-
-const ExpandIcon = () => (
-  <svg
-    class="ageaf-patch-review__expand-icon"
-    viewBox="0 0 20 20"
-    aria-hidden="true"
-    focusable="false"
-  >
-    <path
-      d="M3 3h7M17 3v7M17 17h-7M3 17v-7M12 8l5-5m0 0h-5m5 0v5"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.8"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-  </svg>
-);
-
-const PatchReviewCard = ({
-  message,
-  patchReview,
-  status,
-  error,
-  busy,
-  canAct,
-  copied,
-  onCopy,
-  onAccept,
-  onFeedback,
-  onReject,
-  markAnimated,
-}: {
-  message: Message;
-  patchReview: StoredPatchReview;
-  status: 'pending' | 'accepted' | 'rejected';
-  error: string | null;
-  busy: boolean;
-  canAct: boolean;
-  copied: boolean;
-  onCopy: () => void;
-  onAccept: () => void;
-  onFeedback: () => void;
-  onReject: () => void;
-  markAnimated: () => void;
-}) => {
-  // One-off: animate only the very first time this card is created.
-  // Persist a flag so refreshes / subsequent renders do not animate.
-  const shouldAnimateRef = useRef<boolean>(!(patchReview as any).hasAnimated);
-  const [collapsed, setCollapsed] = useState(true);
-  const [showModal, setShowModal] = useState(false);
-  const [modalOffset, setModalOffset] = useState({ x: 0, y: 0 });
-  const [headerCopied, setHeaderCopied] = useState(false);
-  const headerCopyTimerRef = useRef<number | null>(null);
-
-  const copyToClipboard = async (text: string) => {
-    if (!text) return false;
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        try {
-          await navigator.clipboard.writeText(text);
-          return true;
-        } catch (error) {
-          // Extension context invalidated - treat as a no-op.
-          if (
-            error instanceof Error &&
-            error.message.includes('Extension context invalidated')
-          ) {
-            return false;
-          }
-          // fall through to legacy copy
-        }
-      }
-
-      if (typeof document === 'undefined') return false;
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      textarea.setAttribute('readonly', 'true');
-      textarea.style.position = 'absolute';
-      textarea.style.left = '-9999px';
-      textarea.style.top = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-      return true;
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes('Extension context invalidated')
-      ) {
-        return false;
-      }
-      return false;
-    }
-  };
-
-  useEffect(() => {
-    if (!shouldAnimateRef.current) return;
-    markAnimated();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (headerCopyTimerRef.current != null) {
-        window.clearTimeout(headerCopyTimerRef.current);
-        headerCopyTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  // ESC key handler for modal
-  useEffect(() => {
-    if (!showModal) return;
-    setModalOffset({ x: 0, y: 0 });
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setShowModal(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showModal]);
-
-  const startModalDrag = (event: MouseEvent) => {
-    // Only left-click dragging.
-    if ((event as any).button !== 0) return;
-    event.preventDefault();
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const startOffset = { ...modalOffset };
-
-    const onMove = (e: MouseEvent) => {
-      setModalOffset({
-        x: startOffset.x + (e.clientX - startX),
-        y: startOffset.y + (e.clientY - startY),
-      });
-    };
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  };
-
-  const fileLabel =
-    patchReview.kind === 'replaceRangeInFile'
-      ? patchReview.filePath
-      : patchReview.kind === 'replaceSelection'
-        ? patchReview.fileName ?? 'selection.tex'
-        : null;
-
-  const title =
-    status === 'accepted'
-      ? 'Review changes · Accepted'
-      : status === 'rejected'
-        ? 'Review changes · Rejected'
-        : 'Review changes';
-
-  // Calculate starting line number for absolute line number display
-  const calculateStartLineNumber = (): number | undefined => {
-    if (patchReview.kind === 'replaceSelection') {
-      return patchReview.lineFrom;
-    } else if (patchReview.kind === 'replaceRangeInFile') {
-      return patchReview.lineFrom;
-    }
-    return undefined;
-  };
-
-  const startLineNumber = calculateStartLineNumber();
-
-  return (
-    <div class="ageaf-patch-review">
-      <div class="ageaf-patch-review__header">
-        <div class="ageaf-patch-review__title">
-          {title}
-          {fileLabel ? <span> · {fileLabel}</span> : null}
-        </div>
-        <div class="ageaf-patch-review__actions">
-          <button
-            class="ageaf-patch-review__expand-btn"
-            type="button"
-            onClick={() => setShowModal(true)}
-            title="Expand diff"
-            aria-label="Expand diff to full screen"
-          >
-            <ExpandIcon />
-          </button>
-          <button
-            class="ageaf-patch-review__expand-btn"
-            type="button"
-            onClick={() => {
-              void (async () => {
-                const ok = await copyToClipboard(
-                  (patchReview as any).text ?? ''
-                );
-                if (!ok) return;
-                setHeaderCopied(true);
-                if (headerCopyTimerRef.current != null) {
-                  window.clearTimeout(headerCopyTimerRef.current);
-                }
-                headerCopyTimerRef.current = window.setTimeout(() => {
-                  setHeaderCopied(false);
-                  headerCopyTimerRef.current = null;
-                }, 3000);
-              })();
-            }}
-            title="Copy proposed text"
-            aria-label="Copy proposed text"
-          >
-            {headerCopied ? <CheckIcon /> : <CopyIcon />}
-          </button>
-          {status === 'pending' ? (
-            <>
-              <button
-                class="ageaf-panel__apply"
-                type="button"
-                disabled={!canAct || Boolean(error)}
-                onClick={onAccept}
-                title="Accept"
-                aria-label="Accept"
-              >
-                ✓
-              </button>
-              <button
-                class="ageaf-panel__apply is-secondary"
-                type="button"
-                disabled={busy}
-                onClick={onReject}
-                title="Reject"
-                aria-label="Reject"
-              >
-                ✕
-              </button>
-              <button
-                class="ageaf-panel__apply is-secondary"
-                type="button"
-                disabled={busy}
-                onClick={onFeedback}
-                aria-label="Provide feedback on this change"
-              >
-                Feedback
-              </button>
-            </>
-          ) : null}
-        </div>
-      </div>
-
-      {error ? (
-        <div class="ageaf-patch-review__warning">
-          <span>{error}</span>
-          <button
-            class="ageaf-panel__apply is-secondary"
-            type="button"
-            onClick={onCopy}
-          >
-            {copied ? <CheckIcon /> : <CopyIcon />}
-            <span>Copy proposed text</span>
-          </button>
-        </div>
-      ) : null}
-
-      <div class={`ageaf-patch-review__diff-wrap${collapsed ? ' is-collapsed' : ''}`}>
-        {patchReview.kind === 'replaceRangeInFile' ? (
-          <DiffReview
-            oldText={patchReview.expectedOldText}
-            newText={patchReview.text}
-            fileName={patchReview.filePath}
-            animate={shouldAnimateRef.current}
-            startLineNumber={startLineNumber}
-          />
-        ) : patchReview.kind === 'replaceSelection' ? (
-          <DiffReview
-            oldText={patchReview.selection}
-            newText={patchReview.text}
-            fileName={patchReview.fileName ?? undefined}
-            animate={shouldAnimateRef.current}
-            startLineNumber={startLineNumber}
-          />
-        ) : null}
-        {collapsed ? (
-          <button
-            class="ageaf-patch-review__toggle"
-            type="button"
-            onClick={() => setCollapsed(false)}
-          >
-            Show more
-          </button>
-        ) : null}
-      </div>
-      {!collapsed ? (
-        <button
-          class="ageaf-patch-review__toggle"
-          type="button"
-          onClick={() => setCollapsed(true)}
-        >
-          Show less
-        </button>
-      ) : null}
-
-      {showModal ? (
-        <div class="ageaf-diff-modal__backdrop">
-          <div
-            class="ageaf-diff-modal"
-            style={{
-              transform: `translate(${modalOffset.x}px, ${modalOffset.y}px)`,
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              class="ageaf-diff-modal__header"
-              onMouseDown={(e) => startModalDrag(e as any)}
-            >
-              <div class="ageaf-diff-modal__title">
-                {title}
-                {fileLabel ? <span> · {fileLabel}</span> : null}
-                <span class="ageaf-diff-modal__shortcut-hint">ESC to close</span>
-              </div>
-              <button
-                class="ageaf-diff-modal__close"
-                type="button"
-                onClick={() => setShowModal(false)}
-                title="Close (ESC)"
-                aria-label="Close diff modal"
-              >
-                <CloseIcon />
-              </button>
-            </div>
-            <div class="ageaf-diff-modal__content">
-              {patchReview.kind === 'replaceRangeInFile' ? (
-                <DiffReview
-                  oldText={patchReview.expectedOldText}
-                  newText={patchReview.text}
-                  fileName={patchReview.filePath}
-                  animate={false}
-                  wrap={true}
-                  startLineNumber={startLineNumber}
-                />
-              ) : patchReview.kind === 'replaceSelection' ? (
-                <DiffReview
-                  oldText={patchReview.selection}
-                  newText={patchReview.text}
-                  fileName={patchReview.fileName ?? undefined}
-                  animate={false}
-                  wrap={true}
-                  startLineNumber={startLineNumber}
-                />
-              ) : null}
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-};
 
 const PROVIDER_DISPLAY = {
   claude: { label: 'Anthropic' },
@@ -921,7 +625,7 @@ const Panel = () => {
   };
   const [activeTools, setActiveTools] = useState<
     Map<string, ToolExecutionState>
-  >(new Map());
+  >(() => new Map());
   const lastHostOkAtRef = useRef(0);
   const lastRuntimeOkAtRef = useRef(0);
   const lastCodexMetadataCheckAtRef = useRef(0);
@@ -1894,12 +1598,12 @@ const Panel = () => {
   const THINKING_COLLAPSED_LINES = 3;
   const [expandedThinkingMessages, setExpandedThinkingMessages] = useState<
     Set<string>
-  >(new Set());
+  >(() => new Set());
 
   // Track individually expanded thinking items within a CoT block
   const [expandedThinkingItems, setExpandedThinkingItems] = useState<
     Set<string>
-  >(new Set());
+  >(() => new Set());
 
   const toggleThinkingItemExpanded = (key: string) => {
     setExpandedThinkingItems((prev) => {
@@ -1936,47 +1640,6 @@ const Panel = () => {
     const toggle = (e: MouseEvent) => {
       e.preventDefault();
       if (messageId) toggleThinkingExpanded(messageId);
-    };
-
-    // Tool-specific icons for running state
-    const getToolIcon = (toolName: string, phase: string) => {
-      if (phase === 'failed') return '❌';
-      if (phase === 'completed') return '✅';
-      // Tool-specific icons for running state
-      const icons: Record<string, string> = {
-        Read: '📖',
-        Write: '✍️',
-        Edit: '✏️',
-        Bash: '🖥️',
-        Grep: '🔍',
-        Glob: '📁',
-        WebSearch: '🌐',
-        WebFetch: '🌐',
-        computer: '🖥️',
-        text_editor: '📝',
-        mcp: '🔌',
-        Compacting: '🔄',
-      };
-      return icons[toolName] ?? '🔧';
-    };
-
-    // Format tool name for display
-    const formatToolName = (toolName: string) => {
-      const names: Record<string, string> = {
-        Read: 'Read file',
-        Write: 'Write file',
-        Edit: 'Edit file',
-        Bash: 'Run command',
-        Grep: 'Search code',
-        Glob: 'Find files',
-        WebSearch: 'Web search',
-        WebFetch: 'Web browse',
-        computer: 'Computer use',
-        text_editor: 'Text editor',
-        mcp: 'MCP tool',
-        Compacting: 'Compacting context',
-      };
-      return names[toolName] ?? toolName;
     };
 
     return (
@@ -2095,45 +1758,6 @@ const Panel = () => {
 
   const renderToolIndicators = () => {
     if (activeTools.size === 0) return null;
-
-    // Tool-specific icons
-    const getToolIcon = (toolName: string, phase: string) => {
-      if (phase === 'failed') return '❌';
-      if (phase === 'completed') return '✅';
-      // Tool-specific icons for running state
-      const icons: Record<string, string> = {
-        Read: '📖',
-        Write: '✍️',
-        Edit: '✏️',
-        Bash: '🖥️',
-        Grep: '🔍',
-        Glob: '📁',
-        WebSearch: '🌐',
-        WebFetch: '🌐',
-        computer: '🖥️',
-        text_editor: '📝',
-        mcp: '🔌',
-      };
-      return icons[toolName] ?? '🔧';
-    };
-
-    // Format tool name for display
-    const formatToolName = (toolName: string) => {
-      const names: Record<string, string> = {
-        Read: 'Read file',
-        Write: 'Write file',
-        Edit: 'Edit file',
-        Bash: 'Run command',
-        Grep: 'Search code',
-        Glob: 'Find files',
-        WebSearch: 'Web search',
-        WebFetch: 'Web browse',
-        computer: 'Computer use',
-        text_editor: 'Text editor',
-        mcp: 'MCP tool',
-      };
-      return names[toolName] ?? toolName;
-    };
 
     return (
       <div class="ageaf-tool-indicators">
@@ -2381,32 +2005,6 @@ const Panel = () => {
     scheduleChatSave();
   }, [messages, chatProvider]);
 
-  const ATTACHMENT_LABEL_REGEX = /^\[Attachment: .+ · \d+ lines\]$/;
-  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-  const FILE_ATTACHMENT_EXTENSIONS = [
-    '.txt',
-    '.md',
-    '.json',
-    '.yaml',
-    '.yml',
-    '.csv',
-    '.xml',
-    '.toml',
-    '.ini',
-    '.log',
-    '.tex',
-  ];
-  const MAX_FILE_ATTACHMENTS = 10;
-  const MAX_FILE_BYTES = 10 * 1024 * 1024;
-  const MAX_TOTAL_FILE_BYTES = 100 * 1024 * 1024;
-  const DOCUMENT_EXTENSIONS: Record<string, string> = {
-    '.pdf': 'application/pdf',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  };
-  const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
-
   const updateImageAttachments = (next: ImageAttachment[]) => {
     imageAttachmentsRef.current = next;
     setImageAttachments(next);
@@ -2615,33 +2213,9 @@ const Panel = () => {
     return 'other';
   };
 
-  const MENTION_EXTENSIONS = [
-    '.tex',
-    '.bib',
-    '.sty',
-    '.cls',
-    '.md',
-    '.json',
-    '.yaml',
-    '.yml',
-    '.csv',
-    '.xml',
-    '.png',
-    '.jpg',
-    '.jpeg',
-    '.gif',
-    '.svg',
-    '.pdf',
-  ];
-
   const extractFilenamesFromText = (value: string): string[] => {
-    const extPattern = MENTION_EXTENSIONS.map((ext) =>
-      ext.replace('.', '\\.')
-    ).join('|');
-    const regex = new RegExp(
-      `([A - Za - z0 -9_. -] + (?: ${extPattern}))`,
-      'gi'
-    );
+    MENTION_EXTENSIONS_REGEX.lastIndex = 0;
+    const regex = MENTION_EXTENSIONS_REGEX;
 
     const sanitizeLabel = (label: string) => {
       const trimmed = label.trim();
@@ -2989,14 +2563,7 @@ const Panel = () => {
     const textNode = node as Text;
     const anchorOffset = range.endOffset;
     const before = textNode.data.slice(0, anchorOffset);
-    console.log(
-      '[getSlashQuery] before:',
-      JSON.stringify(before),
-      'offset:',
-      anchorOffset
-    );
     const match = before.match(/(^|[\s\(\[\{])\/([A-Za-z0-9._-]*)$/);
-    console.log('[getSlashQuery] match:', match);
     if (!match) return null;
     const query = match[2] ?? '';
     const start = anchorOffset - (query.length + 1);
@@ -3004,10 +2571,8 @@ const Panel = () => {
   };
 
   const updateSkillState = async () => {
-    console.log('[updateSkillState] called');
     if (isComposingRef.current) return;
     const match = getSlashQuery();
-    console.log('[updateSkillState] match result:', match);
     if (!match) {
       setSkillOpen(false);
       setSkillResults([]);
@@ -3015,19 +2580,8 @@ const Panel = () => {
       return;
     }
     try {
-      console.log('[updateSkillState] loading manifest...');
       const manifest = await loadSkillsManifest();
-      console.log(
-        '[updateSkillState] manifest loaded, skills:',
-        manifest.skills.length
-      );
       const results = searchSkills(manifest.skills, match.query);
-      console.log(
-        '[updateSkillState] search results:',
-        results.length,
-        'for query:',
-        match.query
-      );
       skillRangeRef.current = {
         node: match.node,
         start: match.start,
@@ -3036,7 +2590,6 @@ const Panel = () => {
       setSkillResults(results.slice(0, 20));
       setSkillIndex(0);
       setSkillOpen(true);
-      console.log('[updateSkillState] skill menu opened');
       // Close mention menu when skill menu opens (mutually exclusive)
       setMentionOpen(false);
     } catch (err) {
@@ -3093,8 +2646,6 @@ const Panel = () => {
       return { skillsPrompt: '', strippedText: text };
     }
 
-    console.log('[processSkillDirectives] Found directives:', directiveNames);
-
     // Load skills manifest and find matching skills
     try {
       const manifest = await loadSkillsManifest();
@@ -3107,14 +2658,8 @@ const Panel = () => {
         );
         if (skill) {
           const markdown = await loadSkillMarkdown(skill);
-          const contentLength = markdown.length;
           skillContents.push(`# Skill: ${skill.name}\n\n${markdown}`);
           resolvedNames.add(name);
-          console.log(
-            `[processSkillDirectives] ✓ Loaded skill: /${name} (${contentLength} chars)`
-          );
-        } else {
-          console.log(`[processSkillDirectives] ✗ Skill not found: /${name}`);
         }
       }
 
@@ -3170,17 +2715,6 @@ const Panel = () => {
         }
       }
 
-      if (resolvedNames.size > 0) {
-        console.log(
-          `[processSkillDirectives] Injected ${resolvedNames.size} skill(s) into system prompt (${skillsPrompt.length} chars total)`
-        );
-        console.log(
-          '[processSkillDirectives] Skills injected:',
-          Array.from(resolvedNames)
-            .map((n) => `/${n}`)
-            .join(', ')
-        );
-      }
 
       return { skillsPrompt, strippedText };
     } catch (err) {
@@ -3385,57 +2919,11 @@ const Panel = () => {
     }, 3000);
   };
 
-  const copyToClipboard = async (text: string) => {
-    if (!text) return false;
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        try {
-          await navigator.clipboard.writeText(text);
-          return true;
-        } catch (error) {
-          // Extension context invalidated - treat as a no-op.
-          if (
-            error instanceof Error &&
-            error.message.includes('Extension context invalidated')
-          ) {
-            return false;
-          }
-          // fall through to legacy copy
-        }
-      }
-
-      if (typeof document === 'undefined') return false;
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      textarea.setAttribute('readonly', 'true');
-      textarea.style.position = 'absolute';
-      textarea.style.left = '-9999px';
-      textarea.style.top = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-      return true;
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes('Extension context invalidated')
-      ) {
-        return false;
-      }
-      return false;
-    }
-  };
-
   type QuoteData = {
     html: string;
     language?: string;
     languageLabel?: string;
   };
-
-  const ATTACHMENT_LABEL_INLINE_REGEX =
-    /\[Attachment:\s+(.+?)\s+·\s+(\d+)\s+lines\]/g;
-  const MENTION_INLINE_REGEX = /@\[(file|folder):([^\]]+)\]/g;
 
   const createAttachmentChip = (
     filename: string,
@@ -3811,11 +3299,8 @@ const Panel = () => {
     value = value.replace(/\s*\(.*?\)\s*$/, '').trim(); // trailing "(...)" metadata
     if (!value) return null;
 
-    const extPattern = FILE_ATTACHMENT_EXTENSIONS.map((ext) =>
-      ext.replace('.', '\\.')
-    ).join('|');
-    const regex = new RegExp(`([A-Za-z0-9_./-]+(?:${extPattern}))`, 'gi');
-    const matches = Array.from(value.matchAll(regex));
+    FILE_ATTACHMENT_EXTENSIONS_REGEX.lastIndex = 0;
+    const matches = Array.from(value.matchAll(FILE_ATTACHMENT_EXTENSIONS_REGEX));
     if (matches.length === 0) return null;
 
     let candidate = matches[matches.length - 1]![0];
@@ -4270,13 +3755,14 @@ const Panel = () => {
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) return;
     const list = Array.from(files);
-    const imageFiles = list.filter((file) => getImageMediaType(file));
-    const docFiles = list.filter((file) => getDocumentMediaType(file));
-    const textFiles = list.filter(
-      (file) =>
-        FILE_ATTACHMENT_EXTENSIONS.includes(getFileExtension(file.name)) &&
-        !getDocumentMediaType(file)
-    );
+    const imageFiles: File[] = [];
+    const docFiles: File[] = [];
+    const textFiles: File[] = [];
+    for (const file of list) {
+      if (getImageMediaType(file)) imageFiles.push(file);
+      else if (getDocumentMediaType(file)) docFiles.push(file);
+      else if (FILE_ATTACHMENT_EXTENSIONS.includes(getFileExtension(file.name))) textFiles.push(file);
+    }
     void (async () => {
       if (imageFiles.length > 0) {
         await addImagesFromFiles(imageFiles, 'drop');
@@ -4358,7 +3844,7 @@ const Panel = () => {
     insertChipFromText(text, activeName ?? undefined, lineFrom, lineTo);
   };
 
-  const renderMessageContent = (message: Message) => {
+  const renderMessageContent = (message: Message, latestPatchText: string | null) => {
     if (message.patchReview) {
       const patchReview = message.patchReview;
       const status = (patchReview as any).status ?? 'pending';
@@ -4462,17 +3948,6 @@ const Panel = () => {
           ))}
         </div>
       ) : null;
-
-    const latestPatchText = (() => {
-      for (let i = messages.length - 1; i >= 0; i -= 1) {
-        const patchReview = messages[i]?.patchReview;
-        if (!patchReview) continue;
-        if ('text' in patchReview && typeof patchReview.text === 'string') {
-          return patchReview.text;
-        }
-      }
-      return null;
-    })();
 
     const normalizeForCompare = (value: string) =>
       value
@@ -4733,6 +4208,7 @@ const Panel = () => {
     setSettings(updated);
     try {
       await chrome.storage.local.set({ [LOCAL_STORAGE_KEY_OPTIONS]: updated });
+      invalidateOptionsCache();
     } catch (error) {
       // Extension context invalidated - ignore silently
       if (
@@ -5295,11 +4771,8 @@ const Panel = () => {
         // Reset
         streamingThinkingRef.current = '';
         streamingCoTRef.current = [];
-        const sessionConversationId = chatConversationIdRef.current; // Capture for stable closure
-        if (sessionConversationId === chatConversationIdRef.current) {
-          setStreamingThinking('');
-          setStreamingCoT([]);
-        }
+        setStreamingThinking('');
+        setStreamingCoT([]);
 
         chatStateRef.current = setConversationMessages(
           state,
@@ -5421,7 +4894,7 @@ const Panel = () => {
 
     // Update queue count for current session
     if (conversationId === chatConversationIdRef.current) {
-      const nextGlobal = queueRef.current.shift();
+      queueRef.current.shift();
       setQueueCount(sessionState.queue.length);
     }
 
@@ -7216,6 +6689,15 @@ const Panel = () => {
     }
   };
 
+  // Stable refs for patch review handlers — avoids re-registering the event
+  // listener on every render (the previous dep array contained unstable functions).
+  const onAcceptPatchReviewRef = useRef(onAcceptPatchReviewMessage);
+  const onFeedbackPatchReviewRef = useRef(onFeedbackPatchReviewMessage);
+  const onRejectPatchReviewRef = useRef(onRejectPatchReviewMessage);
+  onAcceptPatchReviewRef.current = onAcceptPatchReviewMessage;
+  onFeedbackPatchReviewRef.current = onFeedbackPatchReviewMessage;
+  onRejectPatchReviewRef.current = onRejectPatchReviewMessage;
+
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (
@@ -7227,15 +6709,15 @@ const Panel = () => {
       ).detail;
       if (!detail?.messageId || !detail?.action) return;
       if (detail.action === 'accept') {
-        void onAcceptPatchReviewMessage(detail.messageId, detail.text);
+        void onAcceptPatchReviewRef.current(detail.messageId, detail.text);
         return;
       }
       if (detail.action === 'feedback') {
-        onFeedbackPatchReviewMessage(detail.messageId, detail.text);
+        onFeedbackPatchReviewRef.current(detail.messageId, detail.text);
         return;
       }
       if (detail.action === 'reject') {
-        onRejectPatchReviewMessage(detail.messageId);
+        onRejectPatchReviewRef.current(detail.messageId);
       }
     };
     window.addEventListener(
@@ -7247,11 +6729,7 @@ const Panel = () => {
         PANEL_OVERLAY_ACTION_EVENT,
         handler as EventListener
       );
-  }, [
-    onAcceptPatchReviewMessage,
-    onFeedbackPatchReviewMessage,
-    onRejectPatchReviewMessage,
-  ]);
+  }, []);
 
   const emitPendingOverlay = (force = false) => {
     const pendingMessages = [...messages].filter(
@@ -7506,6 +6984,7 @@ const Panel = () => {
 
     try {
       await chrome.storage.local.set({ [LOCAL_STORAGE_KEY_OPTIONS]: settings });
+      invalidateOptionsCache();
       // API keys entered in dedicated fields are NOT saved
       const message =
         claudeApiKey || openaiApiKey
@@ -7560,7 +7039,6 @@ const Panel = () => {
     : usedTokens > 0
       ? `${formatTokenCount(usedTokens)} used`
       : 'Context usage unavailable';
-  const ringCircumference = 2 * Math.PI * 10;
   const panelToggleLabel = collapsed ? 'Show panel' : 'Hide panel';
   const panelToggleTooltip = collapsed
     ? 'Click to show the panel'
@@ -7570,11 +7048,11 @@ const Panel = () => {
     const circle = contextRingRef.current;
     if (!circle) return;
     const pct = Math.min(100, Math.max(0, usagePercent));
-    const progress = (ringCircumference * pct) / 100;
-    const offset = ringCircumference - progress;
-    circle.setAttribute('stroke-dasharray', String(ringCircumference));
+    const progress = (RING_CIRCUMFERENCE * pct) / 100;
+    const offset = RING_CIRCUMFERENCE - progress;
+    circle.setAttribute('stroke-dasharray', String(RING_CIRCUMFERENCE));
     circle.setAttribute('stroke-dashoffset', String(offset));
-  }, [usagePercent, ringCircumference]);
+  }, [usagePercent, RING_CIRCUMFERENCE]);
 
   const onTogglePanel = () => {
     setCollapsed((prev) => !prev);
@@ -7982,8 +7460,18 @@ const Panel = () => {
           {hasSessions ? (
             <>
               <div class="ageaf-panel__chat" ref={chatRef}>
-                {messages.map((message) => {
-                  const content = renderMessageContent(message);
+                {(() => {
+                  // Compute once for all messages (avoids O(N^2) reverse search per message)
+                  const latestPatchText = (() => {
+                    for (let i = messages.length - 1; i >= 0; i -= 1) {
+                      const pr = messages[i]?.patchReview;
+                      if (!pr) continue;
+                      if ('text' in pr && typeof pr.text === 'string') return pr.text;
+                    }
+                    return null;
+                  })();
+                  return messages.map((message) => {
+                  const content = renderMessageContent(message, latestPatchText);
                   if (!content) return null;
                   const copyResponseText =
                     message.role === 'assistant'
@@ -8073,7 +7561,8 @@ const Panel = () => {
                       ) : null}
                     </div>
                   );
-                })}
+                });
+                })()}
                 {streamingStatus ? (
                   <div class="ageaf-message ageaf-message--assistant ageaf-message--streaming">
                     {(() => {
@@ -8363,8 +7852,8 @@ const Panel = () => {
                       r="10"
                       strokeWidth="3"
                       ref={contextRingRef}
-                      strokeDasharray={ringCircumference}
-                      strokeDashoffset={ringCircumference}
+                      strokeDasharray={RING_CIRCUMFERENCE}
+                      strokeDashoffset={RING_CIRCUMFERENCE}
                     />
                   </svg>
                   <span class="ageaf-runtime__value">{usagePercent}%</span>

@@ -220,29 +220,32 @@ export async function runClaudeJob(
   const documentEntries = getContextDocuments(payload.context);
 
   // Resolve documents: separate PDFs (native content blocks) from others (text extraction)
+  const pdfEntries = documentEntries.filter(e => e.mediaType === 'application/pdf');
+  const nonPdfDocumentEntries: DocumentAttachmentEntry[] = documentEntries.filter(e => e.mediaType !== 'application/pdf');
   const pdfDocuments: ResolvedDocument[] = [];
-  const nonPdfDocumentEntries: DocumentAttachmentEntry[] = [];
-  for (const entry of documentEntries) {
-    if (entry.mediaType === 'application/pdf') {
-      try {
-        const resolved = await resolveDocumentContent(entry);
-        pdfDocuments.push(resolved);
-      } catch {
+
+  // Parallelize PDF resolution with bounded concurrency
+  const PDF_CONCURRENCY = 3;
+  for (let i = 0; i < pdfEntries.length; i += PDF_CONCURRENCY) {
+    const chunk = pdfEntries.slice(i, i + PDF_CONCURRENCY);
+    const results = await Promise.allSettled(
+      chunk.map(entry => resolveDocumentContent(entry))
+    );
+    for (let j = 0; j < results.length; j++) {
+      if (results[j].status === 'fulfilled') {
+        pdfDocuments.push((results[j] as PromiseFulfilledResult<ResolvedDocument>).value);
+      } else {
         // Fallback: treat as non-PDF (text extraction)
-        nonPdfDocumentEntries.push(entry);
+        nonPdfDocumentEntries.push(pdfEntries[i + j]);
       }
-    } else {
-      nonPdfDocumentEntries.push(entry);
     }
   }
 
-  const { block: attachmentBlock } = await buildAttachmentBlock(
-    attachments,
-    getAttachmentLimits()
-  );
-  const { block: documentBlock } = await buildDocumentAttachmentBlock(
-    nonPdfDocumentEntries
-  );
+  // Parallelize the two block builders
+  const [{ block: attachmentBlock }, { block: documentBlock }] = await Promise.all([
+    buildAttachmentBlock(attachments, getAttachmentLimits()),
+    buildDocumentAttachmentBlock(nonPdfDocumentEntries),
+  ]);
   const messageWithAttachments = [message, attachmentBlock, documentBlock]
     .filter((part) => typeof part === 'string' && part.trim().length > 0)
     .join('\n\n');
