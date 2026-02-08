@@ -76,20 +76,7 @@ const ExpandIcon = () => (
   </svg>
 );
 
-export const PatchReviewCard = ({
-  message,
-  patchReview,
-  status,
-  error,
-  busy,
-  canAct,
-  copied,
-  onCopy,
-  onAccept,
-  onFeedback,
-  onReject,
-  markAnimated,
-}: {
+type PatchReviewCardProps = {
   message: Message;
   patchReview: StoredPatchReview;
   status: 'pending' | 'accepted' | 'rejected';
@@ -102,7 +89,22 @@ export const PatchReviewCard = ({
   onFeedback: () => void;
   onReject: () => void;
   markAnimated: () => void;
-}) => {
+};
+
+export function PatchReviewCard({
+  message,
+  patchReview,
+  status,
+  error,
+  busy,
+  canAct,
+  copied,
+  onCopy,
+  onAccept,
+  onFeedback,
+  onReject,
+  markAnimated,
+}: PatchReviewCardProps) {
   // One-off: animate only the very first time this card is created.
   // Persist a flag so refreshes / subsequent renders do not animate.
   const shouldAnimateRef = useRef<boolean>(!(patchReview as any).hasAnimated);
@@ -162,31 +164,24 @@ export const PatchReviewCard = ({
     window.addEventListener('mouseup', onUp);
   };
 
-  const fileLabel =
-    patchReview.kind === 'replaceRangeInFile'
-      ? patchReview.filePath
-      : patchReview.kind === 'replaceSelection'
-        ? patchReview.fileName ?? 'selection.tex'
-        : null;
+  let fileLabel: string | null = null;
+  if (patchReview.kind === 'replaceRangeInFile') {
+    fileLabel = patchReview.filePath;
+  } else if (patchReview.kind === 'replaceSelection') {
+    fileLabel = patchReview.fileName ?? 'selection.tex';
+  }
 
-  const title =
-    status === 'accepted'
-      ? 'Review changes · Accepted'
-      : status === 'rejected'
-        ? 'Review changes · Rejected'
-        : 'Review changes';
+  let title = 'Review changes';
+  if (status === 'accepted') {
+    title = 'Review changes · Accepted';
+  } else if (status === 'rejected') {
+    title = 'Review changes · Rejected';
+  }
 
-  // Calculate starting line number for absolute line number display
-  const calculateStartLineNumber = (): number | undefined => {
-    if (patchReview.kind === 'replaceSelection') {
-      return patchReview.lineFrom;
-    } else if (patchReview.kind === 'replaceRangeInFile') {
-      return patchReview.lineFrom;
-    }
-    return undefined;
-  };
-
-  const startLineNumber = calculateStartLineNumber();
+  const startLineNumber =
+    (patchReview.kind === 'replaceSelection' || patchReview.kind === 'replaceRangeInFile')
+      ? patchReview.lineFrom
+      : undefined;
 
   return (
     <div class="ageaf-patch-review">
@@ -371,4 +366,4 @@ export const PatchReviewCard = ({
       ) : null}
     </div>
   );
-};
+}

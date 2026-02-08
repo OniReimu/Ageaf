@@ -301,28 +301,29 @@ If asked about the model/runtime, use this note and do not guess.`;
 
   const patchGuidance = hasOverleafFileBlocks ? patchGuidanceWithFiles : patchGuidanceNoFiles;
 
-  const selectionPatchGuidance = hasSelection
-    ? hasOverleafFileBlocks
-      ? [
-        '\nSelection edits:',
-        '- `Context.selection` contains the user\'s cursor-selected text.',
-        '- If the user wants to edit ONLY the selected text, use `ageaf-patch` with { "kind":"replaceSelection", "text":"..." }.',
-        '- If the user wants to edit the ENTIRE FILE (proofread, review, rewrite the whole document), use `AGEAF_FILE_UPDATE` markers instead.',
-        '- The /humanizer skill should be used to ensure natural, human-sounding writing (removing AI patterns).',
-        '- Keep the visible response short (change notes only, NOT the full rewritten text).',
-      ].join('\n')
-      : [
-        '\nSelection edits (CRITICAL - Review Change Card):',
-        '- If `Context.selection` is present AND the user uses words like "proofread", "paraphrase", "rewrite", "rephrase", "refine", or "improve",',
-        '  you MUST emit an `ageaf-patch` review change card with { "kind":"replaceSelection", "text":"..." }.',
-        '- This applies whether the user clicked "Rewrite Selection" button OR manually typed a message with these keywords while having text selected.',
-        '- Do NOT just output a normal fenced code block (e.g., ```tex) when editing selected content — use the ageaf-patch review change card instead.',
-        '- The review change card allows users to accept/reject the changes before applying them to Overleaf.',
-        '- EXCEPTION: Only use a normal code block if the user explicitly says "no review card", "without patch", or "just show me the code".',
-        '- The /humanizer skill should be used to ensure natural, human-sounding writing (removing AI patterns).',
-        '- Keep the visible response short (change notes only, NOT the full rewritten text).',
-      ].join('\n')
-    : '';
+  let selectionPatchGuidance = '';
+  if (hasSelection && hasOverleafFileBlocks) {
+    selectionPatchGuidance = [
+      '\nSelection edits:',
+      '- `Context.selection` contains the user\'s cursor-selected text.',
+      '- If the user wants to edit ONLY the selected text, use `ageaf-patch` with { "kind":"replaceSelection", "text":"..." }.',
+      '- If the user wants to edit the ENTIRE FILE (proofread, review, rewrite the whole document), use `AGEAF_FILE_UPDATE` markers instead.',
+      '- The /humanizer skill should be used to ensure natural, human-sounding writing (removing AI patterns).',
+      '- Keep the visible response short (change notes only, NOT the full rewritten text).',
+    ].join('\n');
+  } else if (hasSelection) {
+    selectionPatchGuidance = [
+      '\nSelection edits (CRITICAL - Review Change Card):',
+      '- If `Context.selection` is present AND the user uses words like "proofread", "paraphrase", "rewrite", "rephrase", "refine", or "improve",',
+      '  you MUST emit an `ageaf-patch` review change card with { "kind":"replaceSelection", "text":"..." }.',
+      '- This applies whether the user clicked "Rewrite Selection" button OR manually typed a message with these keywords while having text selected.',
+      '- Do NOT just output a normal fenced code block (e.g., ```tex) when editing selected content — use the ageaf-patch review change card instead.',
+      '- The review change card allows users to accept/reject the changes before applying them to Overleaf.',
+      '- EXCEPTION: Only use a normal code block if the user explicitly says "no review card", "without patch", or "just show me the code".',
+      '- The /humanizer skill should be used to ensure natural, human-sounding writing (removing AI patterns).',
+      '- Keep the visible response short (change notes only, NOT the full rewritten text).',
+    ].join('\n');
+  }
   const fileUpdateGuidance = [
     'Overleaf file edits:',
     '- The user may include `[Overleaf file: <path>]` blocks showing the current file contents.',
