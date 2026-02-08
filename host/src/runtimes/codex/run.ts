@@ -1336,6 +1336,7 @@ export async function runCodexJob(
         !method.includes('outputDelta') &&
         !method.includes('commandExecution') &&
         !method.includes('tool') &&
+        !method.includes('reasoning') &&
         !method.includes('user_message') &&
         !method.includes('userMessage')
       ) {
