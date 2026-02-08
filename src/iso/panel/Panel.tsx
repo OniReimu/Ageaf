@@ -6034,7 +6034,6 @@ const Panel = () => {
               customSystemPrompt: skillsPrompt
                 ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
                 : options.customSystemPrompt,
-              autoCompactEnabled: options.autoCompactEnabled,
               debugCliEvents: options.debugCliEvents,
             },
           }
@@ -6109,7 +6108,6 @@ const Panel = () => {
               enableTools: options.enableTools,
               enableCommandBlocklist: options.enableCommandBlocklist,
               blockedCommandsUnix: options.blockedCommandsUnix,
-              autoCompactEnabled: options.autoCompactEnabled,
               debugCliEvents: options.debugCliEvents,
             },
           };
@@ -6384,16 +6382,6 @@ const Panel = () => {
               }
             }
 
-            // Display compaction-related plan events in chat
-            if (
-              typeof message === 'string' &&
-              message.toLowerCase().includes('compact')
-            ) {
-              setMessages((prev) => [
-                ...prev,
-                createMessage({ role: 'system', content: message }),
-              ]);
-            }
             return;
           }
 
@@ -9346,24 +9334,6 @@ const Panel = () => {
                         Max characters of surrounding context (before/after
                         selection) to send to agents. 0 disables it (recommended
                         for CLI agents).
-                      </p>
-
-                      <h4 class="ageaf-settings__subhead">Compaction</h4>
-                      <label class="ageaf-settings__checkbox">
-                        <input
-                          type="checkbox"
-                          checked={settings.autoCompactEnabled ?? true}
-                          onChange={(event) =>
-                            updateSettings({
-                              autoCompactEnabled: event.currentTarget.checked,
-                            })
-                          }
-                        />
-                        Auto-compact when context usage is high
-                      </label>
-                      <p class="ageaf-settings__hint">
-                        When enabled, the host will check context usage and may
-                        issue /compact before sending your request.
                       </p>
 
                       <h4 class="ageaf-settings__subhead">Display</h4>
