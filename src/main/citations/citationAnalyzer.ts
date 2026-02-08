@@ -114,10 +114,19 @@ async function buildTexUsageCache(): Promise<TexUsageCache> {
     return { projectId, builtAt: Date.now(), usageByKey };
   }
 
-  for (const texFile of texDocs as any[]) {
-    try {
-      const content = await fetchDocDownload(projectId, texFile.id as string);
-      const hits = extractCitationsWithLocations(content);
+  // Bounded concurrency for tex file downloads
+  const TEX_CONCURRENCY = 3;
+  for (let i = 0; i < texDocs.length; i += TEX_CONCURRENCY) {
+    const chunk = (texDocs as any[]).slice(i, i + TEX_CONCURRENCY);
+    const results = await Promise.allSettled(
+      chunk.map(async (texFile: any) => {
+        const content = await fetchDocDownload(projectId, texFile.id as string);
+        return { texFile, hits: extractCitationsWithLocations(content) };
+      })
+    );
+    for (const result of results) {
+      if (result.status !== 'fulfilled') continue;
+      const { texFile, hits } = result.value;
       for (const { key, line } of hits) {
         const existing = usageByKey.get(key) ?? { usedInFiles: [], totalUsages: 0, isUsed: false };
         let fileEntry = existing.usedInFiles.find((f) => f.fileName === texFile.name);
@@ -136,8 +145,6 @@ async function buildTexUsageCache(): Promise<TexUsageCache> {
         existing.isUsed = true;
         usageByKey.set(key, existing);
       }
-    } catch {
-      // ignore per-file failures
     }
   }
 

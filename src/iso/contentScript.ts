@@ -337,4 +337,4 @@ history.replaceState = function (...args) {
 };
 
 window.addEventListener('popstate', updatePanelMount);
-window.setInterval(updatePanelMount, 1000);
+window.setInterval(updatePanelMount, 5000);
