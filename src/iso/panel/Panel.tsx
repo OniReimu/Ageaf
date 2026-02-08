@@ -2,7 +2,7 @@ import { render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import morphdom from 'morphdom';
 import {
-  expandLatexIncludes,
+  collectLatexInputPaths,
   type ProjectFile,
 } from './latexExpand';
 
@@ -547,26 +547,8 @@ const PROVIDER_DISPLAY = {
   codex: { label: 'OpenAI' },
 } as const;
 
-/**
- * Determines whether a user message implies a write operation (editing the file)
- * or a read operation (needing full context including \input expansions).
- *
- * Write mode: send raw file content so patches match the editor.
- * Read mode:  expand \input/\include so the AI sees the full document.
- */
-type FileResolveMode = 'read' | 'write';
-
-const WRITE_KEYWORDS =
-  /\b(proofread|proofreading|review|fix|edit|rewrite|rephrase|refine|improve|update|correct|revise|modify|change|polish|cleanup|clean\s*up|paraphrase|reformat|restructure)\b/i;
-
-function detectFileResolveMode(message: string): FileResolveMode {
-  // Strip @[file:...] and @[folder:...] tokens so they don't interfere
-  const stripped = message
-    .replace(/@\[file:[^\]]+\]/g, '')
-    .replace(/@\[folder:[^\]]+\]/g, '')
-    .trim();
-  return WRITE_KEYWORDS.test(stripped) ? 'write' : 'read';
-}
+/** Maximum number of \\input-referenced files to attach as read-only context. */
+const MAX_INPUT_REFERENCES = 20;
 
 const MODEL_DISPLAY = {
   opus: { label: 'Opus', description: 'Most capable for complex work' },
@@ -5826,36 +5808,54 @@ const Panel = () => {
         return content;
       };
 
-      const resolveFile = async (ref: string, mode: FileResolveMode) => {
+      /**
+       * Wrap \input-referenced file content as a read-only reference block
+       * that the AI can see but buildReplaceRangePatchesFromFileUpdates
+       * will NOT match for patching.
+       */
+      const wrapReferenceBlock = (name: string, content: string): string => {
+        let body = content;
+        if (body.length > MAX_CHARS) {
+          const head = body.slice(0, Math.floor(MAX_CHARS * 0.7));
+          const tail = body.slice(-Math.floor(MAX_CHARS * 0.3));
+          body = `${head}\n\n… [truncated ${body.length - (head.length + tail.length)
+            } chars] …\n\n${tail}`;
+        }
+        const lang = langForExt(name);
+        return `\n\n[Overleaf reference: ${name}]\n\`\`\`${lang}\n${body}\n\`\`\`\n`;
+      };
+
+      const resolveFile = async (ref: string) => {
         const raw = await fetchRawContent(ref);
         if (raw == null) {
           return `\n\n[Overleaf file: ${ref}]\n(Unable to read file content from Overleaf editor.)\n`;
         }
-        // Read mode: expand \input/\include so the AI sees the full merged document.
-        // Write mode: send raw content so patches match the actual editor content.
-        if (
-          mode === 'read' &&
-          getFileExtension(ref).toLowerCase() === '.tex'
-        ) {
+        // Always send raw content so patches match the actual editor content.
+        let result = wrapFileBlock(ref, raw);
+
+        // Attach \input-referenced files as separate read-only context blocks.
+        if (getFileExtension(ref).toLowerCase() === '.tex') {
           const projectFiles: ProjectFile[] = projectFilesRef.current
             .filter((e) => e.kind !== 'folder')
             .map((e) => ({ path: e.path, name: e.name }));
-          const expanded = await expandLatexIncludes(
-            raw,
-            fetchFileContent,
-            projectFiles,
-            ref
-          );
-          return wrapFileBlock(ref, expanded);
+          const inputPaths = collectLatexInputPaths(raw, projectFiles, ref)
+            .slice(0, MAX_INPUT_REFERENCES);
+          for (const inputPath of inputPaths) {
+            // eslint-disable-next-line no-await-in-loop
+            const inputContent = await fetchFileContent(inputPath);
+            if (inputContent != null) {
+              result += wrapReferenceBlock(inputPath, inputContent);
+            }
+          }
         }
-        return wrapFileBlock(ref, raw);
+
+        return result;
       };
 
-      const fileMode = detectFileResolveMode(rawText);
       let nextText = rawText;
       for (const ref of fileRefs) {
         // eslint-disable-next-line no-await-in-loop
-        const injection = await resolveFile(ref, fileMode);
+        const injection = await resolveFile(ref);
         const token = `@[file:${ref}]`;
         nextText = nextText.split(token).join(injection);
       }
@@ -5883,7 +5883,7 @@ const Panel = () => {
           }
           for (const entry of candidates) {
             // eslint-disable-next-line no-await-in-loop
-            const injection = await resolveFile(entry.path || entry.name, fileMode);
+            const injection = await resolveFile(entry.path || entry.name);
             folderBlock += injection;
           }
         }

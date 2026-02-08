@@ -54,7 +54,6 @@ function findOverleafFileContent(
   const base = getBaseName(trimmed);
   const baseMatches = files.filter((entry) => getBaseName(entry.filePath) === base);
   if (baseMatches.length === 1) return baseMatches[0] ?? null;
-  if (files.length === 1) return files[0] ?? null;
   return null;
 }
 
@@ -69,7 +68,7 @@ function isBlankLineOnlyChange(oldText: string, newText: string): boolean {
  * Each hunk becomes its own replaceRangeInFile patch with SHORT expectedOldText,
  * making overlay resolution strategies A-B work reliably.
  */
-function computePerHunkReplacements(
+export function computePerHunkReplacements(
   filePath: string,
   oldContent: string,
   newContent: string
