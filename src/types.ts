@@ -58,7 +58,6 @@ export interface Options {
   customSystemPrompt?: string;
   enableCommandBlocklist?: boolean;
   blockedCommandsUnix?: string;
-  autoCompactEnabled?: boolean;
   showThinkingAndTools?: boolean;
   debugCliEvents?: boolean;
   surroundingContextLimit?: number;

@@ -289,6 +289,13 @@ function stripOuterMathDelimiters(source: string): string {
   return s;
 }
 
+// Open all links in a new tab so they don't replace the Overleaf page
+renderer.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
+  tokens[idx].attrSet('target', '_blank');
+  tokens[idx].attrSet('rel', 'noopener noreferrer');
+  return self.renderToken(tokens, idx, options);
+};
+
 // Custom fence renderer with syntax highlighting
 renderer.renderer.rules.fence = (tokens, idx) => {
   const token = tokens[idx];

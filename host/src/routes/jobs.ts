@@ -14,7 +14,6 @@ import { runRewriteSelection } from '../workflows/rewriteSelection.js';
 import { runFixCompileError } from '../workflows/fixCompileError.js';
 import { setLastClaudeRuntimeConfig } from '../runtimes/claude/state.js';
 import type { ClaudeRuntimeConfig } from '../runtimes/claude/agent.js';
-import { sendCompactCommand, getContextUsage } from '../compaction/sendCompact.js';
 
 type JobSubscriber = {
   send: (event: JobEvent) => void;
@@ -65,25 +64,10 @@ type JobRequestPayload = {
     enableTools?: boolean;
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
-    autoCompactEnabled?: boolean;
     debugCliEvents?: boolean;
-  };
-  compaction?: {
-    requestCompaction: boolean;
   };
 };
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
-  const ms = Number(timeoutMs);
-  if (!Number.isFinite(ms) || ms <= 0) return promise as any;
-  let timeoutId: NodeJS.Timeout | null = null;
-  const timeoutPromise = new Promise<null>((resolve) => {
-    timeoutId = setTimeout(() => resolve(null), ms);
-  });
-  return Promise.race([promise, timeoutPromise]).finally(() => {
-    if (timeoutId) clearTimeout(timeoutId);
-  });
-}
 
 function ensureAgeafWorkspaceCwd(): string {
   const workspace = path.join(os.homedir(), '.ageaf');
@@ -154,110 +138,6 @@ export function registerJobs(server: FastifyInstance) {
     void (async () => {
       try {
         emitEvent({ event: 'plan', data: { message: 'Job queued' } });
-
-        // Auto-compaction check
-        const autoCompactEnabled = payload.userSettings?.autoCompactEnabled ?? false;
-        if (autoCompactEnabled && payload.compaction?.requestCompaction !== true) {
-          let observedUsage: any | null = null;
-          try {
-            emitEvent({ event: 'plan', data: { message: 'Checking context usage…' } });
-            const usage = await withTimeout(getContextUsage(provider, payload), 5000);
-            observedUsage = usage;
-            if (!usage) {
-              emitEvent({
-                event: 'plan',
-                data: { message: 'Auto-compact skipped: context usage check timed out.' },
-              });
-            }
-            if (usage && usage.percentage && usage.percentage >= 85) {
-              emitEvent({
-                event: 'plan',
-                data: { message: `Context at ${usage.percentage}%. Auto-compacting...` },
-              });
-
-              await sendCompactCommand(provider, payload, emitEvent);
-
-              // Refresh usage from the runtime after compaction so the client indicator updates.
-              try {
-                const nextUsage = await getContextUsage(provider, payload);
-                if (nextUsage) {
-                  emitEvent({
-                    event: 'usage',
-                    data: {
-                      model: nextUsage.model ?? null,
-                      usedTokens: nextUsage.usedTokens ?? 0,
-                      contextWindow: nextUsage.contextWindow ?? null,
-                    },
-                  });
-                }
-              } catch (error) {
-                // Ignore usage refresh failures; continue with the request.
-                console.error('Post-compaction usage refresh failed:', error);
-              }
-
-              emitEvent({
-                event: 'plan',
-                data: { message: 'Compaction complete. Processing your request...' },
-              });
-            }
-          } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : 'Auto-compaction failed';
-            emitEvent({
-              event: 'plan',
-              data: { message: `Auto-compaction failed: ${errorMessage}` },
-            });
-            console.error('Auto-compaction failed:', error);
-
-            // At very high context usage, continuing is likely to stall without a successful compaction.
-            if (provider === 'codex' && Number(observedUsage?.percentage ?? 0) >= 95) {
-              emitEvent({
-                event: 'done',
-                data: {
-                  status: 'error',
-                  message:
-                    `Auto-compaction failed at ${observedUsage?.percentage}%. ` +
-                    'Please try manual compaction or start a new conversation.',
-                },
-              });
-              return;
-            }
-          }
-        }
-
-        // Manual compaction request
-        if (payload.compaction?.requestCompaction === true) {
-          emitEvent({ event: 'plan', data: { message: 'Compacting...' } });
-          try {
-            await sendCompactCommand(provider, payload, emitEvent);
-            // Refresh usage from the runtime after compaction so the client indicator updates.
-            try {
-              const nextUsage = await getContextUsage(provider, payload);
-              if (nextUsage) {
-                emitEvent({
-                  event: 'usage',
-                  data: {
-                    model: nextUsage.model ?? null,
-                    usedTokens: nextUsage.usedTokens ?? 0,
-                    contextWindow: nextUsage.contextWindow ?? null,
-                  },
-                });
-              }
-            } catch (error) {
-              // Ignore usage refresh failures; compaction itself may still have succeeded.
-              console.error('Post-compaction usage refresh failed:', error);
-            }
-            emitEvent({ event: 'done', data: { status: 'ok', message: 'Compaction complete' } });
-          } catch (error) {
-            emitEvent({
-              event: 'done',
-              data: {
-                status: 'error',
-                message: error instanceof Error ? error.message : 'Compaction failed',
-              },
-            });
-          }
-          return;
-        }
 
         if (provider === 'codex') {
           const action = payload.action ?? 'chat';
