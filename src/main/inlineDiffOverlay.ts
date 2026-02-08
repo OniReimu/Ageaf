@@ -669,7 +669,7 @@ function matchesActiveFile(
   return active === target || active === base;
 }
 
-function findUniqueRange(fullText: string, needle: string) {
+function findUniqueRange(fullText: string, needle: string): { from: number; to: number } | null {
   if (!needle) return null;
   const first = fullText.indexOf(needle);
   if (first === -1) return null;
@@ -678,20 +678,20 @@ function findUniqueRange(fullText: string, needle: string) {
   return { from: first, to: first + needle.length };
 }
 
-function findFirstOccurrence(fullText: string, needle: string) {
+function findFirstOccurrence(fullText: string, needle: string): { from: number; to: number } | null {
   if (!needle) return null;
   const idx = fullText.indexOf(needle);
   if (idx === -1) return null;
   return { from: idx, to: idx + needle.length };
 }
 
-function findTrimmedRange(fullText: string, needle: string) {
+function findTrimmedRange(fullText: string, needle: string): { from: number; to: number } | null {
   const trimmed = needle.trim();
   if (!trimmed || trimmed === needle) return null;
   return findUniqueRange(fullText, trimmed);
 }
 
-function findNormalizedRange(fullText: string, needle: string) {
+function findNormalizedRange(fullText: string, needle: string): { from: number; to: number } | null {
   const normalize = (s: string) => s.replace(/[^\S\n]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
   const normNeedle = normalize(needle);
   const normFull = normalize(fullText);

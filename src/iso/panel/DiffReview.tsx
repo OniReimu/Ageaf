@@ -35,8 +35,6 @@ function formatElapsed(seconds: number) {
   return `${secs}s`;
 }
 
-// copyToClipboard imported from './clipboard'
-
 function injectShadowOverrides(shadowRoot: ShadowRoot, options: { wrap: boolean }) {
   const existing = shadowRoot.querySelector(`style#${SHADOW_OVERRIDES_STYLE_ID}`) as HTMLStyleElement | null;
   const style = existing ?? document.createElement('style');

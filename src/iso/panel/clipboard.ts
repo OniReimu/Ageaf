@@ -33,13 +33,7 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     document.execCommand('copy');
     document.body.removeChild(textarea);
     return true;
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.includes('Extension context invalidated')
-    ) {
-      return false;
-    }
+  } catch {
     return false;
   }
 }
