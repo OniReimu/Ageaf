@@ -6,8 +6,6 @@ import {
   respondToJobRequest as httpRespondToJobRequest,
   fetchClaudeRuntimeMetadata as httpFetchClaudeRuntimeMetadata,
   fetchCodexRuntimeMetadata as httpFetchCodexRuntimeMetadata,
-  fetchHostToolsStatus as httpFetchHostToolsStatus,
-  setHostToolsEnabled as httpSetHostToolsEnabled,
   updateClaudeRuntimePreferences as httpUpdateClaudeRuntimePreferences,
   fetchClaudeRuntimeContextUsage as httpFetchClaudeRuntimeContextUsage,
   fetchCodexRuntimeContextUsage as httpFetchCodexRuntimeContextUsage,
@@ -40,10 +38,6 @@ export function httpTransport(options: Options): Transport {
     fetchClaudeRuntimeMetadata: () => httpFetchClaudeRuntimeMetadata(options),
 
     fetchCodexRuntimeMetadata: () => httpFetchCodexRuntimeMetadata(options),
-
-    fetchHostToolsStatus: () => httpFetchHostToolsStatus(options),
-
-    setHostToolsEnabled: (enabled: boolean) => httpSetHostToolsEnabled(options, enabled),
 
     updateClaudeRuntimePreferences: (
       payload: { model?: string | null; thinkingMode?: string | null }

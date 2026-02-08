@@ -53,7 +53,6 @@ export interface Options {
   openaiCodexCliPath?: string;
   openaiEnvVars?: string;
   openaiApprovalPolicy?: 'untrusted' | 'on-request' | 'on-failure' | 'never';
-  enableTools?: boolean;
   displayName?: string;
   customSystemPrompt?: string;
   enableCommandBlocklist?: boolean;

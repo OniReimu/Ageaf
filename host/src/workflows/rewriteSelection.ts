@@ -11,7 +11,6 @@ type RewritePayload = {
   };
   runtime?: { claude?: ClaudeRuntimeConfig };
   userSettings?: {
-    enableTools?: boolean;
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
   };
@@ -150,7 +149,6 @@ export async function runRewriteSelection(payload: RewritePayload, emitEvent: Em
       enabled: payload.userSettings?.enableCommandBlocklist ?? false,
       patternsText: payload.userSettings?.blockedCommandsUnix,
     },
-    enableTools: payload.userSettings?.enableTools ?? false,
   });
 
   const status = (doneEvent.data as any)?.status;

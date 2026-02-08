@@ -114,7 +114,6 @@ async function sendClaudeCompact(
       emitEvent: compactEmit,
       runtime,
       safety: { enabled: false },
-      enableTools: false,
       debugCliEvents,
     });
 

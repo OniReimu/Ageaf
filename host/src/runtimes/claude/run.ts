@@ -39,7 +39,6 @@ type ClaudeJobPayload = {
   userSettings?: {
     displayName?: string;
     customSystemPrompt?: string;
-    enableTools?: boolean;
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
     debugCliEvents?: boolean;
@@ -386,7 +385,6 @@ If asked about the model/runtime, use this note and do not guess.`;
     patternsText: payload.userSettings?.blockedCommandsUnix,
   };
 
-  const enableTools = payload.userSettings?.enableTools ?? false;
   const debugCliEvents = payload.userSettings?.debugCliEvents ?? false;
   const emitTrace = (message: string, data?: Record<string, unknown>) => {
     if (!debugCliEvents) return;
@@ -416,7 +414,6 @@ If asked about the model/runtime, use this note and do not guess.`;
     emitEvent: wrappedEmit,
     runtime: payload.runtime?.claude,
     safety,
-    enableTools,
     debugCliEvents,
   });
   emitTrace('Claude: reply completed');
