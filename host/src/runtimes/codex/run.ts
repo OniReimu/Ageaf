@@ -17,6 +17,12 @@ import { validatePatch } from '../../validate.js';
 import { getCodexAppServer } from './appServer.js';
 import { parseCodexTokenUsage } from './tokenUsage.js';
 import { getEnhancedPath, parseEnvironmentVariables } from '../claude/cli.js';
+import {
+  compileBlockedCommandPatterns,
+  matchBlockedCommand,
+  parseBlockedCommandPatterns,
+  type CompiledBlockedCommandPattern,
+} from '../claude/safety.js';
 
 // Debug logging to console (enabled via AGEAF_DEBUG_CLI=true)
 const debugToConsole = process.env.AGEAF_DEBUG_CLI === 'true';
@@ -57,6 +63,8 @@ type CodexJobPayload = {
     displayName?: string;
     debugCliEvents?: boolean;
     surroundingContextLimit?: number;
+    enableCommandBlocklist?: boolean;
+    blockedCommandsUnix?: string;
   };
 };
 
@@ -789,6 +797,22 @@ export async function runCodexJob(
   let threadId = typeof runtime.threadId === 'string' ? runtime.threadId.trim() : '';
   const cwd = getCodexSessionCwd(threadId);
   const approvalPolicy = normalizeApprovalPolicy(runtime.approvalPolicy);
+
+  // Command blocklist: compile patterns from user settings.
+  const blocklistEnabled = payload.userSettings?.enableCommandBlocklist ?? false;
+  const compiledBlockedPatterns: CompiledBlockedCommandPattern[] = blocklistEnabled
+    ? compileBlockedCommandPatterns(
+        parseBlockedCommandPatterns(payload.userSettings?.blockedCommandsUnix)
+      )
+    : [];
+
+  // If blocklist is active and the user's policy auto-approves everything,
+  // escalate to 'on-request' so the CLI sends requestApproval events we can intercept.
+  const effectiveApprovalPolicy: CodexApprovalPolicy =
+    compiledBlockedPatterns.length > 0 && approvalPolicy === 'never'
+      ? 'on-request'
+      : approvalPolicy;
+
   const model =
     typeof runtime.model === 'string' && runtime.model.trim() ? runtime.model.trim() : null;
   const effort =
@@ -813,7 +837,7 @@ export async function runCodexJob(
         model,
         modelProvider: null,
         cwd,
-        approvalPolicy,
+        approvalPolicy: effectiveApprovalPolicy,
         sandbox: 'read-only',
         config: null,
         baseInstructions: null,
@@ -843,7 +867,7 @@ export async function runCodexJob(
         model,
         modelProvider: null,
         cwd,
-        approvalPolicy,
+        approvalPolicy: effectiveApprovalPolicy,
         sandbox: 'read-only',
         config: null,
         baseInstructions: null,
@@ -871,7 +895,8 @@ export async function runCodexJob(
     imageCount: images.length,
     attachmentCount: attachments.length,
     surroundingContextLimit,
-    approvalPolicy,
+    approvalPolicy: effectiveApprovalPolicy,
+    blocklistEnabled: compiledBlockedPatterns.length > 0,
     model: model ?? undefined,
     effort: effort ?? undefined,
     turnTimeoutSec: Number.isFinite(turnTimeoutMs) && turnTimeoutMs > 0
@@ -1091,11 +1116,38 @@ export async function runCodexJob(
           debugLog('approval request received', {
             ...(options?.jobId ? { jobId: options.jobId } : {}),
             method,
-            approvalPolicy,
+            approvalPolicy: effectiveApprovalPolicy,
+            blocklistEnabled: compiledBlockedPatterns.length > 0,
             eventThreadId: msgThreadId ?? undefined,
             expectedThreadId: threadId,
           });
         }
+
+        // Command blocklist check: reject commands that match blocked patterns.
+        if (compiledBlockedPatterns.length > 0) {
+          const approvalCommand =
+            typeof params?.command === 'string' ? params.command : null;
+          if (approvalCommand) {
+            const matched = matchBlockedCommand(approvalCommand, compiledBlockedPatterns);
+            if (matched) {
+              void appServer.respond(requestId as any, 'reject');
+              emitTrace('Codex: blocked command via blocklist', {
+                command: approvalCommand.slice(0, 100),
+                matchedPattern: matched,
+              });
+              emitEvent({
+                event: 'plan',
+                data: {
+                  message: `Blocked command: \`${approvalCommand.slice(0, 80)}\` (matched pattern: ${matched})`,
+                },
+              });
+              return;
+            }
+          }
+        }
+
+        // If the user's original policy was 'never' (auto-approve everything),
+        // auto-approve non-blocked commands to preserve UX.
         if (approvalPolicy === 'never') {
           void appServer.respond(requestId as any, 'accept');
           emitTrace('Codex: auto-accepted approval');
@@ -1771,7 +1823,8 @@ export async function runCodexJob(
     debugLog('sending turn/start', {
       ...(options?.jobId ? { jobId: options.jobId } : {}),
       threadId,
-      approvalPolicy,
+      approvalPolicy: effectiveApprovalPolicy,
+      blocklistEnabled: compiledBlockedPatterns.length > 0,
       model: model ?? undefined,
       effort: effort ?? undefined,
     });
@@ -1782,7 +1835,7 @@ export async function runCodexJob(
       threadId,
       input,
       cwd,
-      approvalPolicy,
+      approvalPolicy: effectiveApprovalPolicy,
       sandboxPolicy: { type: 'readOnly' },
       model,
       effort,
