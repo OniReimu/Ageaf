@@ -5528,6 +5528,18 @@ const Panel = () => {
     activeJobIdRef.current = null;
     sessionState.activeJobId = null;
 
+    // Capture streaming thinking/CoT before clearing so we can persist them
+    if (streamingCoTRef.current.length > 0) {
+      completeLastTool(streamingCoTRef.current);
+    }
+    const thinkingToPersist = streamingThinkingRef.current
+      ? [streamingThinkingRef.current]
+      : undefined;
+    const cotToPersist =
+      streamingCoTRef.current.length > 0
+        ? [...streamingCoTRef.current]
+        : undefined;
+
     // Close any unclosed code fences before adding the interruption marker
     const partial = closeUnfinishedCodeFences(
       sessionState.streamingText.trim()
@@ -5537,13 +5549,20 @@ const Panel = () => {
       : INTERRUPTED_BY_USER_MARKER;
     setMessages((prev) => [
       ...prev,
-      createMessage({ role: 'assistant', content }),
+      createMessage({
+        role: 'assistant',
+        content,
+        ...(thinkingToPersist ? { thinking: thinkingToPersist } : {}),
+        ...(cotToPersist ? { cot: cotToPersist } : {}),
+      }),
     ]);
 
     setStreamingText('');
     setStreamingThinking('');
+    setStreamingCoT([]);
     streamingTextRef.current = '';
     streamingThinkingRef.current = '';
+    streamingCoTRef.current = [];
     sessionState.streamingText = '';
     setStreamingState(null, false);
 
