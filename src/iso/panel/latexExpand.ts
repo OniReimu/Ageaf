@@ -105,6 +105,53 @@ export const resolveLatexRef = (
  *   - Commented-out directives (`% \input{…}`) are left untouched.
  *   - Failed fetches leave the original directive in place.
  */
+/**
+ * Collect the project-file paths referenced by \\input/\\include/\\bibliography
+ * directives in `texContent`.  Does NOT inline content — just returns the
+ * resolved paths for attaching as read-only context.
+ */
+export const collectLatexInputPaths = (
+  texContent: string,
+  projectFiles: ProjectFile[],
+  currentFilePath: string
+): string[] => {
+  const contextDir = currentFilePath.includes('/')
+    ? currentFilePath.slice(0, currentFilePath.lastIndexOf('/'))
+    : '';
+
+  const directiveRe =
+    /\\(input|include|bibliography|addbibresource)\s*\{([^}]+)\}/g;
+  const paths: string[] = [];
+  const seen = new Set<string>();
+
+  for (const line of texContent.split('\n')) {
+    if (line.trimStart().startsWith('%')) continue;
+    const commentIdx = line.indexOf('%');
+    const nonComment = commentIdx >= 0 ? line.slice(0, commentIdx) : line;
+
+    let m: RegExpExecArray | null;
+    directiveRe.lastIndex = 0;
+    while ((m = directiveRe.exec(nonComment)) !== null) {
+      const directive = m[1] as DirectiveKind;
+      const rawArg = m[2].trim();
+      const refList =
+        directive === 'bibliography'
+          ? rawArg.split(',').map((s) => s.trim())
+          : [rawArg];
+
+      for (const inputRef of refList) {
+        const resolved = resolveLatexRef(inputRef, directive, contextDir, projectFiles);
+        if (resolved && !seen.has(resolved)) {
+          seen.add(resolved);
+          paths.push(resolved);
+        }
+      }
+    }
+  }
+
+  return paths;
+};
+
 export const expandLatexIncludes = async (
   texContent: string,
   fetchFile: FileFetcher,

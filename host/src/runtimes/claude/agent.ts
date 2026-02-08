@@ -14,6 +14,7 @@ import {
 } from './safety.js';
 import { loadHostSettings } from '../../hostSettings.js';
 import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
+import { computePerHunkReplacements } from '../../patch/fileUpdate.js';
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -524,7 +525,14 @@ async function runQuery(
           }
 
           if (parsedPatch?.success) {
-            emitEvent({ event: 'patch', data: parsedPatch.data });
+            const pd = parsedPatch.data as Patch;
+            if (pd.kind === 'replaceRangeInFile') {
+              for (const hunk of computePerHunkReplacements(pd.filePath, pd.expectedOldText, pd.text)) {
+                emitEvent({ event: 'patch', data: hunk });
+              }
+            } else {
+              emitEvent({ event: 'patch', data: pd });
+            }
           } else {
             emitEvent({
               event: 'done',
@@ -539,7 +547,14 @@ async function runQuery(
             const candidate = extractJsonObject(patchFence);
             const parsed = PatchSchema.safeParse(candidate);
             if (parsed.success) {
-              emitEvent({ event: 'patch', data: parsed.data });
+              const pd = parsed.data as Patch;
+              if (pd.kind === 'replaceRangeInFile') {
+                for (const hunk of computePerHunkReplacements(pd.filePath, pd.expectedOldText, pd.text)) {
+                  emitEvent({ event: 'patch', data: hunk });
+                }
+              } else {
+                emitEvent({ event: 'patch', data: pd });
+              }
             }
           }
         }
