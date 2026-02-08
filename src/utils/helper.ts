@@ -47,7 +47,7 @@ function applyOptionDefaults(input: Options): Options {
     options.openaiApprovalPolicy = 'never';
   }
   
-  if (options.enableCommandBlocklist === undefined) options.enableCommandBlocklist = false;
+  if (options.enableCommandBlocklist === undefined) options.enableCommandBlocklist = true;
   if (!options.blockedCommandsUnix) {
     options.blockedCommandsUnix = 'rm -rf\nchmod 777\nchmod -R 777';
   }
