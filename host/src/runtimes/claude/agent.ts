@@ -13,7 +13,7 @@ import {
   parseBlockedCommandPatterns,
 } from './safety.js';
 import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
-import { computePerHunkReplacements } from '../../patch/fileUpdate.js';
+import { computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -32,6 +32,7 @@ type TextRunInput = {
   runtime?: ClaudeRuntimeConfig;
   safety?: CommandBlocklistConfig;
   debugCliEvents?: boolean;
+  overleafMessage?: string;
 };
 
 export type ClaudeRuntimeConfig = {
@@ -142,13 +143,16 @@ function extractJsonObject(value: string): unknown {
   }
 }
 
+type RunQueryResult = { resultText: string | null; emittedPatchFiles: Set<string> };
+
 async function runQuery(
   prompt: string | AsyncIterable<SDKUserMessage>,
   emitEvent: EmitEvent,
   runtime: ClaudeRuntimeConfig,
   structuredOutput?: { schema: z.ZodSchema; name: string },
   safety?: CommandBlocklistConfig,
-): Promise<string | null> {
+  overleafMessage?: string,
+): Promise<RunQueryResult> {
   const customEnv = parseEnvironmentVariables(runtime.envVars ?? '');
   const resolvedCliPath = resolveClaudeCliPath(runtime.cliPath, customEnv.PATH);
   const combinedEnv = {
@@ -180,7 +184,7 @@ async function runQuery(
         message: 'Claude Code is not configured. Open a terminal, log in, then retry.',
       },
     });
-    return null;
+    return { resultText: null, emittedPatchFiles: new Set() };
   }
 
   const configuredModel =
@@ -254,13 +258,23 @@ async function runQuery(
   const payloadStartRe =
     /```(?:ageaf[-_]?patch)|<<<\s*AGEAF_REWRITE\s*>>>|<<<\s*AGEAF_FILE_UPDATE\b/i;
   const HOLD_BACK_CHARS = 32;
+  let payloadBuffer = '';
+  const emittedPatchFiles = new Set<string>();
+  const overleafFiles = overleafMessage
+    ? extractOverleafFilesFromMessage(overleafMessage)
+    : [];
+
   let insideDiagramFence = false;
   let diagramBuffer = '';
   const diagramOpenRe = /```ageaf-diagram[^\n]*\n/i;
 
   const emitVisibleDelta = (text: string) => {
     if (!text) return;
-    if (payloadStarted) return;
+    if (payloadStarted) {
+      payloadBuffer += text;
+      extractAndEmitCompletedBlocks();
+      return;
+    }
 
     // --- Diagram fence accumulation mode ---
     if (insideDiagramFence) {
@@ -313,7 +327,9 @@ async function runQuery(
         emitEvent({ event: 'delta', data: { text: beforePayload } });
       }
       payloadStarted = true;
+      payloadBuffer = visibleBuffer.slice(matchIndex);
       visibleBuffer = '';
+      extractAndEmitCompletedBlocks();
       return;
     }
 
@@ -337,6 +353,39 @@ async function runQuery(
     if (!visibleBuffer) return;
     emitEvent({ event: 'delta', data: { text: visibleBuffer } });
     visibleBuffer = '';
+  };
+
+  const extractAndEmitCompletedBlocks = () => {
+    if (overleafFiles.length === 0) return;
+    const blockRe =
+      /<<<\s*AGEAF_FILE_UPDATE\s+path="([^"]+)"\s*>>>\s*\n([\s\S]*?)\n<<<\s*AGEAF_FILE_UPDATE_END\s*>>>/gi;
+    let match: RegExpExecArray | null;
+    let lastMatchEnd = 0;
+
+    while ((match = blockRe.exec(payloadBuffer)) !== null) {
+      const markerPath = match[1]?.trim();
+      const content = match[2] ?? '';
+      lastMatchEnd = match.index + match[0].length;
+      if (!markerPath) continue;
+
+      const originalFile = findOverleafFileContent(markerPath, overleafFiles);
+      if (!originalFile) continue;
+
+      // Use canonical path (from the [Overleaf file:] block) for both patches
+      // and dedup, matching what buildReplaceRangePatchesFromFileUpdates uses.
+      const canonicalPath = originalFile.filePath;
+      const patches = computePerHunkReplacements(canonicalPath, originalFile.content, content);
+      for (const patch of patches) {
+        emitEvent({ event: 'patch', data: patch });
+      }
+      if (patches.length > 0) {
+        emittedPatchFiles.add(canonicalPath);
+      }
+    }
+
+    if (lastMatchEnd > 0) {
+      payloadBuffer = payloadBuffer.slice(lastMatchEnd);
+    }
   };
 
   const emitUsage = (resultMessage: {
@@ -575,7 +624,7 @@ async function runQuery(
     emitEvent({ event: 'done', data: { status: 'ok' } });
   }
 
-  return resultText;
+  return { resultText, emittedPatchFiles };
 }
 
 export async function runClaudeStructuredPatch(input: StructuredPatchInput) {
@@ -624,7 +673,7 @@ export async function runClaudeStructuredPatch(input: StructuredPatchInput) {
   );
 }
 
-export async function runClaudeText(input: TextRunInput): Promise<string | null> {
+export async function runClaudeText(input: TextRunInput): Promise<RunQueryResult> {
   if (process.env.AGEAF_CLAUDE_MOCK === 'true') {
     input.emitEvent({ event: 'delta', data: { text: 'Mock response.' } });
     input.emitEvent({
@@ -636,7 +685,7 @@ export async function runClaudeText(input: TextRunInput): Promise<string | null>
       },
     });
     input.emitEvent({ event: 'done', data: { status: 'ok' } });
-    return 'Mock response.';
+    return { resultText: 'Mock response.', emittedPatchFiles: new Set() };
   }
 
   return await runQuery(
@@ -645,6 +694,7 @@ export async function runClaudeText(input: TextRunInput): Promise<string | null>
     input.runtime ?? {},
     undefined,
     input.safety,
+    input.overleafMessage,
   );
 }
 

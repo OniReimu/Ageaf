@@ -42,7 +42,7 @@ export function extractFileUpdateMarkers(output: string) {
   return updates;
 }
 
-function findOverleafFileContent(
+export function findOverleafFileContent(
   targetPath: string,
   files: ExtractedOverleafFile[]
 ): ExtractedOverleafFile | null {

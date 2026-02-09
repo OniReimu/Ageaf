@@ -407,7 +407,7 @@ If asked about the model/runtime, use this note and do not guess.`;
   emitTrace('Sending request to Claude…', {
     runtime: runtimeStatus.cliPath ? 'Claude Code CLI' : 'Anthropic API',
   });
-  const resultText = await runClaudeText({
+  const { resultText, emittedPatchFiles } = await runClaudeText({
     prompt: (images.length > 0 || pdfDocuments.length > 0)
       ? buildMediaPromptStream(promptText, images, pdfDocuments)
       : promptText,
@@ -415,6 +415,7 @@ If asked about the model/runtime, use this note and do not guess.`;
     runtime: payload.runtime?.claude,
     safety,
     debugCliEvents,
+    overleafMessage: hasOverleafFileBlocks ? messageWithAttachments : undefined,
   });
   emitTrace('Claude: reply completed');
 
@@ -424,12 +425,13 @@ If asked about the model/runtime, use this note and do not guess.`;
     return;
   }
 
-  if (!patchEmitted && hasOverleafFileBlocks && typeof resultText === 'string' && resultText) {
+  if (hasOverleafFileBlocks && typeof resultText === 'string' && resultText) {
     const patches = buildReplaceRangePatchesFromFileUpdates({
       output: resultText,
       message: messageWithAttachments,
     });
     for (const patch of patches) {
+      if (patch.kind === 'replaceRangeInFile' && emittedPatchFiles.has(patch.filePath)) continue;
       emitEvent({ event: 'patch', data: patch });
       patchEmitted = true;
     }

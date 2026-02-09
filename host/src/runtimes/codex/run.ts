@@ -12,7 +12,7 @@ import {
   type DocumentAttachmentEntry,
 } from '../../attachments/documentAttachments.js';
 import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
-import { buildReplaceRangePatchesFromFileUpdates, computePerHunkReplacements } from '../../patch/fileUpdate.js';
+import { buildReplaceRangePatchesFromFileUpdates, computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
 import { validatePatch } from '../../validate.js';
 import { getCodexAppServer } from './appServer.js';
 import { parseCodexTokenUsage } from './tokenUsage.js';
@@ -927,11 +927,51 @@ export async function runCodexJob(
   const patchPayloadStartRe =
     /```(?:ageaf[-_]?patch)|<<<\s*AGEAF_REWRITE\s*>>>|<<<\s*AGEAF_FILE_UPDATE\b/i;
   const HOLD_BACK_CHARS = 32;
+  let payloadBuffer = '';
+  const emittedPatchFiles = new Set<string>();
+  const hasOverleafFileBlocks = messageWithAttachments.includes('[Overleaf file:');
+  const overleafFiles = hasOverleafFileBlocks
+    ? extractOverleafFilesFromMessage(messageWithAttachments)
+    : [];
 
   // --- Diagram fence buffering (mirrors Claude agent.ts) ---
   let insideDiagramFence = false;
   let diagramBuffer = '';
   const diagramOpenRe = /```ageaf-diagram[^\n]*\n/i;
+
+  const extractAndEmitCompletedBlocks = () => {
+    if (overleafFiles.length === 0) return;
+    const blockRe =
+      /<<<\s*AGEAF_FILE_UPDATE\s+path="([^"]+)"\s*>>>\s*\n([\s\S]*?)\n<<<\s*AGEAF_FILE_UPDATE_END\s*>>>/gi;
+    let match: RegExpExecArray | null;
+    let lastMatchEnd = 0;
+
+    while ((match = blockRe.exec(payloadBuffer)) !== null) {
+      const markerPath = match[1]?.trim();
+      const content = match[2] ?? '';
+      lastMatchEnd = match.index + match[0].length;
+      if (!markerPath) continue;
+
+      const originalFile = findOverleafFileContent(markerPath, overleafFiles);
+      if (!originalFile) continue;
+
+      // Use canonical path (from the [Overleaf file:] block) for both patches
+      // and dedup, matching what buildReplaceRangePatchesFromFileUpdates uses.
+      const canonicalPath = originalFile.filePath;
+      const patches = computePerHunkReplacements(canonicalPath, originalFile.content, content);
+      for (const patch of patches) {
+        emitEvent({ event: 'patch', data: patch });
+      }
+      if (patches.length > 0) {
+        emittedPatchFiles.add(canonicalPath);
+        patchEmitted = true;
+      }
+    }
+
+    if (lastMatchEnd > 0) {
+      payloadBuffer = payloadBuffer.slice(lastMatchEnd);
+    }
+  };
 
   /**
    * Process a visible delta through diagram fence detection/buffering,
@@ -990,7 +1030,9 @@ export async function runCodexJob(
         emitEvent({ event: 'delta', data: { text: beforeFence } });
       }
       patchPayloadStarted = true;
+      payloadBuffer = visibleBuffer.slice(matchIndex);
       visibleBuffer = '';
+      extractAndEmitCompletedBlocks();
       return;
     }
 
@@ -1320,6 +1362,8 @@ export async function runCodexJob(
           }
 
           if (patchPayloadStarted) {
+            payloadBuffer += delta;
+            extractAndEmitCompletedBlocks();
             return;
           }
 
@@ -1355,6 +1399,8 @@ export async function runCodexJob(
         }
 
         if (patchPayloadStarted) {
+          payloadBuffer += delta;
+          extractAndEmitCompletedBlocks();
           return;
         }
 
@@ -1704,12 +1750,13 @@ export async function runCodexJob(
             }
           }
 
-          if (!patchEmitted) {
+          if (hasOverleafFileBlocks) {
             const patches = buildReplaceRangePatchesFromFileUpdates({
               output: fullText,
               message: messageWithAttachments,
             });
             for (const patch of patches) {
+              if (patch.kind === 'replaceRangeInFile' && emittedPatchFiles.has(patch.filePath)) continue;
               emitEvent({ event: 'patch', data: patch });
               patchEmitted = true;
             }
@@ -1765,7 +1812,10 @@ export async function runCodexJob(
 
           if (deltaToEmit && !shouldHidePatchPayload) {
             emitEvent({ event: 'delta', data: { text: deltaToEmit } });
-          } else if (deltaToEmit && !patchPayloadStarted) {
+          } else if (deltaToEmit && patchPayloadStarted) {
+            payloadBuffer += deltaToEmit;
+            extractAndEmitCompletedBlocks();
+          } else if (deltaToEmit) {
             emitVisibleDelta(deltaToEmit);
           }
         }

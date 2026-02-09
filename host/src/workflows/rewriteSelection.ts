@@ -141,7 +141,7 @@ export async function runRewriteSelection(payload: RewritePayload, emitEvent: Em
     emitEvent(event);
   };
 
-  const resultText = await runClaudeText({
+  const { resultText } = await runClaudeText({
     prompt,
     emitEvent: wrappedEmit,
     runtime: payload.runtime?.claude,
