@@ -120,6 +120,18 @@ function stripInterruptedByUserSuffix(text: string) {
   return normalized.replace(INTERRUPTED_BY_USER_REGEX, '').trimEnd();
 }
 
+function getPatchIdentityKey(message: StoredMessage) {
+  const review = message.patchReview;
+  if (!review) return null;
+  if (review.kind === 'replaceRangeInFile') {
+    return `replaceRangeInFile:${review.filePath}:${review.expectedOldText}:${review.text}`;
+  }
+  if (review.kind === 'replaceSelection') {
+    return `replaceSelection:${review.from}:${review.to}:${review.selection}:${review.text}`;
+  }
+  return `insertAtCursor:${review.text}`;
+}
+
 /* ── Module-level constants (hoisted from inside Panel) ────────────────── */
 
 const ATTACHMENT_LABEL_REGEX = /^\[Attachment: .+ · \d+ lines\]$/;
@@ -695,6 +707,7 @@ const Panel = () => {
 
     // Patch proposals received while streaming a reply
     pendingPatchReviewMessages: StoredMessage[];
+    preStreamMessageCount: number | null;
 
     // Debug/trace (per in-flight message)
     debugCliEventsEnabled: boolean;
@@ -729,6 +742,7 @@ const Panel = () => {
     lastActivity: Date.now(),
     pendingDone: null,
     pendingPatchReviewMessages: [],
+    preStreamMessageCount: null,
     debugCliEventsEnabled: false,
 
     thinkingBuffer: '',
@@ -4716,14 +4730,24 @@ const Panel = () => {
             ? finalText || pending.message || ''
             : pending.message ?? `Job failed (${pending.status})`;
 
-        // Assistant notes/summary first, then review cards after.
+        // Insert assistant output before patch-review cards emitted in this stream.
+        const preStreamCount = Math.min(
+          sessionState.preStreamMessageCount ?? updatedMessages.length,
+          updatedMessages.length
+        );
+        let assistantInsertIndex = updatedMessages.length;
+        for (let i = updatedMessages.length - 1; i >= preStreamCount; i--) {
+          if (!updatedMessages[i].patchReview) break;
+          assistantInsertIndex = i;
+        }
+
         if (!shouldSkipEmptyOkMessage) {
           const content =
             pending.status === 'ok' && !responseContent
               ? 'Job completed with no output.'
               : responseContent;
 
-          updatedMessages.push({
+          updatedMessages.splice(assistantInsertIndex, 0, {
             role: pending.status === 'ok' ? 'assistant' : 'system',
             content,
             ...(statusLine ? { statusLine } : {}),
@@ -4732,18 +4756,32 @@ const Panel = () => {
           });
         }
 
-        // Flush queued patch review cards after the assistant message.
+        // Flush queued patch review cards, deduplicating against cards already
+        // persisted mid-stream.
         if (pending.status === 'ok') {
           if (sessionState.pendingPatchReviewMessages.length > 0) {
-            const patchStoredMessages = [
-              ...sessionState.pendingPatchReviewMessages,
-            ];
+            const existingPatchSet = new Set(
+              updatedMessages
+                .map((message) => getPatchIdentityKey(message))
+                .filter((key): key is string => typeof key === 'string')
+            );
+            const patchStoredMessages =
+              sessionState.pendingPatchReviewMessages.filter((message) => {
+                const key = getPatchIdentityKey(message);
+                if (!key) return true;
+                if (existingPatchSet.has(key)) return false;
+                existingPatchSet.add(key);
+                return true;
+              });
             sessionState.pendingPatchReviewMessages = [];
-            updatedMessages.push(...patchStoredMessages);
+            if (patchStoredMessages.length > 0) {
+              updatedMessages.push(...patchStoredMessages);
+            }
           }
         } else {
           sessionState.pendingPatchReviewMessages = [];
         }
+        sessionState.preStreamMessageCount = null;
 
         // Reset
         streamingThinkingRef.current = '';
@@ -4867,6 +4905,7 @@ const Panel = () => {
     sessionState.activeJobId = null;
     sessionState.interrupted = false;
     sessionState.thinkingComplete = false;
+    sessionState.preStreamMessageCount = null;
 
     // Update UI if this is the current session
     if (conversationId === chatConversationIdRef.current) {
@@ -4926,6 +4965,7 @@ const Panel = () => {
     sessionState.streamTokens = [];
     sessionState.pendingDone = null;
     sessionState.pendingPatchReviewMessages = [];
+    sessionState.preStreamMessageCount = null;
 
     // Update UI
     interruptedRef.current = true;
@@ -5010,6 +5050,13 @@ const Panel = () => {
     const sessionConversationId: string = conversationId;
     const provider = chatProvider;
     const sessionState = getSessionState(sessionConversationId);
+    const streamStartState = chatStateRef.current;
+    const streamStartConversation = streamStartState
+      ? findConversation(streamStartState, sessionConversationId)
+      : null;
+    // Include the user message that is appended to the visible transcript below.
+    sessionState.preStreamMessageCount =
+      (streamStartConversation?.messages.length ?? 0) + 1;
     let patchFeedbackTargetActive =
       patchFeedbackTarget &&
         patchFeedbackTarget.conversationId === sessionConversationId
@@ -5999,6 +6046,30 @@ const Panel = () => {
             return;
           }
 
+          if (event.event === 'file_started') {
+            const filePath = (event.data as any)?.filePath;
+            if (typeof filePath === 'string' && filePath.trim()) {
+              const displayPath = filePath.trim();
+              sessionState.statusPrefix = `Reviewing: ${displayPath}`;
+              const elapsedSeconds = sessionState.activityStartTime
+                ? Math.max(
+                  0,
+                  Math.floor(
+                    (Date.now() - sessionState.activityStartTime) / 1000
+                  )
+                )
+                : null;
+              const status = formatStreamingStatusLine(
+                `Reviewing: ${displayPath}`,
+                elapsedSeconds
+              );
+              if (sessionConversationId === chatConversationIdRef.current) {
+                if (status) setStreamingState(status, true);
+              }
+            }
+            return;
+          }
+
           if (event.event === 'patch') {
             markThinkingComplete(sessionConversationId);
             sessionState.didReceivePatch = true;
@@ -6143,6 +6214,7 @@ const Panel = () => {
             }
 
             if (!storedPatchReviewMessage) return;
+            const patchMessage: StoredMessage = storedPatchReviewMessage;
 
             // For chat actions during an active job, queue the review card
             // so it is flushed after the assistant message in maybeFinalizeStream.
@@ -6153,8 +6225,36 @@ const Panel = () => {
                 sessionState.pendingDone != null;
               if (jobStillActive) {
                 sessionState.pendingPatchReviewMessages.push(
-                  storedPatchReviewMessage
+                  patchMessage
                 );
+
+                // Persist during streaming so accept/reject works immediately.
+                const latestState = chatStateRef.current;
+                const latestConversation = latestState
+                  ? findConversation(latestState, sessionConversationId)
+                  : null;
+                const baseState = latestState ?? state;
+                const baseConversation = latestConversation ?? conversation;
+                const updatedStored = [
+                  ...baseConversation.messages,
+                  patchMessage,
+                ];
+                chatStateRef.current = setConversationMessages(
+                  baseState,
+                  baseConversation.provider,
+                  sessionConversationId,
+                  updatedStored
+                );
+                scheduleChatSave();
+
+                // Render card immediately while streaming.
+                if (sessionConversationId === chatConversationIdRef.current) {
+                  setMessages((prev) => [
+                    ...prev,
+                    createMessage(patchMessage),
+                  ]);
+                }
+
                 // If done already arrived and tokens drained, finalize now.
                 maybeFinalizeStream(sessionConversationId, provider);
                 return;
@@ -6164,7 +6264,7 @@ const Panel = () => {
             // Fallback: job already finished or non-chat action — append directly.
             const updatedMessages = [
               ...conversation.messages,
-              storedPatchReviewMessage,
+              patchMessage,
             ];
             chatStateRef.current = setConversationMessages(
               state,
@@ -7523,157 +7623,177 @@ const Panel = () => {
                     }
                     return null;
                   })();
-                  return messages.map((message) => {
-                  const content = renderMessageContent(message, latestPatchText);
-                  if (!content) return null;
-                  const copyResponseText =
-                    message.role === 'assistant'
-                      ? stripInterruptedByUserSuffix(message.content)
-                      : '';
-                  const canCopyResponse =
-                    message.role === 'assistant' &&
-                    copyResponseText.trim().length > 0;
-                  const cotForMessage =
-                    message.role === 'assistant' && settings?.showThinkingAndTools
-                      ? message.cot || convertThinkingToCoT(message.thinking)
-                      : null;
-                  const hasCoTForMessage = Boolean(
-                    cotForMessage && cotForMessage.length > 0
-                  );
-                  const isStatusCoTToggle = Boolean(
-                    message.role === 'assistant' &&
-                    message.statusLine &&
-                    hasCoTForMessage &&
-                    message.id
-                  );
-                  const isStatusCoTExpanded = isStatusCoTToggle
-                    ? expandedThinkingMessages.has(message.id)
-                    : false;
-                  return (
-                    <div
-                      class={`ageaf-message ageaf-message--${message.role}`}
-                      key={message.id}
-                    >
-                      {message.role === 'assistant' && message.statusLine ? (
-                        isStatusCoTToggle ? (
-                          <button
-                            class="ageaf-message__status ageaf-message__status--toggle"
-                            type="button"
-                            aria-expanded={isStatusCoTExpanded}
-                            onClick={() => toggleThinkingExpanded(message.id)}
-                          >
-                            <span class="ageaf-message__status-toggle-arrow">
-                              {isStatusCoTExpanded ? '▼' : '▶'}
-                            </span>
-                            <span class="ageaf-message__status-toggle-text">
-                              {message.statusLine}
-                            </span>
-                          </button>
-                        ) : (
-                          <div class="ageaf-message__status">
-                            {message.statusLine}
-                          </div>
-                        )
-                      ) : null}
-                      {hasCoTForMessage
-                        ? renderCoTBlock(
-                          cotForMessage!,
-                          false,
-                          message.role === 'assistant' ? message.id : undefined,
-                          {
-                            hideHeader: isStatusCoTToggle,
-                          }
-                        )
-                        : null}
-                      {content}
-                      {canCopyResponse ? (
-                        <div class="ageaf-message__response-actions">
-                          <button
-                            class="ageaf-message__copy-response"
-                            type="button"
-                            aria-label="Copy response"
-                            title="Copy response"
-                            onClick={() => {
-                              const copyId = `${message.id}-response`;
-                              void (async () => {
-                                const success = await copyToClipboard(
-                                  copyResponseText
-                                );
-                                if (success) markCopied(copyId);
-                              })();
-                            }}
-                          >
-                            {copiedItems[`${message.id}-response`] ? (
-                              <CheckIcon />
-                            ) : (
-                              <CopyIcon />
-                            )}
-                            <span>Copy response</span>
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                });
-                })()}
-                {streamingStatus ? (
-                  <div class="ageaf-message ageaf-message--assistant ageaf-message--streaming">
-                    {(() => {
-                      const hasStreamingCoT = Boolean(
-                        settings?.showThinkingAndTools && streamingCoT.length > 0
-                      );
-                      const isStreamingCoTToggle = Boolean(hasStreamingCoT);
-                      const isStreamingCoTExpanded = isStreamingCoTToggle
-                        ? expandedThinkingMessages.has('streaming-thinking')
-                        : false;
+                  const activeConversationId = chatConversationIdRef.current;
+                  const activeSessionState = activeConversationId
+                    ? sessionStates.current.get(activeConversationId) ?? null
+                    : null;
+                  const preStreamCount =
+                    isSending && activeSessionState?.preStreamMessageCount != null
+                      ? Math.min(
+                        activeSessionState.preStreamMessageCount,
+                        messages.length
+                      )
+                      : messages.length;
 
-                      return (
-                        <>
-                          {isStreamingCoTToggle ? (
+                  const renderMessageBubble = (message: Message) => {
+                    const content = renderMessageContent(message, latestPatchText);
+                    if (!content) return null;
+                    const copyResponseText =
+                      message.role === 'assistant'
+                        ? stripInterruptedByUserSuffix(message.content)
+                        : '';
+                    const canCopyResponse =
+                      message.role === 'assistant' &&
+                      copyResponseText.trim().length > 0;
+                    const cotForMessage =
+                      message.role === 'assistant' && settings?.showThinkingAndTools
+                        ? message.cot || convertThinkingToCoT(message.thinking)
+                        : null;
+                    const hasCoTForMessage = Boolean(
+                      cotForMessage && cotForMessage.length > 0
+                    );
+                    const isStatusCoTToggle = Boolean(
+                      message.role === 'assistant' &&
+                      message.statusLine &&
+                      hasCoTForMessage &&
+                      message.id
+                    );
+                    const isStatusCoTExpanded = isStatusCoTToggle
+                      ? expandedThinkingMessages.has(message.id)
+                      : false;
+                    return (
+                      <div
+                        class={`ageaf-message ageaf-message--${message.role}`}
+                        key={message.id}
+                      >
+                        {message.role === 'assistant' && message.statusLine ? (
+                          isStatusCoTToggle ? (
                             <button
-                              class={`ageaf-message__status ageaf-message__status--toggle ${isStreamingActive ? 'is-active' : ''
-                                }`}
+                              class="ageaf-message__status ageaf-message__status--toggle"
                               type="button"
-                              aria-expanded={isStreamingCoTExpanded}
-                              onClick={() =>
-                                toggleThinkingExpanded('streaming-thinking')
-                              }
+                              aria-expanded={isStatusCoTExpanded}
+                              onClick={() => toggleThinkingExpanded(message.id)}
                             >
                               <span class="ageaf-message__status-toggle-arrow">
-                                {isStreamingCoTExpanded ? '▼' : '▶'}
+                                {isStatusCoTExpanded ? '▼' : '▶'}
                               </span>
                               <span class="ageaf-message__status-toggle-text">
-                                {streamingStatus}
+                                {message.statusLine}
                               </span>
                             </button>
                           ) : (
-                            <div
-                              class={`ageaf-message__status ${isStreamingActive ? 'is-active' : ''
-                                }`}
-                            >
-                              {streamingStatus}
+                            <div class="ageaf-message__status">
+                              {message.statusLine}
                             </div>
-                          )}
-                          {hasStreamingCoT
-                            ? renderCoTBlock(
-                              streamingCoT,
-                              isStreamingActive,
-                              'streaming-thinking',
-                              {
-                                hideHeader: isStreamingCoTToggle,
-                              }
-                            )
-                            : null}
-                        </>
-                      );
-                    })()}
-                    <div
-                      class="ageaf-message__content"
-                      ref={streamingContentRef}
-                      style={streamingText ? undefined : { display: 'none' }}
-                    />
-                  </div>
-                ) : null}
+                          )
+                        ) : null}
+                        {hasCoTForMessage
+                          ? renderCoTBlock(
+                            cotForMessage!,
+                            false,
+                            message.role === 'assistant' ? message.id : undefined,
+                            {
+                              hideHeader: isStatusCoTToggle,
+                            }
+                          )
+                          : null}
+                        {content}
+                        {canCopyResponse ? (
+                          <div class="ageaf-message__response-actions">
+                            <button
+                              class="ageaf-message__copy-response"
+                              type="button"
+                              aria-label="Copy response"
+                              title="Copy response"
+                              onClick={() => {
+                                const copyId = `${message.id}-response`;
+                                void (async () => {
+                                  const success = await copyToClipboard(
+                                    copyResponseText
+                                  );
+                                  if (success) markCopied(copyId);
+                                })();
+                              }}
+                            >
+                              {copiedItems[`${message.id}-response`] ? (
+                                <CheckIcon />
+                              ) : (
+                                <CopyIcon />
+                              )}
+                              <span>Copy response</span>
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  };
+
+                  return (
+                    <>
+                      {messages.slice(0, preStreamCount).map(renderMessageBubble)}
+                      {streamingStatus ? (
+                        <div class="ageaf-message ageaf-message--assistant ageaf-message--streaming">
+                          {(() => {
+                            const hasStreamingCoT = Boolean(
+                              settings?.showThinkingAndTools &&
+                              streamingCoT.length > 0
+                            );
+                            const isStreamingCoTToggle = Boolean(hasStreamingCoT);
+                            const isStreamingCoTExpanded = isStreamingCoTToggle
+                              ? expandedThinkingMessages.has('streaming-thinking')
+                              : false;
+
+                            return (
+                              <>
+                                {isStreamingCoTToggle ? (
+                                  <button
+                                    class={`ageaf-message__status ageaf-message__status--toggle ${isStreamingActive ? 'is-active' : ''
+                                      }`}
+                                    type="button"
+                                    aria-expanded={isStreamingCoTExpanded}
+                                    onClick={() =>
+                                      toggleThinkingExpanded('streaming-thinking')
+                                    }
+                                  >
+                                    <span class="ageaf-message__status-toggle-arrow">
+                                      {isStreamingCoTExpanded ? '▼' : '▶'}
+                                    </span>
+                                    <span class="ageaf-message__status-toggle-text">
+                                      {streamingStatus}
+                                    </span>
+                                  </button>
+                                ) : (
+                                  <div
+                                    class={`ageaf-message__status ${isStreamingActive ? 'is-active' : ''
+                                      }`}
+                                  >
+                                    {streamingStatus}
+                                  </div>
+                                )}
+                                {hasStreamingCoT
+                                  ? renderCoTBlock(
+                                    streamingCoT,
+                                    isStreamingActive,
+                                    'streaming-thinking',
+                                    {
+                                      hideHeader: isStreamingCoTToggle,
+                                    }
+                                  )
+                                  : null}
+                              </>
+                            );
+                          })()}
+                          <div
+                            class="ageaf-message__content"
+                            ref={streamingContentRef}
+                            style={streamingText ? undefined : { display: 'none' }}
+                          />
+                        </div>
+                      ) : null}
+                      {messages.slice(preStreamCount).map(renderMessageBubble)}
+                    </>
+                  );
+                })()}
                 {DEBUG_DIFF ? (
                   <div class="ageaf-message ageaf-message--system">
                     <DiffReview

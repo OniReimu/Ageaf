@@ -12,7 +12,16 @@ export type Patch =
   | { kind: 'insertAtCursor'; text: string };
 
 export type JobEvent = {
-  event: 'plan' | 'delta' | 'tool_call' | 'tool_result' | 'trace' | 'patch' | 'usage' | 'done';
+  event:
+    | 'plan'
+    | 'delta'
+    | 'tool_call'
+    | 'tool_result'
+    | 'trace'
+    | 'patch'
+    | 'file_started'
+    | 'usage'
+    | 'done';
   data: unknown;
 };
 

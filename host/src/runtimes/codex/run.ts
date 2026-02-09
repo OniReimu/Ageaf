@@ -929,6 +929,8 @@ export async function runCodexJob(
   const HOLD_BACK_CHARS = 32;
   let payloadBuffer = '';
   const emittedPatchFiles = new Set<string>();
+  const emittedFileStarted = new Set<string>();
+  const fileUpdateOpenRe = /<<<\s*AGEAF_FILE_UPDATE\s+path="([^"]+)"\s*>>>/gi;
   const hasOverleafFileBlocks = messageWithAttachments.includes('[Overleaf file:');
   const overleafFiles = hasOverleafFileBlocks
     ? extractOverleafFilesFromMessage(messageWithAttachments)
@@ -941,6 +943,21 @@ export async function runCodexJob(
 
   const extractAndEmitCompletedBlocks = () => {
     if (overleafFiles.length === 0) return;
+
+    // Detect file update open markers early for per-file progress events.
+    fileUpdateOpenRe.lastIndex = 0;
+    let openMatch: RegExpExecArray | null;
+    while ((openMatch = fileUpdateOpenRe.exec(payloadBuffer)) !== null) {
+      const markerPath = openMatch[1]?.trim();
+      if (!markerPath) continue;
+      const originalFile = findOverleafFileContent(markerPath, overleafFiles);
+      if (!originalFile) continue;
+      const canonicalPath = originalFile.filePath;
+      if (emittedFileStarted.has(canonicalPath)) continue;
+      emittedFileStarted.add(canonicalPath);
+      emitEvent({ event: 'file_started', data: { filePath: canonicalPath } });
+    }
+
     const blockRe =
       /<<<\s*AGEAF_FILE_UPDATE\s+path="([^"]+)"\s*>>>\s*\n([\s\S]*?)\n<<<\s*AGEAF_FILE_UPDATE_END\s*>>>/gi;
     let match: RegExpExecArray | null;
