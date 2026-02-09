@@ -55,6 +55,20 @@ let overlayInstalledViews: WeakSet<any> | null = null;
 let lastInstallAttemptAt = 0;
 let overlayGuardExtension: any = null;
 
+type ResolvedOverlay = {
+  messageId: string;
+  payload: OverlayPayload;
+  range: OverlayRange;
+};
+
+// Cross-render-pass cache state (Phase 3)
+let overlaySetVersion = 0;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let resolveCacheDoc: any = null;
+let resolveCache: Map<string, OverlayRange | null> = new Map();
+let resolveCacheOverlayVersion = -1;
+let resolveCacheActiveName: string | null = null;
+
 let overlayRoot: HTMLDivElement | null = null;
 let overlayById: Map<string, OverlayPayload> = new Map();
 let overlayScrollDom: HTMLElement | null = null;
@@ -715,10 +729,10 @@ function findNormalizedRange(fullText: string, needle: string): { from: number; 
 
 function resolveOverlayRange(
   view: ReturnType<typeof getCmView>,
-  payload: OverlayPayload
+  payload: OverlayPayload,
+  precomputedFullText?: string
 ): OverlayRange | null {
   const state = view.state;
-  const fullText = state.sliceDoc(0, state.doc.length);
   const oldText = payload.oldText ?? '';
   const newText = payload.newText ?? '';
 
@@ -726,6 +740,9 @@ function resolveOverlayRange(
     const head = state.selection.main.head;
     return { from: head, to: head, oldText: '', newText };
   }
+
+  // Defer fullText computation to after insertAtCursor early return
+  const fullText = precomputedFullText ?? state.sliceDoc(0, state.doc.length);
 
   // Strategy A: Exact from/to + content match
   if (
@@ -1267,27 +1284,53 @@ function renderOverlay() {
     return;
   }
 
-  // Update the bottom review bar for the currently active file.
-  const activeNameForBar = getActiveTabName() ?? '';
-  const barItems: Array<{ messageId: string; from: number }> = [];
-  for (const payload of overlayById.values()) {
-    if (
-      payload.filePath &&
-      !matchesActiveFile(activeNameForBar, payload.filePath)
-    )
-      continue;
-    if (
-      payload.fileName &&
-      payload.kind === 'replaceSelection' &&
-      !matchesActiveFile(activeNameForBar, payload.fileName)
-    ) {
-      continue;
+  const activeName = getActiveTabName();            // called ONCE (was 2x)
+  const activeNameForBar = activeName ?? '';
+
+  // --- Single resolution pass (Phase 2) with cross-render cache (Phase 3) ---
+  const cacheHit =
+    view.state.doc === resolveCacheDoc &&
+    overlaySetVersion === resolveCacheOverlayVersion &&
+    activeName === resolveCacheActiveName;
+
+  let resolved: ResolvedOverlay[];
+
+  if (cacheHit) {
+    resolved = [];
+    for (const payload of overlayById.values()) {
+      if (payload.filePath && !matchesActiveFile(activeName, payload.filePath)) continue;
+      if (payload.fileName && payload.kind === 'replaceSelection'
+          && !matchesActiveFile(activeName, payload.fileName)) continue;
+      // insertAtCursor depends on cursor position — always resolve fresh
+      if (payload.kind === 'insertAtCursor') {
+        const range = resolveOverlayRange(view, payload);
+        if (range) resolved.push({ messageId: payload.messageId, payload, range });
+        continue;
+      }
+      const cached = resolveCache.get(payload.messageId);
+      if (cached) resolved.push({ messageId: payload.messageId, payload, range: cached });
     }
-    const range = resolveOverlayRange(view, payload);
-    if (!range) continue;
-    barItems.push({ messageId: payload.messageId, from: range.from });
+  } else {
+    const fullText = view.state.sliceDoc(0, view.state.doc.length);  // ONCE per miss
+    resolveCache.clear();
+    resolved = [];
+    for (const payload of overlayById.values()) {
+      if (payload.filePath && !matchesActiveFile(activeName, payload.filePath)) continue;
+      if (payload.fileName && payload.kind === 'replaceSelection'
+          && !matchesActiveFile(activeName, payload.fileName)) continue;
+      const range = resolveOverlayRange(view, payload, fullText);
+      resolveCache.set(payload.messageId, range);
+      if (range) resolved.push({ messageId: payload.messageId, payload, range });
+    }
+    resolveCacheDoc = view.state.doc;
+    resolveCacheOverlayVersion = overlaySetVersion;
+    resolveCacheActiveName = activeName;
   }
-  barItems.sort((a, b) => a.from - b.from);
+
+  // --- Bar items from resolved ---
+  const barItems = resolved
+    .map(r => ({ messageId: r.messageId, from: r.range.from }))
+    .sort((a, b) => a.from - b.from);
   updateReviewBar(activeNameForBar, barItems);
 
   // If there are no overlays at all, ensure we clear any rendered overlay artifacts and stop.
@@ -1307,29 +1350,13 @@ function renderOverlay() {
 
   // Try CM6 widget path first if available, but ONLY if the field is actually installed.
   if (cm6Exports && overlayField && overlayEffect) {
-    const activeName = getActiveTabName();
-    const widgetPayloads: OverlayWidgetPayload[] = [];
-    for (const payload of overlayById.values()) {
-      // File gating (best-effort)
-      if (payload.filePath && !matchesActiveFile(activeName, payload.filePath))
-        continue;
-      if (
-        payload.fileName &&
-        payload.kind === 'replaceSelection' &&
-        !matchesActiveFile(activeName, payload.fileName)
-      ) {
-        continue;
-      }
-      const range = resolveOverlayRange(view, payload);
-      if (!range) continue;
-      widgetPayloads.push({
-        from: range.to,
-        replaceFrom: range.from,
-        replaceTo: range.to,
-        text: range.newText,
-        messageId: payload.messageId,
-      });
-    }
+    const widgetPayloads: OverlayWidgetPayload[] = resolved.map(r => ({
+      from: r.range.to,
+      replaceFrom: r.range.from,
+      replaceTo: r.range.to,
+      text: r.range.newText,
+      messageId: r.messageId,
+    }));
 
     if (ensureCm6FieldInstalled(view)) {
       setOverlayWidget(
@@ -1348,13 +1375,16 @@ function renderOverlay() {
     // If we couldn't install CM6 field yet, continue into DOM fallback.
   }
 
-  // Fallback to DOM overlay
-
-  // DOM fallback (legacy): render only the most recent overlay to avoid layout complexity.
+  // --- DOM fallback: preserve "most recent overlay" semantics ---
+  // Current behavior: always picks the LAST payload from overlayById,
+  // even if it fails to resolve — in which case it clears everything.
   const overlays = [...overlayById.values()];
   const overlayState = overlays[overlays.length - 1];
-  if (!overlayState) return;
-  const activeName = getActiveTabName();
+  if (!overlayState) {
+    clearOverlayElements();
+    clearGap();
+    return;
+  }
   if (
     overlayState.filePath &&
     !matchesActiveFile(activeName, overlayState.filePath)
@@ -1372,13 +1402,14 @@ function renderOverlay() {
     clearGap();
     return;
   }
-
-  const range = resolveOverlayRange(view, overlayState);
-  if (!range) {
+  // Reuse from resolved array — if not found, clear (same as original behavior).
+  const lastResolved = resolved.find(r => r.messageId === overlayState.messageId);
+  if (!lastResolved) {
     clearOverlayElements();
     clearGap();
     return;
   }
+  const range = lastResolved.range;
 
   ensureOverlayRoot(view);
   if (!overlayRoot) return;
@@ -1605,6 +1636,11 @@ function stopOverlayUpdates() {
 
 function clearOverlay() {
   overlayById.clear();
+  overlaySetVersion++;
+  resolveCache.clear();
+  resolveCacheDoc = null;
+  resolveCacheOverlayVersion = -1;
+  resolveCacheActiveName = null;
   stopOverlayUpdates();
   hideReviewBar();
 
@@ -1625,6 +1661,7 @@ function onOverlayShow(event: Event) {
   if (!detail?.messageId || !detail.kind) return;
   ensureInlineDiffStyles();
   overlayById.set(String(detail.messageId), detail);
+  overlaySetVersion++;
   startOverlayUpdates();
   scheduleOverlayUpdate();
   if (isDebugEnabled()) {
@@ -1636,6 +1673,7 @@ function onOverlayClear(event: Event) {
   const detail = (event as CustomEvent<{ messageId?: string }>).detail;
   if (detail?.messageId) {
     overlayById.delete(String(detail.messageId));
+    overlaySetVersion++;
     // If that was the last one, fully clear (also hides bar). Otherwise re-render.
     if (overlayById.size === 0) {
       clearOverlay();
