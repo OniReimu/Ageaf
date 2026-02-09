@@ -4737,7 +4737,6 @@ const Panel = () => {
         // Only update UI if this is the current session
         if (conversationId === chatConversationIdRef.current) {
           setMessages(updatedMessages.map((m) => createMessage(m)));
-          scrollToBottom();
           setStreamingText('');
           setStreamingThinking('');
           streamingTextRef.current = '';
