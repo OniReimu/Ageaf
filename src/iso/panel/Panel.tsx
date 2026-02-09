@@ -5307,7 +5307,7 @@ const Panel = () => {
             // eslint-disable-next-line no-await-in-loop
             const inputContent = await fetchFileContent(inputPath);
             if (inputContent != null) {
-              result += wrapReferenceBlock(inputPath, inputContent);
+              result += wrapFileBlock(inputPath, inputContent);
             }
           }
         }
