@@ -7739,6 +7739,16 @@ const Panel = () => {
                     )}
                   </div>
                 ) : null}
+                {isSending ? (
+                  <div class="ageaf-generating">
+                    <span class="ageaf-generating__text">Generating</span>
+                    <span class="ageaf-generating__dots">
+                      <span class="ageaf-generating__dot">.</span>
+                      <span class="ageaf-generating__dot">.</span>
+                      <span class="ageaf-generating__dot">.</span>
+                    </span>
+                  </div>
+                ) : null}
                 {!isAtBottom ? (
                   <button
                     class="ageaf-panel__scroll"
