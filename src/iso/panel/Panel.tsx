@@ -252,6 +252,31 @@ const PROVIDER_DISPLAY = {
 /** Maximum number of \\input-referenced files to attach as read-only context. */
 const MAX_INPUT_REFERENCES = 20;
 
+/** Maximum concurrent HTTP doc-download requests to Overleaf. */
+const MAX_CONCURRENT_DOWNLOADS = 6;
+
+/** Run async tasks with bounded concurrency, preserving input order. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const idx = next++;
+      results[idx] = await fn(items[idx]);
+    }
+  }
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 const MODEL_DISPLAY = {
   opus: { label: 'Opus', description: 'Most capable for complex work' },
   sonnet: { label: 'Sonnet', description: 'Best for everyday task' },
@@ -5169,12 +5194,14 @@ const Panel = () => {
       };
 
       /**
-       * Fetch raw file content by ref. Returns null if unavailable.
+       * Try fetching file content via HTTP doc-download only (no bridge).
+       * Safe to call concurrently for multiple refs.
        */
-      const fetchRawContent = async (ref: string): Promise<string | null> => {
+      const fetchViaDocDownload = async (
+        ref: string
+      ): Promise<string | null> => {
         const cached = fileContentCache.get(ref);
         if (cached != null) return cached;
-
         const docId = findDocIdForRef(ref);
         if (projectId && docId) {
           try {
@@ -5182,10 +5209,21 @@ const Panel = () => {
             fileContentCache.set(ref, content);
             return content;
           } catch {
-            // Fall through to bridge below.
+            return null;
           }
         }
+        return null;
+      };
 
+      /**
+       * Try fetching file content via the editor bridge (tab-switching).
+       * Must be called sequentially — concurrent calls cause tab interleaving.
+       */
+      const fetchViaBridge = async (
+        ref: string
+      ): Promise<string | null> => {
+        const cached = fileContentCache.get(ref);
+        if (cached != null) return cached;
         if (!bridge.requestFileContent) return null;
         const resp = await bridge
           .requestFileContent(ref)
@@ -5209,6 +5247,16 @@ const Panel = () => {
         if (!ok) return null;
         fileContentCache.set(ref, content);
         return content;
+      };
+
+      /**
+       * Fetch raw file content by ref. Returns null if unavailable.
+       * Tries HTTP first, falls back to bridge.
+       */
+      const fetchRawContent = async (ref: string): Promise<string | null> => {
+        const doc = await fetchViaDocDownload(ref);
+        if (doc != null) return doc;
+        return fetchViaBridge(ref);
       };
 
       /**
@@ -5243,9 +5291,13 @@ const Panel = () => {
             .map((e) => ({ path: e.path, name: e.name }));
           const inputPaths = collectLatexInputPaths(raw, projectFiles, ref)
             .slice(0, MAX_INPUT_REFERENCES);
-          for (const inputPath of inputPaths) {
-            // eslint-disable-next-line no-await-in-loop
-            const inputContent = await fetchFileContent(inputPath);
+          const inputResults = await Promise.all(
+            inputPaths.map(async (inputPath) => {
+              const inputContent = await fetchFileContent(inputPath);
+              return { inputPath, inputContent };
+            })
+          );
+          for (const { inputPath, inputContent } of inputResults) {
             if (inputContent != null) {
               result += wrapFileBlock(inputPath, inputContent);
             }
@@ -5255,12 +5307,78 @@ const Panel = () => {
         return result;
       };
 
+      /**
+       * Resolve a file ref when content is already fetched (skips the fetch).
+       * Handles LaTeX \input dependencies with parallel fetching.
+       */
+      const resolveFileFromContent = async (
+        ref: string,
+        raw: string
+      ): Promise<string> => {
+        let result = wrapFileBlock(ref, raw);
+        if (getFileExtension(ref).toLowerCase() === '.tex') {
+          const projectFiles: ProjectFile[] = projectFilesRef.current
+            .filter((e) => e.kind !== 'folder')
+            .map((e) => ({ path: e.path, name: e.name }));
+          const inputPaths = collectLatexInputPaths(raw, projectFiles, ref)
+            .slice(0, MAX_INPUT_REFERENCES);
+          const inputResults = await Promise.all(
+            inputPaths.map(async (inputPath) => {
+              const inputContent = await fetchFileContent(inputPath);
+              return { inputPath, inputContent };
+            })
+          );
+          for (const { inputPath, inputContent } of inputResults) {
+            if (inputContent != null) {
+              result += wrapFileBlock(inputPath, inputContent);
+            }
+          }
+        }
+        return result;
+      };
+
       let nextText = rawText;
-      for (const ref of fileRefs) {
-        // eslint-disable-next-line no-await-in-loop
-        const injection = await resolveFile(ref);
-        const token = `@[file:${ref}]`;
-        nextText = nextText.split(token).join(injection);
+      if (fileRefs.length > 0) {
+        // Phase A: Try doc-downloads in parallel with bounded concurrency
+        const docResults = await mapWithConcurrency(
+          fileRefs,
+          MAX_CONCURRENT_DOWNLOADS,
+          async (ref) => ({
+            ref,
+            content: await fetchViaDocDownload(ref),
+          })
+        );
+        // Phase B: For failures, try bridge directly (skip redundant doc-download)
+        const fileResults: Array<{ ref: string; injection: string }> = [];
+        for (const { ref, content } of docResults) {
+          if (content != null) {
+            // eslint-disable-next-line no-await-in-loop
+            fileResults.push({
+              ref,
+              injection: await resolveFileFromContent(ref, content),
+            });
+          } else {
+            // Bridge fallback — sequential, skips doc-download retry
+            // eslint-disable-next-line no-await-in-loop
+            const bridgeContent = await fetchViaBridge(ref);
+            if (bridgeContent != null) {
+              // eslint-disable-next-line no-await-in-loop
+              fileResults.push({
+                ref,
+                injection: await resolveFileFromContent(ref, bridgeContent),
+              });
+            } else {
+              fileResults.push({
+                ref,
+                injection: `\n\n[Overleaf file: ${ref}]\n(Unable to read file content from Overleaf editor.)\n`,
+              });
+            }
+          }
+        }
+        for (const { ref, injection } of fileResults) {
+          const token = `@[file:${ref}]`;
+          nextText = nextText.split(token).join(injection);
+        }
       }
 
       for (const folder of folderRefs) {
@@ -5284,10 +5402,32 @@ const Panel = () => {
           for (const entry of candidates) {
             folderBlock += `- ${entry.path}\n`;
           }
-          for (const entry of candidates) {
-            // eslint-disable-next-line no-await-in-loop
-            const injection = await resolveFile(entry.path || entry.name);
-            folderBlock += injection;
+          // Phase A: Try doc-downloads in parallel with bounded concurrency
+          const folderDocResults = await mapWithConcurrency(
+            candidates,
+            MAX_CONCURRENT_DOWNLOADS,
+            async (entry) => ({
+              entry,
+              content: await fetchViaDocDownload(entry.path || entry.name),
+            })
+          );
+          // Phase B: Bridge fallback for failures (skip redundant doc-download)
+          for (const { entry, content } of folderDocResults) {
+            const ref = entry.path || entry.name;
+            if (content != null) {
+              // eslint-disable-next-line no-await-in-loop
+              folderBlock += await resolveFileFromContent(ref, content);
+            } else {
+              // Bridge fallback — sequential, skips doc-download retry
+              // eslint-disable-next-line no-await-in-loop
+              const bridgeContent = await fetchViaBridge(ref);
+              if (bridgeContent != null) {
+                // eslint-disable-next-line no-await-in-loop
+                folderBlock += await resolveFileFromContent(ref, bridgeContent);
+              } else {
+                folderBlock += `\n\n[Overleaf file: ${ref}]\n(Unable to read file content from Overleaf editor.)\n`;
+              }
+            }
           }
         }
         const token = `@[folder:${folder}]`;
