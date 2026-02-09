@@ -79,7 +79,7 @@ export async function runFixCompileError(
     emitEvent(event);
   };
 
-  const resultText = await runClaudeText({
+  const { resultText } = await runClaudeText({
     prompt,
     emitEvent: wrappedEmit,
     runtime: payload.runtime?.claude,
