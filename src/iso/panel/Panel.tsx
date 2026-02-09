@@ -872,7 +872,6 @@ const Panel = () => {
   const copyResetTimersRef = useRef<Record<string, number>>({});
   const latexCopyTimersRef = useRef<Map<HTMLElement, number>>(new Map());
   const chatSaveTimerRef = useRef<number | null>(null);
-  const patchFlushTimerRef = useRef<number | null>(null);
   const contextRefreshInFlightRef = useRef(false);
 
   const providerDisplay =
@@ -1827,13 +1826,6 @@ const Panel = () => {
     }, 250);
   };
 
-  const cancelPatchFlush = () => {
-    if (patchFlushTimerRef.current !== null) {
-      window.clearTimeout(patchFlushTimerRef.current);
-      patchFlushTimerRef.current = null;
-    }
-  };
-
   const hydrateChatForProject = async (
     projectId: string,
     isActive: () => boolean
@@ -1922,7 +1914,6 @@ const Panel = () => {
         window.clearTimeout(chatSaveTimerRef.current);
         chatSaveTimerRef.current = null;
       }
-      cancelPatchFlush();
       void flushChatSave();
     };
   }, []);
@@ -4642,27 +4633,6 @@ const Panel = () => {
     }
   };
 
-  const flushPatchCardsSequentially = (
-    cards: Message[],
-    conversationId: string,
-    index = 0
-  ) => {
-    patchFlushTimerRef.current = null;
-    if (conversationId !== chatConversationIdRef.current) return;
-    if (index >= cards.length) return;
-
-    const card = cards[index];
-    setMessages((prev) => [...prev, card]);
-    scrollToBottom();
-
-    if (index + 1 < cards.length) {
-      patchFlushTimerRef.current = window.setTimeout(
-        () => flushPatchCardsSequentially(cards, conversationId, index + 1),
-        150
-      );
-    }
-  };
-
   const maybeFinalizeStream = (
     conversationId: string,
     provider: ProviderId
@@ -4738,21 +4708,13 @@ const Panel = () => {
         }
 
         // Flush queued patch review cards after the assistant message.
-        let patchCardsForUI: Message[] = [];
         if (pending.status === 'ok') {
           if (sessionState.pendingPatchReviewMessages.length > 0) {
             const patchStoredMessages = [
               ...sessionState.pendingPatchReviewMessages,
             ];
             sessionState.pendingPatchReviewMessages = [];
-            // Add to updatedMessages for persistence (all at once)
             updatedMessages.push(...patchStoredMessages);
-            // Pre-create Message objects with stable IDs for staggered UI
-            if (patchStoredMessages.length > 1) {
-              patchCardsForUI = patchStoredMessages.map((m) =>
-                createMessage(m)
-              );
-            }
           }
         } else {
           sessionState.pendingPatchReviewMessages = [];
@@ -4774,27 +4736,8 @@ const Panel = () => {
 
         // Only update UI if this is the current session
         if (conversationId === chatConversationIdRef.current) {
-          if (patchCardsForUI.length > 0) {
-            // Render everything EXCEPT the new patch cards immediately
-            const messagesWithoutPatch = updatedMessages.slice(
-              0,
-              updatedMessages.length - patchCardsForUI.length
-            );
-            setMessages(messagesWithoutPatch.map((m) => createMessage(m)));
-            // Start sequential flush for patch cards
-            cancelPatchFlush();
-            patchFlushTimerRef.current = window.setTimeout(
-              () =>
-                flushPatchCardsSequentially(
-                  patchCardsForUI,
-                  conversationId
-                ),
-              150
-            );
-          } else {
-            // 0 or 1 patch card: render all at once (no stagger needed)
-            setMessages(updatedMessages.map((m) => createMessage(m)));
-          }
+          setMessages(updatedMessages.map((m) => createMessage(m)));
+          scrollToBottom();
           setStreamingText('');
           setStreamingThinking('');
           streamingTextRef.current = '';
@@ -4959,7 +4902,6 @@ const Panel = () => {
     sessionState.streamTokens = [];
     sessionState.pendingDone = null;
     sessionState.pendingPatchReviewMessages = [];
-    cancelPatchFlush();
 
     // Update UI
     interruptedRef.current = true;
@@ -5057,7 +4999,6 @@ const Panel = () => {
     sessionState.activityStartTime = Date.now();
     sessionState.pendingDone = null;
     sessionState.pendingPatchReviewMessages = [];
-    cancelPatchFlush();
     // IMPORTANT: Reset streaming buffers so previous replies can't leak into this reply.
     stopStreamTimer(sessionConversationId);
     sessionState.streamTokens = [];
@@ -6843,7 +6784,8 @@ const Panel = () => {
   };
 
   useEffect(() => {
-    emitPendingOverlay(false);
+    const raf = requestAnimationFrame(() => emitPendingOverlay(false));
+    return () => cancelAnimationFrame(raf);
   }, [messages]);
 
   useEffect(() => {
@@ -7090,7 +7032,6 @@ const Panel = () => {
     setSessionIds(getOrderedSessionIds(nextState));
     setActiveSessionId(conversation.id);
     setChatProvider(provider);
-    cancelPatchFlush();
     setMessages([]);
     setToolRequests([]);
     setToolRequestInputs({});
@@ -7104,7 +7045,6 @@ const Panel = () => {
 
   const onSelectSession = (conversationId: string) => {
     // Session switching is always allowed - no blocking
-    cancelPatchFlush();
     const projectId = chatProjectIdRef.current;
     const state = chatStateRef.current;
     if (!projectId || !state) return;
@@ -7174,7 +7114,6 @@ const Panel = () => {
 
   const onCloseSession = async () => {
     // Session closing is always allowed - no blocking
-    cancelPatchFlush();
     const projectId = chatProjectIdRef.current;
     const state = chatStateRef.current;
     const currentId = chatConversationIdRef.current;
