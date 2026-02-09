@@ -27,6 +27,13 @@ test('Message rendering uses the quote-aware renderer and stable ids', () => {
   const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
   const contents = fs.readFileSync(panelPath, 'utf8');
 
-  assert.match(contents, /messages\.map\([\s\S]*renderMessageContent\(message\)/);
+  assert.match(
+    contents,
+    /const renderMessageBubble = \(message: Message\) =>[\s\S]*renderMessageContent\(message,\s*latestPatchText\)/s
+  );
+  assert.match(
+    contents,
+    /messages\.slice\(0,\s*preStreamCount\)\.map\(renderMessageBubble\)/s
+  );
   assert.match(contents, /key=\{message\.id\}/);
 });

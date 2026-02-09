@@ -47,10 +47,21 @@ test('Codex chat emits replaceRangeInFile patch from file update markers', async
     assert.doesNotMatch(deltaText, /Hello there/);
 
     const patchIndex = events.findIndex((event) => event.event === 'patch');
+    const fileStartedIndex = events.findIndex(
+      (event) => event.event === 'file_started'
+    );
     const doneIndex = events.findIndex((event) => event.event === 'done');
+    assert.ok(fileStartedIndex >= 0, 'expected file_started event');
     assert.ok(patchIndex >= 0, 'expected patch event');
     assert.ok(doneIndex >= 0, 'expected done event');
+    assert.ok(
+      fileStartedIndex < patchIndex,
+      'file_started should arrive before patch'
+    );
     assert.ok(patchIndex < doneIndex, 'patch should arrive before done');
+
+    const fileStartedEvent = events[fileStartedIndex];
+    assert.deepEqual(fileStartedEvent?.data, { filePath: 'main.tex' });
 
     const patchEvent = events[patchIndex];
     assert.deepEqual(patchEvent?.data, {
@@ -66,4 +77,3 @@ test('Codex chat emits replaceRangeInFile patch from file update markers', async
     await resetCodexAppServerForTests();
   }
 });
-
