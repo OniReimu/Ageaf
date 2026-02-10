@@ -21,6 +21,12 @@ test('Panel defines file summary computation and imports summary card component'
   assert.doesNotMatch(contents, /type FileSummaryEntry = \{/);
 });
 
+test('Panel file summary only aggregates pending hunks', () => {
+  const contents = read('src/iso/panel/Panel.tsx');
+
+  assert.match(contents, /if \(status !== 'pending'\) continue;/);
+});
+
 test('Panel extracts acceptSinglePatch and uses it from single and bulk accept paths', () => {
   const contents = read('src/iso/panel/Panel.tsx');
 

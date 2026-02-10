@@ -49,3 +49,19 @@ test('Inline diff overlay action buttons are ordered accept, reject, feedback', 
     'expected addition order accept < reject < feedback'
   );
 });
+
+test('Inline diff review bar labels are file-scoped', () => {
+  const overlayPath = path.join(
+    __dirname,
+    '..',
+    'src',
+    'main',
+    'inlineDiffOverlay.ts'
+  );
+  const contents = fs.readFileSync(overlayPath, 'utf8');
+
+  assert.match(contents, /undoAll\.textContent = 'Undo File';/);
+  assert.match(contents, /acceptAll\.textContent = 'Accept File';/);
+  assert.doesNotMatch(contents, /undoAll\.textContent = 'Undo All';/);
+  assert.doesNotMatch(contents, /acceptAll\.textContent = 'Accept All';/);
+});

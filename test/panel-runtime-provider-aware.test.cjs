@@ -12,3 +12,10 @@ test('Runtime pickers adapt to provider-specific metadata', () => {
   assert.match(contents, /supportedReasoningEfforts/);
 });
 
+test('Claude runtime UI avoids stale non-Claude model fallback', () => {
+  const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
+  const contents = fs.readFileSync(panelPath, 'utf8');
+
+  assert.match(contents, /CLAUDE_FALLBACK_MODELS/);
+  assert.match(contents, /setRuntimeModels\(CLAUDE_FALLBACK_MODELS\)/);
+});

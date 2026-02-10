@@ -456,15 +456,15 @@ function ensureReviewBar() {
 
   const undoAll = document.createElement('button');
   undoAll.className = 'ageaf-review-bar__btn is-danger';
-  undoAll.textContent = 'Undo All';
+  undoAll.textContent = 'Undo File';
   undoAll.title = 'Reject all hunks in this file';
-  undoAll.setAttribute('aria-label', 'Reject all review hunks');
+  undoAll.setAttribute('aria-label', 'Reject all review hunks in this file');
 
   const acceptAll = document.createElement('button');
   acceptAll.className = 'ageaf-review-bar__btn is-primary';
-  acceptAll.textContent = 'Accept All';
+  acceptAll.textContent = 'Accept File';
   acceptAll.title = 'Accept all hunks in this file';
-  acceptAll.setAttribute('aria-label', 'Accept all review hunks');
+  acceptAll.setAttribute('aria-label', 'Accept all review hunks in this file');
 
   bar.appendChild(count);
   bar.appendChild(nav);
