@@ -1,6 +1,6 @@
 # <img src="public/icons/icon_48.png" width="45" align="left"> Ageaf
 
-![Ageaf](assets/Ageaf.mp4)
+https://github.com/user-attachments/assets/8360eb0e-4285-407b-96ff-268df143e074
 
 Ageaf is an Chrome Plugin that adds an agent panel specifically to Overleaf, enabling Claude Code and Codex CLI features.
 
