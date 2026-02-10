@@ -49,9 +49,10 @@ function getHiddenLineCount(previous: HunkEntry, next: HunkEntry): number | null
     return null;
   }
 
-  const previousOldLineCount = previous.patchReview.expectedOldText
-    ? previous.patchReview.expectedOldText.split('\n').length
-    : 0;
+  const oldText = previous.patchReview.expectedOldText ?? '';
+  const rawLineCount = oldText ? oldText.split('\n').length : 0;
+  const previousOldLineCount =
+    rawLineCount > 0 && oldText.endsWith('\n') ? rawLineCount - 1 : rawLineCount;
   const hidden = nextLineFrom - (previousLineFrom + previousOldLineCount);
   return hidden >= 0 ? hidden : 0;
 }
