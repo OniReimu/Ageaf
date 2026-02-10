@@ -1,5 +1,5 @@
 import { render } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import morphdom from 'morphdom';
 import {
   collectLatexInputPaths,
@@ -7,6 +7,10 @@ import {
 } from './latexExpand';
 import { copyToClipboard } from './clipboard';
 import { PatchReviewCard, CopyIcon, CheckIcon } from './PatchReviewCard';
+import {
+  GroupedPatchReviewCard,
+  type HunkEntry,
+} from './GroupedPatchReviewCard';
 
 import {
   createJob,
@@ -131,6 +135,21 @@ function getPatchIdentityKey(message: StoredMessage) {
     return `replaceSelection:${review.from}:${review.to}:${review.selection}:${review.text}`;
   }
   return `insertAtCursor:${review.text}`;
+}
+
+function getReplaceRangeIdentityKey(
+  review: StoredPatchReview & { kind: 'replaceRangeInFile' }
+) {
+  return `replaceRangeInFile:${review.filePath}:${review.expectedOldText}:${review.text}`;
+}
+
+function computeLineFromOffset(content: string, from: number) {
+  const offset = Math.max(0, Math.min(content.length, Math.floor(from)));
+  let line = 1;
+  for (let index = 0; index < offset; index += 1) {
+    if (content.charCodeAt(index) === 10) line += 1; // '\n'
+  }
+  return line;
 }
 
 function computeFileSummary(messages: Message[]): FileSummaryEntry[] {
@@ -437,6 +456,12 @@ type Message = {
   patchReview?: StoredPatchReview;
 };
 
+type FilePatchGroup = {
+  filePath: string;
+  firstId: string;
+  ids: string[];
+};
+
 type PatchFeedbackTarget = {
   conversationId: string;
   messageId: string;
@@ -699,6 +724,42 @@ const Panel = () => {
     hostConnected: false,
     runtimeWorking: false,
   });
+  const { messageById, fileGroupMap, fileGroupRole } = useMemo(() => {
+    const byId = new Map<string, Message>();
+    const groupMap = new Map<string, FilePatchGroup>();
+    for (const message of messages) {
+      byId.set(message.id, message);
+      const patchReview = message.patchReview;
+      if (!patchReview || patchReview.kind !== 'replaceRangeInFile') continue;
+      const status = (patchReview as any).status ?? 'pending';
+      if (status !== 'pending') continue;
+      const fileKey = patchReview.filePath.toLowerCase();
+      const existing = groupMap.get(fileKey);
+      if (existing) {
+        existing.ids.push(message.id);
+      } else {
+        groupMap.set(fileKey, {
+          filePath: patchReview.filePath,
+          firstId: message.id,
+          ids: [message.id],
+        });
+      }
+    }
+
+    const roleMap = new Map<string, 'first' | 'absorbed'>();
+    for (const group of groupMap.values()) {
+      if (group.ids.length < 2) continue;
+      for (const id of group.ids) {
+        roleMap.set(id, id === group.firstId ? 'first' : 'absorbed');
+      }
+    }
+
+    return {
+      messageById: byId,
+      fileGroupMap: groupMap,
+      fileGroupRole: roleMap,
+    };
+  }, [messages]);
 
   // Ephemeral API keys (in-memory only, never persisted)
   const [claudeApiKey, setClaudeApiKey] = useState<string>('');
@@ -977,6 +1038,7 @@ const Panel = () => {
   const latexCopyTimersRef = useRef<Map<HTMLElement, number>>(new Map());
   const chatSaveTimerRef = useRef<number | null>(null);
   const contextRefreshInFlightRef = useRef(false);
+  const lineFromBackfillAttemptedRef = useRef<Set<string>>(new Set());
 
   const providerDisplay =
     PROVIDER_DISPLAY[chatProvider] ?? PROVIDER_DISPLAY.claude;
@@ -1931,6 +1993,165 @@ const Panel = () => {
       void flushChatSave();
     }, 250);
   };
+
+  useEffect(() => {
+    const conversationId = chatConversationIdRef.current;
+    const bridge = window.ageafBridge;
+    if (!conversationId || !bridge?.requestFileContent) return;
+
+    type BackfillEntry = {
+      messageId: string;
+      filePath: string;
+      from: number;
+      identityKey: string;
+    };
+
+    const entries: BackfillEntry[] = [];
+    for (const message of messages) {
+      if (lineFromBackfillAttemptedRef.current.has(message.id)) continue;
+      const patchReview = message.patchReview;
+      if (!patchReview || patchReview.kind !== 'replaceRangeInFile') continue;
+      const status = (patchReview as any).status ?? 'pending';
+      if (status !== 'pending') continue;
+      if (
+        typeof patchReview.lineFrom === 'number' &&
+        Number.isFinite(patchReview.lineFrom) &&
+        patchReview.lineFrom > 0
+      ) {
+        continue;
+      }
+      if (
+        typeof patchReview.from !== 'number' ||
+        !Number.isFinite(patchReview.from) ||
+        patchReview.from < 0
+      ) {
+        continue;
+      }
+      lineFromBackfillAttemptedRef.current.add(message.id);
+      entries.push({
+        messageId: message.id,
+        filePath: patchReview.filePath,
+        from: patchReview.from,
+        identityKey: getReplaceRangeIdentityKey(patchReview),
+      });
+    }
+
+    if (entries.length === 0) return;
+
+    const byFile = new Map<string, { filePath: string; entries: BackfillEntry[] }>();
+    for (const entry of entries) {
+      const key = entry.filePath.toLowerCase();
+      const group = byFile.get(key);
+      if (group) {
+        group.entries.push(entry);
+      } else {
+        byFile.set(key, { filePath: entry.filePath, entries: [entry] });
+      }
+    }
+
+    let cancelled = false;
+    void (async () => {
+      for (const group of byFile.values()) {
+        if (cancelled) return;
+        let response: any = null;
+        try {
+          response = await bridge.requestFileContent(group.filePath);
+        } catch {
+          response = null;
+        }
+        if (cancelled) return;
+        if (!response?.ok || typeof response.content !== 'string') continue;
+
+        const content = response.content;
+        const lineFromById = new Map<string, number>();
+        const lineFromByIdentity = new Map<string, number>();
+        for (const entry of group.entries) {
+          const lineFrom = computeLineFromOffset(content, entry.from);
+          lineFromById.set(entry.messageId, lineFrom);
+          if (!lineFromByIdentity.has(entry.identityKey)) {
+            lineFromByIdentity.set(entry.identityKey, lineFrom);
+          }
+        }
+
+        if (lineFromById.size === 0) continue;
+
+        setMessages((prev) => {
+          let changed = false;
+          const next = prev.map((message) => {
+            const lineFrom = lineFromById.get(message.id);
+            if (typeof lineFrom !== 'number') return message;
+            const patchReview = message.patchReview;
+            if (!patchReview || patchReview.kind !== 'replaceRangeInFile') {
+              return message;
+            }
+            if (
+              typeof patchReview.lineFrom === 'number' &&
+              Number.isFinite(patchReview.lineFrom) &&
+              patchReview.lineFrom > 0
+            ) {
+              return message;
+            }
+            changed = true;
+            return {
+              ...message,
+              patchReview: {
+                ...patchReview,
+                lineFrom,
+              },
+            };
+          });
+          return changed ? next : prev;
+        });
+
+        const state = chatStateRef.current;
+        const conversation = state
+          ? findConversation(state, conversationId)
+          : null;
+        if (!state || !conversation) continue;
+
+        let storedChanged = false;
+        const updatedStoredMessages = conversation.messages.map((stored) => {
+          const patchReview = stored.patchReview;
+          if (!patchReview || patchReview.kind !== 'replaceRangeInFile') {
+            return stored;
+          }
+          if (
+            typeof patchReview.lineFrom === 'number' &&
+            Number.isFinite(patchReview.lineFrom) &&
+            patchReview.lineFrom > 0
+          ) {
+            return stored;
+          }
+          const key = getPatchIdentityKey(stored);
+          if (!key) return stored;
+          const lineFrom = lineFromByIdentity.get(key);
+          if (typeof lineFrom !== 'number') return stored;
+          storedChanged = true;
+          return {
+            ...stored,
+            patchReview: {
+              ...patchReview,
+              lineFrom,
+            },
+          };
+        });
+
+        if (storedChanged) {
+          chatStateRef.current = setConversationMessages(
+            state,
+            conversation.provider,
+            conversationId,
+            updatedStoredMessages
+          );
+          scheduleChatSave();
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [messages]);
 
   const hydrateChatForProject = async (
     projectId: string,
@@ -3938,6 +4159,50 @@ const Panel = () => {
       const error = patchActionErrors[message.id] ?? null;
       const busy = patchActionBusyId === message.id || bulkActionBusy;
       const canAct = status === 'pending' && !busy;
+      if (patchReview.kind === 'replaceRangeInFile') {
+        const groupRole = fileGroupRole.get(message.id);
+        if (groupRole === 'absorbed') return null;
+        if (groupRole === 'first') {
+          const fileKey = patchReview.filePath.toLowerCase();
+          const group = fileGroupMap.get(fileKey);
+          if (group) {
+            const hunks: HunkEntry[] = group.ids
+              .map((id) => messageById.get(id))
+              .filter(
+                (entry): entry is Message =>
+                  Boolean(
+                    entry &&
+                    entry.patchReview &&
+                    entry.patchReview.kind === 'replaceRangeInFile'
+                  )
+              )
+              .map((entry) => ({
+                messageId: entry.id,
+                patchReview: entry.patchReview as StoredPatchReview & {
+                  kind: 'replaceRangeInFile';
+                },
+                status: ((entry.patchReview as any).status ??
+                  'pending') as any,
+                error: patchActionErrors[entry.id] ?? null,
+              }));
+
+            if (hunks.length > 1) {
+              return (
+                <GroupedPatchReviewCard
+                  filePath={group.filePath}
+                  hunks={hunks}
+                  busy={bulkActionBusy || Boolean(patchActionBusyId)}
+                  onAcceptAll={() => void onAcceptFilePatches(fileKey)}
+                  onRejectAll={() => onRejectFilePatches(fileKey)}
+                  onFeedback={(messageId) =>
+                    onFeedbackPatchReviewMessage(messageId)
+                  }
+                />
+              );
+            }
+          }
+        }
+      }
       // Pending action order is defined in PatchReviewCard:
       // onClick={onAccept}
       // onClick={onReject}
@@ -7024,6 +7289,105 @@ const Panel = () => {
       })
     );
     setPatchActionErrors({});
+  };
+
+  const onAcceptFilePatches = async (fileKey: string) => {
+    if (bulkActionBusy || patchActionBusyId) return;
+    setBulkActionBusy(true);
+    try {
+      const currentById = new Map(messagesRef.current.map((entry) => [entry.id, entry]));
+      const ids = messagesRef.current
+        .filter((entry) => {
+          const patchReview = entry.patchReview;
+          return Boolean(
+            patchReview &&
+            patchReview.kind === 'replaceRangeInFile' &&
+            patchReview.filePath.toLowerCase() === fileKey
+          );
+        })
+        .map((entry) => entry.id);
+      if (ids.length === 0) return;
+
+      const pendingMessages = ids
+        .map((id) => currentById.get(id))
+        .filter((entry): entry is Message => {
+          if (!entry?.patchReview) return false;
+          if (entry.patchReview.kind !== 'replaceRangeInFile') return false;
+          const status = (entry.patchReview as any).status ?? 'pending';
+          return status === 'pending';
+        })
+        .sort((a, b) => {
+          const aFrom =
+            a.patchReview && a.patchReview.kind === 'replaceRangeInFile'
+              ? a.patchReview.from ?? 0
+              : 0;
+          const bFrom =
+            b.patchReview && b.patchReview.kind === 'replaceRangeInFile'
+              ? b.patchReview.from ?? 0
+              : 0;
+          return bFrom - aFrom;
+        });
+
+      for (const message of pendingMessages) {
+        if (!message.patchReview) continue;
+        try {
+          await acceptSinglePatch(message.id, message.patchReview);
+        } catch {
+          // Continue processing remaining hunks in this file.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+    } finally {
+      setBulkActionBusy(false);
+    }
+  };
+
+  const onRejectFilePatches = (fileKey: string) => {
+    if (bulkActionBusy || patchActionBusyId) return;
+    const ids = new Set(
+      messagesRef.current
+        .filter((entry) => {
+          const patchReview = entry.patchReview;
+          return Boolean(
+            patchReview &&
+            patchReview.kind === 'replaceRangeInFile' &&
+            patchReview.filePath.toLowerCase() === fileKey
+          );
+        })
+        .map((entry) => entry.id)
+    );
+    if (ids.size === 0) return;
+    setMessages((prev) =>
+      prev.map((message) => {
+        if (!ids.has(message.id)) return message;
+        if (!message.patchReview) return message;
+        if (message.patchReview.kind !== 'replaceRangeInFile') return message;
+        const status = (message.patchReview as any).status ?? 'pending';
+        if (status !== 'pending') return message;
+        return {
+          ...message,
+          patchReview: {
+            ...message.patchReview,
+            status: 'rejected',
+          } as any,
+        };
+      })
+    );
+    setPatchActionErrors((prev) => {
+      let changed = false;
+      for (const id of ids) {
+        if (id in prev) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) return prev;
+      const next = { ...prev };
+      for (const id of ids) {
+        delete next[id];
+      }
+      return next;
+    });
   };
 
   const onNavigateToFile = (filePath: string) => {

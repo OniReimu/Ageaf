@@ -25,8 +25,13 @@ export function validatePatch(value: unknown): Patch {
 
     const from = (patch as any).from;
     const to = (patch as any).to;
+    const lineFrom = (patch as any).lineFrom;
     const hasFrom = typeof from === 'number' && Number.isFinite(from);
     const hasTo = typeof to === 'number' && Number.isFinite(to);
+    const hasLineFrom =
+      typeof lineFrom === 'number' &&
+      Number.isFinite(lineFrom) &&
+      lineFrom > 0;
     if ((hasFrom || hasTo) && !(hasFrom && hasTo && to >= from)) {
       throw new Error('Invalid patch');
     }
@@ -37,6 +42,7 @@ export function validatePatch(value: unknown): Patch {
       expectedOldText: (patch as any).expectedOldText,
       text: patch.text,
       ...(hasFrom && hasTo ? { from, to } : {}),
+      ...(hasLineFrom ? { lineFrom } : {}),
     };
   }
 

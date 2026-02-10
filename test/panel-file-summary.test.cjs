@@ -89,3 +89,75 @@ test('summary card component and CSS class exist', () => {
   assert.match(panelCss, /\.ageaf-file-summary\b/);
   assert.match(summaryCard, /export function FileChangeSummaryCard/);
 });
+
+test('Panel groups replaceRangeInFile patches by file for rendering', () => {
+  const contents = read('src/iso/panel/Panel.tsx');
+
+  assert.match(contents, /fileGroupMap/);
+  assert.match(contents, /fileGroupRole/);
+  assert.match(contents, /GroupedPatchReviewCard/);
+});
+
+test('GroupedPatchReviewCard component exists', () => {
+  const contents = read('src/iso/panel/GroupedPatchReviewCard.tsx');
+
+  assert.match(contents, /export function GroupedPatchReviewCard/);
+  assert.match(contents, /ageaf-grouped-patch__separator/);
+});
+
+test('Panel memoizes grouped patch maps from messages', () => {
+  const contents = read('src/iso/panel/Panel.tsx');
+
+  assert.match(contents, /const \{ messageById, fileGroupMap, fileGroupRole \} = useMemo\(/);
+});
+
+test('Panel per-file accept path builds an O\\(1\\) lookup map from messagesRef', () => {
+  const contents = read('src/iso/panel/Panel.tsx');
+
+  assert.match(
+    contents,
+    /const currentById = new Map\(messagesRef\.current\.map\(\(entry\) => \[entry\.id, entry\]\)\);/
+  );
+});
+
+test('GroupedPatchReviewCard derives status counts in a single pass and guards empty hunks', () => {
+  const contents = read('src/iso/panel/GroupedPatchReviewCard.tsx');
+
+  assert.match(contents, /if \(sortedHunks\.length === 0\) return null;/);
+  assert.match(contents, /let pending = 0;/);
+  assert.match(contents, /let accepted = 0;/);
+  assert.match(contents, /let rejected = 0;/);
+});
+
+test('GroupedPatchReviewCard keeps a header expand control for full diff modal', () => {
+  const contents = read('src/iso/panel/GroupedPatchReviewCard.tsx');
+
+  assert.match(contents, /class=\"ageaf-patch-review__expand-btn\"/);
+  assert.match(contents, /aria-label=\"Expand diff to full screen\"/);
+  assert.match(contents, /const \[showModal,\s*setShowModal\] = useState\(false\);/);
+});
+
+test('expand control styles use visible foreground and chrome token', () => {
+  const panelCss = read('src/iso/panel/panel.css');
+
+  assert.match(panelCss, /\.ageaf-patch-review__expand-btn \{[^}]*color:\s*var\(--ageaf-panel-text\);/);
+  assert.match(panelCss, /\.ageaf-patch-review__expand-btn \{[^}]*border:\s*1px solid /);
+  assert.match(panelCss, /\.ageaf-patch-review__expand-icon \{[^}]*color:\s*var\(--ageaf-panel-text\);/);
+});
+
+test('Panel groups only pending replaceRangeInFile hunks to avoid hiding current-file cards', () => {
+  const contents = read('src/iso/panel/Panel.tsx');
+
+  assert.match(
+    contents,
+    /const \{ messageById, fileGroupMap, fileGroupRole \} = useMemo\(\(\) => \{[\s\S]*?const status = \(patchReview as any\)\.status \?\? 'pending';[\s\S]*?if \(status !== 'pending'\) continue;[\s\S]*?const fileKey = patchReview\.filePath\.toLowerCase\(\);/
+  );
+});
+
+test('Panel backfills missing lineFrom using file content and from offset', () => {
+  const contents = read('src/iso/panel/Panel.tsx');
+
+  assert.match(contents, /function computeLineFromOffset\(content: string, from: number\)/);
+  assert.match(contents, /requestFileContent\(group\.filePath\)/);
+  assert.match(contents, /const lineFrom = computeLineFromOffset\(content, entry\.from\);/);
+});
