@@ -10,6 +10,8 @@ const APPLY_REQUEST_EVENT = 'ageaf:editor:apply:request';
 const APPLY_RESPONSE_EVENT = 'ageaf:editor:apply:response';
 const FILE_REQUEST_EVENT = 'ageaf:editor:file-content:request';
 const FILE_RESPONSE_EVENT = 'ageaf:editor:file-content:response';
+const FILE_NAVIGATE_REQUEST_EVENT = 'ageaf:editor:file-navigate:request';
+const FILE_NAVIGATE_RESPONSE_EVENT = 'ageaf:editor:file-navigate:response';
 
 interface SelectionRequest {
   requestId: string;
@@ -76,6 +78,16 @@ interface FileContentResponse {
   activeName: string | null;
   ok: boolean;
   error?: string;
+}
+
+interface FileNavigateRequest {
+  requestId: string;
+  name: string;
+}
+
+interface FileNavigateResponse {
+  requestId: string;
+  ok: boolean;
 }
 
 function extractFilenameFromLabel(raw: string): string | null {
@@ -528,10 +540,31 @@ function onInsertAtCursor(event: Event) {
   });
 }
 
+async function onFileNavigateRequest(event: Event) {
+  const detail = (event as CustomEvent<FileNavigateRequest>).detail;
+  if (!detail?.requestId || !detail?.name) return;
+
+  let ok = false;
+  try {
+    ok = await tryActivateFileByName(String(detail.name));
+  } catch {
+    ok = false;
+  }
+
+  const response: FileNavigateResponse = {
+    requestId: detail.requestId,
+    ok,
+  };
+  window.dispatchEvent(
+    new CustomEvent(FILE_NAVIGATE_RESPONSE_EVENT, { detail: response })
+  );
+}
+
 export function registerEditorBridge() {
   window.addEventListener(REQUEST_EVENT, onSelectionRequest as EventListener);
   window.addEventListener(FILE_REQUEST_EVENT, onFileContentRequest as EventListener);
   window.addEventListener(APPLY_REQUEST_EVENT, onApplyRequest as EventListener);
   window.addEventListener(REPLACE_EVENT, onReplaceSelection as EventListener);
   window.addEventListener(INSERT_EVENT, onInsertAtCursor as EventListener);
+  window.addEventListener(FILE_NAVIGATE_REQUEST_EVENT, onFileNavigateRequest as EventListener);
 }

@@ -12,10 +12,13 @@ const EDITOR_APPLY_REQUEST_EVENT = 'ageaf:editor:apply:request';
 const EDITOR_APPLY_RESPONSE_EVENT = 'ageaf:editor:apply:response';
 const EDITOR_FILE_REQUEST_EVENT = 'ageaf:editor:file-content:request';
 const EDITOR_FILE_RESPONSE_EVENT = 'ageaf:editor:file-content:response';
+const EDITOR_FILE_NAVIGATE_REQUEST_EVENT = 'ageaf:editor:file-navigate:request';
+const EDITOR_FILE_NAVIGATE_RESPONSE_EVENT = 'ageaf:editor:file-navigate:response';
 const PANEL_INSERT_SELECTION_EVENT = 'ageaf:panel:insert-selection';
 const selectionRequests = new Map<string, (payload: any) => void>();
 const fileRequests = new Map<string, (payload: any) => void>();
 const applyRequests = new Map<string, (payload: { ok: boolean; error?: string }) => void>();
+const fileNavigateRequests = new Map<string, (payload: { ok: boolean }) => void>();
 
 type ApplyReplaceRangeArgs = {
   from: number;
@@ -47,6 +50,7 @@ declare global {
       insertAtCursor: (text: string) => void;
       applyReplaceRange: (payload: ApplyReplaceRangeArgs) => Promise<{ ok: boolean; error?: string }>;
       applyReplaceInFile: (payload: ApplyReplaceInFileArgs) => Promise<{ ok: boolean; error?: string }>;
+      navigateToFile: (name: string) => Promise<{ ok: boolean }>;
     };
   }
 }
@@ -78,6 +82,15 @@ function onApplyResponse(event: Event) {
   handler({ ok: detail.ok, error: detail.error });
 }
 
+function onFileNavigateResponse(event: Event) {
+  const detail = (event as CustomEvent<{ requestId: string; ok: boolean }>).detail;
+  if (!detail?.requestId) return;
+  const handler = fileNavigateRequests.get(detail.requestId);
+  if (!handler) return;
+  fileNavigateRequests.delete(detail.requestId);
+  handler({ ok: detail.ok });
+}
+
 function requestSelection() {
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return new Promise((resolve) => {
@@ -92,6 +105,18 @@ function requestFileContent(name: string) {
     fileRequests.set(requestId, resolve);
     window.dispatchEvent(
       new CustomEvent(EDITOR_FILE_REQUEST_EVENT, { detail: { requestId, name } })
+    );
+  });
+}
+
+function navigateToFile(name: string): Promise<{ ok: boolean }> {
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise((resolve) => {
+    fileNavigateRequests.set(requestId, resolve);
+    window.dispatchEvent(
+      new CustomEvent(EDITOR_FILE_NAVIGATE_REQUEST_EVENT, {
+        detail: { requestId, name },
+      })
     );
   });
 }
@@ -266,6 +291,7 @@ function updatePanelMount() {
 window.addEventListener(EDITOR_RESPONSE_EVENT, onSelectionResponse as EventListener);
 window.addEventListener(EDITOR_FILE_RESPONSE_EVENT, onFileContentResponse as EventListener);
 window.addEventListener(EDITOR_APPLY_RESPONSE_EVENT, onApplyResponse as EventListener);
+window.addEventListener(EDITOR_FILE_NAVIGATE_RESPONSE_EVENT, onFileNavigateResponse as EventListener);
 window.ageafBridge = {
   requestSelection,
   requestFileContent,
@@ -273,6 +299,7 @@ window.ageafBridge = {
   insertAtCursor,
   applyReplaceRange,
   applyReplaceInFile,
+  navigateToFile,
 };
 
 function isPanelTarget(target: EventTarget | null) {
