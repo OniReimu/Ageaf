@@ -2009,8 +2009,6 @@ const Panel = () => {
       if (lineFromBackfillAttemptedRef.current.has(message.id)) continue;
       const patchReview = message.patchReview;
       if (!patchReview || patchReview.kind !== 'replaceRangeInFile') continue;
-      const status = (patchReview as any).status ?? 'pending';
-      if (status !== 'pending') continue;
       if (
         typeof patchReview.lineFrom === 'number' &&
         Number.isFinite(patchReview.lineFrom) &&
