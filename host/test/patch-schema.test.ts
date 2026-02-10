@@ -24,3 +24,25 @@ test('validatePatch accepts insertAtCursor', () => {
   const patch = validatePatch({ kind: 'insertAtCursor', text: 'hello' });
   assert.deepEqual(patch, { kind: 'insertAtCursor', text: 'hello' });
 });
+
+test('validatePatch preserves lineFrom for replaceRangeInFile patches', () => {
+  const patch = validatePatch({
+    kind: 'replaceRangeInFile',
+    filePath: 'main.tex',
+    expectedOldText: 'old',
+    text: 'new',
+    from: 10,
+    to: 13,
+    lineFrom: 42,
+  });
+
+  assert.deepEqual(patch, {
+    kind: 'replaceRangeInFile',
+    filePath: 'main.tex',
+    expectedOldText: 'old',
+    text: 'new',
+    from: 10,
+    to: 13,
+    lineFrom: 42,
+  });
+});

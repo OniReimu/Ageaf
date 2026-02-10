@@ -440,6 +440,74 @@
   animation: ageaf-patch-card-fade-in 0.25s ease-out;
 }
 
+.ageaf-grouped-patch {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: ageaf-patch-card-fade-in 0.25s ease-out;
+}
+
+.ageaf-grouped-patch__pending {
+  color: var(--ageaf-panel-muted);
+  font-weight: 500;
+}
+
+.ageaf-grouped-patch__hunk {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ageaf-grouped-patch__hunk-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ageaf-grouped-patch__separator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 0;
+  font-size: 10px;
+  color: var(--ageaf-panel-muted);
+  opacity: 0.7;
+}
+
+.ageaf-grouped-patch__separator::before,
+.ageaf-grouped-patch__separator::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ageaf-grouped-patch__separator::before {
+  margin-right: 8px;
+}
+
+.ageaf-grouped-patch__separator::after {
+  margin-left: 8px;
+}
+
+.ageaf-grouped-patch__hunk-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--ageaf-panel-muted);
+}
+
+.ageaf-grouped-patch__modal-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
 .ageaf-patch-review__header {
   display: flex;
   align-items: center;
@@ -485,23 +553,37 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
   cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.15s ease;
+  opacity: 0.9;
+  color: var(--ageaf-panel-text);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease;
   border-radius: 4px;
 }
 
 .ageaf-patch-review__expand-btn:hover {
   opacity: 1;
-  background: rgba(57, 185, 138, 0.1);
+  border-color: rgba(57, 185, 138, 0.45);
+  background: rgba(57, 185, 138, 0.12);
+}
+
+.ageaf-patch-review__expand-btn:focus-visible {
+  outline: 2px solid rgba(33, 124, 244, 0.55);
+  outline-offset: 1px;
 }
 
 .ageaf-patch-review__expand-icon {
   width: 16px;
   height: 16px;
-  color: var(--ageaf-panel-text-color);
+  color: var(--ageaf-panel-text);
 }
 
 /* File change summary card */
