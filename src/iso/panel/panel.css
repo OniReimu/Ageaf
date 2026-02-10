@@ -504,6 +504,138 @@
   color: var(--ageaf-panel-text-color);
 }
 
+/* File change summary card */
+.ageaf-file-summary {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ageaf-panel-border);
+  border-radius: 8px;
+  background: var(--ageaf-panel-surface);
+  overflow: hidden;
+  animation: ageaf-patch-card-fade-in 0.25s ease-out;
+}
+
+.ageaf-file-summary__list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.ageaf-file-summary__row {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.ageaf-file-summary__row:last-child {
+  border-bottom: 0;
+}
+
+.ageaf-file-summary__row:hover {
+  background: rgba(57, 185, 138, 0.08);
+}
+
+.ageaf-file-summary__status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.ageaf-file-summary__status-dot.is-pending {
+  background: var(--ageaf-panel-status);
+}
+
+.ageaf-file-summary__status-dot.is-accepted {
+  background: #4dd4a4;
+}
+
+.ageaf-file-summary__status-dot.is-rejected {
+  background: #ef4444;
+}
+
+.ageaf-file-summary__status-dot.is-mixed {
+  background: var(--ageaf-panel-muted);
+}
+
+.ageaf-file-summary__added {
+  color: #4dd4a4;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.ageaf-file-summary__removed {
+  color: #ef4444;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.ageaf-file-summary__basename {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ageaf-panel-text);
+  min-width: 0;
+}
+
+.ageaf-file-summary__path {
+  font-size: 10px;
+  color: var(--ageaf-panel-muted);
+  margin-left: auto;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ageaf-file-summary__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--ageaf-panel-border);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.ageaf-file-summary__count {
+  font-size: 11px;
+  color: var(--ageaf-panel-muted);
+  font-weight: 500;
+}
+
+.ageaf-file-summary__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ageaf-file-summary__actions .ageaf-panel__apply {
+  margin-left: 0;
+  min-width: 0;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.ageaf-file-summary__chevron {
+  all: unset;
+  cursor: pointer;
+  padding: 2px;
+  opacity: 0.7;
+  transition: transform 0.2s ease, opacity 0.15s ease;
+}
+
+.ageaf-file-summary__chevron:hover {
+  opacity: 1;
+}
+
+.ageaf-file-summary__chevron.is-collapsed {
+  transform: rotate(180deg);
+}
+
 .ageaf-diff-modal__backdrop {
   position: fixed;
   top: 0;

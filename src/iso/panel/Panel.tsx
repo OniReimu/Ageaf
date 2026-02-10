@@ -37,6 +37,7 @@ import {
 import { Options } from '../../types';
 import { parseMarkdown, renderMarkdown } from './markdown';
 import { DiffReview } from './DiffReview';
+import { FileChangeSummaryCard, type FileSummaryEntry } from './FileChangeSummaryCard';
 import {
   loadSkillsManifest,
   loadSkillMarkdown,
@@ -130,6 +131,66 @@ function getPatchIdentityKey(message: StoredMessage) {
     return `replaceSelection:${review.from}:${review.to}:${review.selection}:${review.text}`;
   }
   return `insertAtCursor:${review.text}`;
+}
+
+function computeFileSummary(messages: Message[]): FileSummaryEntry[] {
+  const byFile = new Map<string, FileSummaryEntry>();
+
+  for (const message of messages) {
+    const patchReview = message.patchReview;
+    if (!patchReview) continue;
+    const status = (patchReview as any).status ?? 'pending';
+
+    let filePath: string;
+    let oldLines: number;
+    let newLines: number;
+
+    if (patchReview.kind === 'replaceRangeInFile') {
+      filePath = patchReview.filePath;
+      oldLines = patchReview.expectedOldText
+        ? patchReview.expectedOldText.split('\n').length
+        : 0;
+      newLines = patchReview.text ? patchReview.text.split('\n').length : 0;
+    } else if (patchReview.kind === 'replaceSelection') {
+      filePath = patchReview.fileName ?? 'current file';
+      oldLines = patchReview.selection
+        ? patchReview.selection.split('\n').length
+        : 0;
+      newLines = patchReview.text ? patchReview.text.split('\n').length : 0;
+    } else {
+      continue;
+    }
+
+    const key = filePath.toLowerCase();
+    const existing = byFile.get(key);
+    if (existing) {
+      existing.linesAdded += newLines;
+      existing.linesRemoved += oldLines;
+      existing.messageIds.push(message.id);
+      if (status === 'accepted') {
+        existing.acceptedCount += 1;
+      } else if (status === 'rejected') {
+        existing.rejectedCount += 1;
+      } else {
+        existing.pendingCount += 1;
+      }
+      continue;
+    }
+
+    const pathParts = filePath.split('/').filter(Boolean);
+    byFile.set(key, {
+      filePath,
+      displayName: pathParts[pathParts.length - 1] || filePath,
+      linesAdded: newLines,
+      linesRemoved: oldLines,
+      messageIds: [message.id],
+      pendingCount: 'pending' === status ? 1 : 0,
+      acceptedCount: status === 'accepted' ? 1 : 0,
+      rejectedCount: status === 'rejected' ? 1 : 0,
+    });
+  }
+
+  return Array.from(byFile.values());
 }
 
 /* ── Module-level constants (hoisted from inside Panel) ────────────────── */
@@ -546,6 +607,8 @@ const Panel = () => {
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [editorEmpty, setEditorEmpty] = useState(true);
   const [messages, setMessages] = useState<Message[]>([]);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
   const [chatProvider, setChatProvider] = useState<ProviderId>('claude');
   const [sessionIds, setSessionIds] = useState<string[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -555,6 +618,7 @@ const Panel = () => {
   const [patchActionBusyId, setPatchActionBusyId] = useState<string | null>(
     null
   );
+  const [bulkActionBusy, setBulkActionBusy] = useState(false);
   const [patchActionErrors, setPatchActionErrors] = useState<
     Record<string, string>
   >({});
@@ -3869,8 +3933,14 @@ const Panel = () => {
       const patchReview = message.patchReview;
       const status = (patchReview as any).status ?? 'pending';
       const error = patchActionErrors[message.id] ?? null;
-      const busy = patchActionBusyId === message.id;
+      const busy = patchActionBusyId === message.id || bulkActionBusy;
       const canAct = status === 'pending' && !busy;
+      // Pending action order is defined in PatchReviewCard:
+      // onClick={onAccept}
+      // onClick={onReject}
+      // onClick={onFeedback}
+      // class="ageaf-panel__apply">✓
+      // class="ageaf-panel__apply is-secondary">✕
       const copyId = `${message.id}-patch-proposal`;
 
       return (
@@ -6651,6 +6721,7 @@ const Panel = () => {
 
   const clearPatchActionState = () => {
     setPatchActionBusyId(null);
+    setBulkActionBusy(false);
     setPatchActionErrors({});
   };
 
@@ -6678,6 +6749,7 @@ const Panel = () => {
   };
 
   const onRejectPatchReviewMessage = (messageId: string) => {
+    if (bulkActionBusy) return;
     setPatchReviewStatus(messageId, 'rejected');
     setPatchActionErrors((prev) => {
       const { [messageId]: _removed, ...rest } = prev;
@@ -6689,6 +6761,7 @@ const Panel = () => {
     messageId: string,
     overrideText?: string
   ) => {
+    if (bulkActionBusy) return;
     const conversationId = chatConversationIdRef.current;
     if (!conversationId) return;
     const msg = messages.find((m) => m.id === messageId);
@@ -6761,18 +6834,11 @@ const Panel = () => {
     };
   };
 
-  const onAcceptPatchReviewMessage = async (
+  const acceptSinglePatch = async (
     messageId: string,
+    patchReview: StoredPatchReview,
     overrideText?: string
   ) => {
-    if (patchActionBusyId) return;
-    const msg = messages.find((m) => m.id === messageId);
-    const patchReview = msg?.patchReview;
-    if (!patchReview) return;
-    const status = (patchReview as any).status ?? 'pending';
-    if (status !== 'pending') return;
-
-    setPatchActionBusyId(messageId);
     setPatchActionErrors((prev) => {
       const { [messageId]: _removed, ...rest } = prev;
       return rest;
@@ -6853,9 +6919,113 @@ const Panel = () => {
       const message =
         error instanceof Error ? error.message : 'Failed to apply patch';
       setPatchActionErrors((prev) => ({ ...prev, [messageId]: message }));
+    }
+  };
+
+  const onAcceptPatchReviewMessage = async (
+    messageId: string,
+    overrideText?: string
+  ) => {
+    if (patchActionBusyId || bulkActionBusy) return;
+    const msg = messages.find((m) => m.id === messageId);
+    const patchReview = msg?.patchReview;
+    if (!patchReview) return;
+    const status = (patchReview as any).status ?? 'pending';
+    if (status !== 'pending') return;
+
+    setPatchActionBusyId(messageId);
+    try {
+      await acceptSinglePatch(messageId, patchReview, overrideText);
     } finally {
       setPatchActionBusyId(null);
     }
+  };
+
+  const onBulkAcceptAll = async () => {
+    if (bulkActionBusy || patchActionBusyId) return;
+    setBulkActionBusy(true);
+    try {
+      const pendingMessages = messagesRef.current.filter((message) => {
+        if (!message.patchReview) return false;
+        const status = (message.patchReview as any).status ?? 'pending';
+        return status === 'pending';
+      });
+
+      const groupedByFile = new Map<string, Message[]>();
+      for (const message of pendingMessages) {
+        const patchReview = message.patchReview;
+        if (!patchReview) continue;
+        const fileKey =
+          patchReview.kind === 'replaceRangeInFile'
+            ? patchReview.filePath
+            : patchReview.kind === 'replaceSelection'
+              ? patchReview.fileName ?? '__selection__'
+              : '__insert_at_cursor__';
+        const group = groupedByFile.get(fileKey) ?? [];
+        group.push(message);
+        groupedByFile.set(fileKey, group);
+      }
+
+      for (const fileMessages of groupedByFile.values()) {
+        fileMessages.sort((a, b) => {
+          const aPatch = a.patchReview;
+          const bPatch = b.patchReview;
+          const aFrom =
+            aPatch &&
+            (aPatch.kind === 'replaceSelection' ||
+              aPatch.kind === 'replaceRangeInFile')
+              ? aPatch.from ?? 0
+              : 0;
+          const bFrom =
+            bPatch &&
+            (bPatch.kind === 'replaceSelection' ||
+              bPatch.kind === 'replaceRangeInFile')
+              ? bPatch.from ?? 0
+              : 0;
+          return bFrom - aFrom;
+        });
+
+        for (const message of fileMessages) {
+          const latest = messagesRef.current.find((entry) => entry.id === message.id);
+          if (!latest?.patchReview) continue;
+          const latestStatus = (latest.patchReview as any).status ?? 'pending';
+          if (latestStatus !== 'pending') continue;
+
+          try {
+            await acceptSinglePatch(latest.id, latest.patchReview);
+          } catch {
+            // Continue processing remaining hunks.
+          }
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+      }
+    } finally {
+      setBulkActionBusy(false);
+    }
+  };
+
+  const onBulkRejectAll = () => {
+    if (bulkActionBusy || patchActionBusyId) return;
+    setMessages((prev) =>
+      prev.map((message) => {
+        if (!message.patchReview) return message;
+        const status = (message.patchReview as any).status ?? 'pending';
+        if (status !== 'pending') return message;
+        return {
+          ...message,
+          patchReview: {
+            ...message.patchReview,
+            status: 'rejected',
+          } as any,
+        };
+      })
+    );
+    setPatchActionErrors({});
+  };
+
+  const onNavigateToFile = (filePath: string) => {
+    if (!filePath?.trim()) return;
+    void window.ageafBridge?.navigateToFile(filePath);
   };
 
   // Stable refs for patch review handlers — avoids re-registering the event
@@ -7634,6 +7804,39 @@ const Panel = () => {
                         messages.length
                       )
                       : messages.length;
+                  const fileSummary = computeFileSummary(messages);
+                  const totalPending = fileSummary.reduce(
+                    (sum, entry) => sum + entry.pendingCount,
+                    0
+                  );
+                  const showSummaryCard = fileSummary.length >= 1;
+                  const preStreamMessages = messages.slice(0, preStreamCount);
+                  const postStreamMessages = messages.slice(preStreamCount);
+                  const prePatchIndex = preStreamMessages.findIndex(
+                    (message) => Boolean(message.patchReview)
+                  );
+                  const postPatchIndex = postStreamMessages.findIndex(
+                    (message) => Boolean(message.patchReview)
+                  );
+                  const postBeforeSummary =
+                    prePatchIndex < 0 && postPatchIndex >= 0
+                      ? postStreamMessages.slice(0, postPatchIndex)
+                      : postStreamMessages;
+                  const postAfterSummary =
+                    prePatchIndex < 0 && postPatchIndex >= 0
+                      ? postStreamMessages.slice(postPatchIndex)
+                      : [];
+                  const renderSummaryCard = () =>
+                    showSummaryCard ? (
+                      <FileChangeSummaryCard
+                        files={fileSummary}
+                        totalPending={totalPending}
+                        bulkBusy={bulkActionBusy}
+                        onAcceptAll={onBulkAcceptAll}
+                        onRejectAll={onBulkRejectAll}
+                        onNavigateToFile={onNavigateToFile}
+                      />
+                    ) : null;
 
                   const renderMessageBubble = (message: Message) => {
                     const content = renderMessageContent(message, latestPatchText);
@@ -7727,10 +7930,19 @@ const Panel = () => {
                       </div>
                     );
                   };
-
                   return (
                     <>
-                      {messages.slice(0, preStreamCount).map(renderMessageBubble)}
+                      {prePatchIndex >= 0
+                        ? preStreamMessages
+                          .slice(0, prePatchIndex)
+                          .map(renderMessageBubble)
+                        : messages.slice(0, preStreamCount).map(renderMessageBubble)}
+                      {showSummaryCard && prePatchIndex >= 0
+                        ? renderSummaryCard()
+                        : null}
+                      {prePatchIndex >= 0
+                        ? preStreamMessages.slice(prePatchIndex).map(renderMessageBubble)
+                        : null}
                       {streamingStatus ? (
                         <div class="ageaf-message ageaf-message--assistant ageaf-message--streaming">
                           {(() => {
@@ -7790,7 +8002,13 @@ const Panel = () => {
                           />
                         </div>
                       ) : null}
-                      {messages.slice(preStreamCount).map(renderMessageBubble)}
+                      {showSummaryCard && prePatchIndex < 0 && postPatchIndex >= 0
+                        ? postBeforeSummary.map(renderMessageBubble)
+                        : messages.slice(preStreamCount).map(renderMessageBubble)}
+                      {showSummaryCard && prePatchIndex < 0 && postPatchIndex >= 0
+                        ? renderSummaryCard()
+                        : null}
+                      {postAfterSummary.map(renderMessageBubble)}
                     </>
                   );
                 })()}
