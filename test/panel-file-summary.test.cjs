@@ -47,6 +47,16 @@ test('Panel renders FileChangeSummaryCard with summary props', () => {
   assert.match(contents, /onNavigateToFile=\{onNavigateToFile\}/);
 });
 
+test('Panel anchors summary card between chat and runtime and only when pending exists', () => {
+  const contents = read('src/iso/panel/Panel.tsx');
+
+  assert.match(contents, /const showSummaryCard = totalPending > 0;/);
+  assert.match(
+    contents,
+    /<\/div>\s*\{showSummaryCard \? \(\s*<FileChangeSummaryCard[\s\S]*?\) : null\}\s*<div class="ageaf-runtime">/
+  );
+});
+
 test('contentScript exposes navigateToFile bridge call', () => {
   const contents = read('src/iso/contentScript.ts');
 
