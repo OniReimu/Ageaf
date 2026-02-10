@@ -731,8 +731,6 @@ const Panel = () => {
       byId.set(message.id, message);
       const patchReview = message.patchReview;
       if (!patchReview || patchReview.kind !== 'replaceRangeInFile') continue;
-      const status = (patchReview as any).status ?? 'pending';
-      if (status !== 'pending') continue;
       const fileKey = patchReview.filePath.toLowerCase();
       const existing = groupMap.get(fileKey);
       if (existing) {
