@@ -43,6 +43,7 @@ type OverlayWidgetPayload = {
   replaceFrom: number;
   replaceTo: number;
   text: string;
+  oldText: string;
   messageId: string;
 };
 
@@ -273,6 +274,20 @@ function ensureInlineDiffStyles() {
       position: relative;
     }
 
+    .ageaf-inline-diff-widget__old {
+      background: rgba(239, 68, 68, 0.14);
+      text-decoration: line-through;
+      opacity: 0.75;
+      padding: 2px 4px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      font-family: inherit;
+      font-size: inherit;
+      line-height: inherit;
+      color: inherit;
+    }
+
     .ageaf-inline-diff-widget__text {
       padding: 6px 8px 48px 8px;
       font-family: inherit;
@@ -318,11 +333,6 @@ function ensureInlineDiffStyles() {
       display: inline-flex;
       gap: 8px;
       flex: 0 0 auto;
-    }
-
-    /* CM6 mark decoration for the red "old" area (exact range) */
-    .ageaf-inline-diff-old-mark {
-      background: rgba(239, 68, 68, 0.14);
     }
 
     .ageaf-review-bar {
@@ -971,6 +981,7 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
   if (WidgetType) {
     WidgetClass = class extends WidgetType {
       constructor(
+        private readonly oldText: string,
         private readonly text: string,
         private readonly messageId: string
       ) {
@@ -978,7 +989,9 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       }
 
       eq(other: any) {
-        return other.messageId === this.messageId && other.text === this.text;
+        return other.messageId === this.messageId
+          && other.text === this.text
+          && other.oldText === this.oldText;
       }
 
       ignoreEvent() {
@@ -987,19 +1000,22 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       }
 
       toDOM() {
-        return createWidgetDOM(this.text, this.messageId);
+        return createWidgetDOM(this.oldText, this.text, this.messageId);
       }
     };
   } else {
     // Fallback: plain object (shouldn't happen if CM6 is complete)
     WidgetClass = class {
       constructor(
+        private readonly oldText: string,
         private readonly text: string,
         private readonly messageId: string
-      ) {}
+      ) { }
 
       eq(other: any) {
-        return other.messageId === this.messageId && other.text === this.text;
+        return other.messageId === this.messageId
+          && other.text === this.text
+          && other.oldText === this.oldText;
       }
 
       ignoreEvent() {
@@ -1007,7 +1023,7 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       }
 
       toDOM() {
-        return createWidgetDOM(this.text, this.messageId);
+        return createWidgetDOM(this.oldText, this.text, this.messageId);
       }
     };
   }
@@ -1045,32 +1061,34 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
             for (const entry of list) {
               if (!entry) continue;
 
-              // Old region highlight (red) using an exact-range mark so it matches what will be replaced,
-              // even when a paragraph is a single long (wrapped) line in the editor.
               const rf = Number(entry.replaceFrom);
               const rt = Number(entry.replaceTo);
-              if (Number.isFinite(rf) && Number.isFinite(rt) && rt > rf) {
-                try {
-                  items.push(
-                    Decoration.mark({
-                      class: 'ageaf-inline-diff-old-mark',
-                    }).range(rf, rt)
-                  );
-                  nextRanges.push([rf, rt]);
-                } catch {
-                  // ignore
-                }
-              }
+              const hasOldRange = Number.isFinite(rf) && Number.isFinite(rt) && rt > rf;
 
-              // Proposed region (green) block widget inserted after selection.
-              const widget = new WidgetClass(entry.text, entry.messageId);
-              items.push(
-                Decoration.widget({
-                  widget,
-                  block: true,
-                  side: 1,
-                }).range(entry.from)
+              const widget = new WidgetClass(
+                hasOldRange ? (entry.oldText ?? '') : '',
+                entry.text,
+                entry.messageId
               );
+
+              if (hasOldRange) {
+                // REPLACEMENT: use Decoration.replace() — widget fills old text's position,
+                // gutter stays aligned. block: true tells CM6 to treat the widget as a
+                // block-level replacement so the gutter line numbers adjust correctly.
+                items.push(
+                  Decoration.replace({ widget }).range(rf, rt)
+                );
+                nextRanges.push([rf, rt]);
+              } else {
+                // INSERTION (zero-width, e.g. insertAtCursor): keep block widget
+                items.push(
+                  Decoration.widget({
+                    widget,
+                    block: true,
+                    side: 1,
+                  }).range(entry.from)
+                );
+              }
             }
 
             deco = Decoration.set(items, true);
@@ -1186,10 +1204,17 @@ function ensureCm6FieldInstalled(view: any) {
   return false;
 }
 
-function createWidgetDOM(text: string, messageId: string): HTMLElement {
+function createWidgetDOM(oldText: string, text: string, messageId: string): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'ageaf-inline-diff-widget';
   wrap.setAttribute('data-message-id', messageId);
+
+  if (oldText) {
+    const oldTextEl = document.createElement('div');
+    oldTextEl.className = 'ageaf-inline-diff-widget__old';
+    oldTextEl.textContent = oldText;
+    wrap.appendChild(oldTextEl);
+  }
 
   const textEl = document.createElement('textarea');
   textEl.className = 'ageaf-inline-diff-widget__text';
@@ -1206,9 +1231,8 @@ function createWidgetDOM(text: string, messageId: string): HTMLElement {
     try {
       // Reset first so shrink works too.
       (textEl as HTMLTextAreaElement).style.height = 'auto';
-      (textEl as HTMLTextAreaElement).style.height = `${
-        (textEl as HTMLTextAreaElement).scrollHeight
-      }px`;
+      (textEl as HTMLTextAreaElement).style.height = `${(textEl as HTMLTextAreaElement).scrollHeight
+        }px`;
     } catch {
       // ignore
     }
@@ -1300,7 +1324,7 @@ function renderOverlay() {
     for (const payload of overlayById.values()) {
       if (payload.filePath && !matchesActiveFile(activeName, payload.filePath)) continue;
       if (payload.fileName && payload.kind === 'replaceSelection'
-          && !matchesActiveFile(activeName, payload.fileName)) continue;
+        && !matchesActiveFile(activeName, payload.fileName)) continue;
       // insertAtCursor depends on cursor position — always resolve fresh
       if (payload.kind === 'insertAtCursor') {
         const range = resolveOverlayRange(view, payload);
@@ -1317,7 +1341,7 @@ function renderOverlay() {
     for (const payload of overlayById.values()) {
       if (payload.filePath && !matchesActiveFile(activeName, payload.filePath)) continue;
       if (payload.fileName && payload.kind === 'replaceSelection'
-          && !matchesActiveFile(activeName, payload.fileName)) continue;
+        && !matchesActiveFile(activeName, payload.fileName)) continue;
       const range = resolveOverlayRange(view, payload, fullText);
       resolveCache.set(payload.messageId, range);
       if (range) resolved.push({ messageId: payload.messageId, payload, range });
@@ -1355,6 +1379,7 @@ function renderOverlay() {
       replaceFrom: r.range.from,
       replaceTo: r.range.to,
       text: r.range.newText,
+      oldText: r.range.oldText,
       messageId: r.messageId,
     }));
 
@@ -1559,8 +1584,8 @@ function renderOverlay() {
     const resolvedLineHeight = Number.isFinite(lineHeightValue)
       ? lineHeightValue
       : Number.isFinite(fontSize)
-      ? fontSize * 1.3
-      : 16;
+        ? fontSize * 1.3
+        : 16;
     // 2-3 empty lines for the buttons, inside the green paragraph.
     text.style.paddingBottom = `${Math.round(resolvedLineHeight * 2.6 + 10)}px`;
 
@@ -1786,8 +1811,8 @@ export function registerInlineDiffOverlay() {
         const list = Array.isArray(parsed)
           ? parsed
           : parsed?.messageId
-          ? [parsed]
-          : [];
+            ? [parsed]
+            : [];
         if (list.length > 0) {
           const currentProjectId = getCurrentProjectId();
           for (const stored of list) {
@@ -1821,8 +1846,8 @@ export function registerInlineDiffOverlay() {
           const list = Array.isArray(storedAny)
             ? storedAny
             : storedAny?.messageId
-            ? [storedAny]
-            : [];
+              ? [storedAny]
+              : [];
           if (list.length === 0) return;
           const currentProjectId = getCurrentProjectId();
           for (const stored of list) {
