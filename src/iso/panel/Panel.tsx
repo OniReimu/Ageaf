@@ -7657,6 +7657,12 @@ const Panel = () => {
         .filter((entry): entry is ToolInputQuestion => Boolean(entry))
       : [];
 
+  const fileSummary = computeFileSummary(messages);
+  const totalPending = fileSummary.reduce(
+    (sum, entry) => sum + entry.pendingCount,
+    0
+  );
+  const showSummaryCard = totalPending > 0;
   const hasSessions = sessionIds.length > 0;
   const landingPage = (
     <div class="ageaf-landing">
@@ -7804,39 +7810,6 @@ const Panel = () => {
                         messages.length
                       )
                       : messages.length;
-                  const fileSummary = computeFileSummary(messages);
-                  const totalPending = fileSummary.reduce(
-                    (sum, entry) => sum + entry.pendingCount,
-                    0
-                  );
-                  const showSummaryCard = fileSummary.length >= 1;
-                  const preStreamMessages = messages.slice(0, preStreamCount);
-                  const postStreamMessages = messages.slice(preStreamCount);
-                  const prePatchIndex = preStreamMessages.findIndex(
-                    (message) => Boolean(message.patchReview)
-                  );
-                  const postPatchIndex = postStreamMessages.findIndex(
-                    (message) => Boolean(message.patchReview)
-                  );
-                  const postBeforeSummary =
-                    prePatchIndex < 0 && postPatchIndex >= 0
-                      ? postStreamMessages.slice(0, postPatchIndex)
-                      : postStreamMessages;
-                  const postAfterSummary =
-                    prePatchIndex < 0 && postPatchIndex >= 0
-                      ? postStreamMessages.slice(postPatchIndex)
-                      : [];
-                  const renderSummaryCard = () =>
-                    showSummaryCard ? (
-                      <FileChangeSummaryCard
-                        files={fileSummary}
-                        totalPending={totalPending}
-                        bulkBusy={bulkActionBusy}
-                        onAcceptAll={onBulkAcceptAll}
-                        onRejectAll={onBulkRejectAll}
-                        onNavigateToFile={onNavigateToFile}
-                      />
-                    ) : null;
 
                   const renderMessageBubble = (message: Message) => {
                     const content = renderMessageContent(message, latestPatchText);
@@ -7932,17 +7905,7 @@ const Panel = () => {
                   };
                   return (
                     <>
-                      {prePatchIndex >= 0
-                        ? preStreamMessages
-                          .slice(0, prePatchIndex)
-                          .map(renderMessageBubble)
-                        : messages.slice(0, preStreamCount).map(renderMessageBubble)}
-                      {showSummaryCard && prePatchIndex >= 0
-                        ? renderSummaryCard()
-                        : null}
-                      {prePatchIndex >= 0
-                        ? preStreamMessages.slice(prePatchIndex).map(renderMessageBubble)
-                        : null}
+                      {messages.slice(0, preStreamCount).map(renderMessageBubble)}
                       {streamingStatus ? (
                         <div class="ageaf-message ageaf-message--assistant ageaf-message--streaming">
                           {(() => {
@@ -8002,13 +7965,7 @@ const Panel = () => {
                           />
                         </div>
                       ) : null}
-                      {showSummaryCard && prePatchIndex < 0 && postPatchIndex >= 0
-                        ? postBeforeSummary.map(renderMessageBubble)
-                        : messages.slice(preStreamCount).map(renderMessageBubble)}
-                      {showSummaryCard && prePatchIndex < 0 && postPatchIndex >= 0
-                        ? renderSummaryCard()
-                        : null}
-                      {postAfterSummary.map(renderMessageBubble)}
+                      {messages.slice(preStreamCount).map(renderMessageBubble)}
                     </>
                   );
                 })()}
@@ -8175,6 +8132,16 @@ const Panel = () => {
                   </button>
                 ) : null}
               </div>
+              {showSummaryCard ? (
+                <FileChangeSummaryCard
+                  files={fileSummary}
+                  totalPending={totalPending}
+                  bulkBusy={bulkActionBusy}
+                  onAcceptAll={onBulkAcceptAll}
+                  onRejectAll={onBulkRejectAll}
+                  onNavigateToFile={onNavigateToFile}
+                />
+              ) : null}
               <div class="ageaf-runtime">
                 <div class="ageaf-runtime__picker">
                   <button

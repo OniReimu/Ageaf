@@ -508,11 +508,13 @@
 .ageaf-file-summary {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--ageaf-panel-border);
-  border-radius: 8px;
+  border-top: 1px solid var(--ageaf-panel-border);
+  border-bottom: 1px solid var(--ageaf-panel-border);
+  border-left: 0;
+  border-right: 0;
+  border-radius: 0;
   background: var(--ageaf-panel-surface);
   overflow: hidden;
-  animation: ageaf-patch-card-fade-in 0.25s ease-out;
 }
 
 .ageaf-file-summary__list {
@@ -873,7 +875,7 @@
   overflow: visible;
   position: relative;
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: 1fr auto auto;
   gap: 10px;
   min-height: 0;
   min-width: 0;
