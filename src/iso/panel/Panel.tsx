@@ -140,6 +140,7 @@ function computeFileSummary(messages: Message[]): FileSummaryEntry[] {
     const patchReview = message.patchReview;
     if (!patchReview) continue;
     const status = (patchReview as any).status ?? 'pending';
+    if (status !== 'pending') continue;
 
     let filePath: string;
     let oldLines: number;
@@ -167,13 +168,7 @@ function computeFileSummary(messages: Message[]): FileSummaryEntry[] {
       existing.linesAdded += newLines;
       existing.linesRemoved += oldLines;
       existing.messageIds.push(message.id);
-      if (status === 'accepted') {
-        existing.acceptedCount += 1;
-      } else if (status === 'rejected') {
-        existing.rejectedCount += 1;
-      } else {
-        existing.pendingCount += 1;
-      }
+      existing.pendingCount += 1;
       continue;
     }
 
@@ -184,9 +179,9 @@ function computeFileSummary(messages: Message[]): FileSummaryEntry[] {
       linesAdded: newLines,
       linesRemoved: oldLines,
       messageIds: [message.id],
-      pendingCount: 'pending' === status ? 1 : 0,
-      acceptedCount: status === 'accepted' ? 1 : 0,
-      rejectedCount: status === 'rejected' ? 1 : 0,
+      pendingCount: 1,
+      acceptedCount: 0,
+      rejectedCount: 0,
     });
   }
 
@@ -357,6 +352,12 @@ const MODEL_DISPLAY = {
 } as const;
 
 type KnownModelToken = keyof typeof MODEL_DISPLAY;
+
+const CLAUDE_FALLBACK_MODELS: RuntimeModel[] = [
+  { value: 'opus', displayName: 'Opus', description: 'Most capable for complex work', isDefault: false },
+  { value: 'sonnet', displayName: 'Sonnet', description: 'Best for everyday task', isDefault: true },
+  { value: 'haiku', displayName: 'Haiku', description: 'Fastest for quick answers', isDefault: false },
+];
 
 const FALLBACK_THINKING_MODES: ThinkingMode[] = [
   { id: 'off', label: 'Off', maxThinkingTokens: null },
@@ -1318,24 +1319,26 @@ const Panel = () => {
         getCachedStoredUsage(conversation, chatProvider)
       );
 
-      if (options.transport !== 'native' && !options.hostUrl) {
+      if (chatProvider === 'codex') {
         setRuntimeModels([]);
-        if (chatProvider === 'codex') {
-          setThinkingModes(
-            FALLBACK_THINKING_MODES.map((mode) => ({
-              ...mode,
-              maxThinkingTokens: null,
-            }))
-          );
-          setCurrentThinkingMode('off');
-          setCurrentThinkingTokens(null);
-          setCurrentModel(null);
-          return;
-        }
+        setThinkingModes(
+          FALLBACK_THINKING_MODES.map((mode) => ({
+            ...mode,
+            maxThinkingTokens: null,
+          }))
+        );
+        setCurrentThinkingMode('off');
+        setCurrentThinkingTokens(null);
+        setCurrentModel(null);
+      } else {
+        setRuntimeModels(CLAUDE_FALLBACK_MODELS);
         setThinkingModes(FALLBACK_THINKING_MODES);
         setCurrentThinkingMode(options.claudeThinkingMode ?? 'off');
         setCurrentThinkingTokens(options.claudeMaxThinkingTokens ?? null);
         setCurrentModel(options.claudeModel ?? DEFAULT_MODEL_VALUE);
+      }
+
+      if (options.transport !== 'native' && !options.hostUrl) {
         return;
       }
 
@@ -1501,7 +1504,7 @@ const Panel = () => {
         void refreshContextUsage({ provider: 'claude', conversationId });
       } catch {
         if (cancelled) return;
-        setRuntimeModels([]);
+        setRuntimeModels(chatProvider === 'claude' ? CLAUDE_FALLBACK_MODELS : []);
         if (chatProvider === 'codex') {
           setThinkingModes(
             FALLBACK_THINKING_MODES.map((mode) => ({
