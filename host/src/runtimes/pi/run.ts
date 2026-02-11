@@ -17,6 +17,7 @@ import {
   REWRITE_END,
 } from '../../workflows/rewriteExtraction.js';
 import { clearPiUsage } from './context.js';
+import { initToolRuntime, getToolCatalog } from './toolRuntime.js';
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -118,6 +119,9 @@ export async function runPiJob(
   payload: PiJobPayload,
   emitEvent: EmitEvent,
 ): Promise<void> {
+  // Initialize tool runtime (idempotent, fast on repeat calls)
+  await initToolRuntime();
+
   const action = payload.action ?? 'chat';
   const message = getUserMessage(payload.context);
   const attachments = getContextAttachments(payload.context);
@@ -147,9 +151,16 @@ export async function runPiJob(
     typeof contextForPrompt.selection === 'string' &&
     (contextForPrompt.selection as string).trim().length > 0;
 
+  // Build compact tools guidance (tool schemas are already registered with the agent)
+  const catalog = getToolCatalog();
+  const activeToolNames = catalog.map((t) => t.name);
+  const toolsGuidance = catalog.length > 0
+    ? `Tools available: ${catalog.map((t) => t.name).join(', ')}. Use these when relevant — never say you lack web search or URL access.`
+    : '';
+
   // Load skills dynamically
   const manifest = loadSkillsManifest();
-  const skillsGuidance = buildSkillsGuidance(manifest);
+  const skillsGuidance = buildSkillsGuidance(manifest, activeToolNames);
 
   // Fallback skill injection: if no customSystemPrompt but message starts with /skillName
   if (!customSystemPrompt && message) {
@@ -175,10 +186,18 @@ export async function runPiJob(
   };
 
   const status = getPiRuntimeStatus();
-  const runtimeNote = `Runtime note: This request is executed via BYOK (pi-ai) runtime.
-Provider: ${status.activeProvider ?? 'auto-detect'}.
-Model setting: ${runtimeConfig.model ?? 'default'}.
-If asked about the model/runtime, use this note and do not guess.`;
+  const runtimeNote = `Runtime: BYOK (pi-ai), provider: ${status.activeProvider ?? 'auto-detect'}, model: ${runtimeConfig.model ?? 'default'}.`;
+
+  // Build editor context for system prompt: exclude message to avoid duplication
+  // (message is already sent as the user message to agent.prompt())
+  const editorContextForPrompt: Record<string, unknown> | null = (() => {
+    if (!contextForPrompt) return null;
+    const { message: _, ...rest } = contextForPrompt;
+    return Object.keys(rest).length > 0 ? rest : null;
+  })();
+
+  // When a skill is loaded, skip listing all skills (the skill text is injected directly)
+  const effectiveSkillsGuidance = customSystemPrompt ? '' : skillsGuidance;
 
   // Handle rewrite action
   if (action === 'rewrite') {
@@ -194,7 +213,8 @@ If asked about the model/runtime, use this note and do not guess.`;
       displayName,
       customSystemPrompt,
       runtimeNote,
-      skillsGuidance,
+      skillsGuidance: effectiveSkillsGuidance,
+      toolsGuidance,
     });
 
     let doneEvent: JobEvent = { event: 'done', data: { status: 'ok' } };
@@ -266,14 +286,15 @@ If asked about the model/runtime, use this note and do not guess.`;
 
     const systemPrompt = buildPiSystemPrompt({
       action,
-      contextForPrompt,
+      contextForPrompt: editorContextForPrompt,
       hasOverleafFileBlocks,
       hasSelection: !!hasSelection,
       greetingMode: false,
       displayName,
       customSystemPrompt,
       runtimeNote,
-      skillsGuidance,
+      skillsGuidance: effectiveSkillsGuidance,
+      toolsGuidance,
     });
 
     let doneEvent: JobEvent = { event: 'done', data: { status: 'ok' } };
@@ -321,14 +342,15 @@ If asked about the model/runtime, use this note and do not guess.`;
   // Default: chat action
   const systemPrompt = buildPiSystemPrompt({
     action,
-    contextForPrompt,
+    contextForPrompt: editorContextForPrompt,
     hasOverleafFileBlocks,
     hasSelection: !!hasSelection,
     greetingMode,
     displayName,
     customSystemPrompt,
     runtimeNote,
-    skillsGuidance,
+    skillsGuidance: effectiveSkillsGuidance,
+    toolsGuidance,
   });
 
   let doneEvent: JobEvent = { event: 'done', data: { status: 'ok' } };
