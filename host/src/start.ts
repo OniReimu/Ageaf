@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import { buildServer } from './server.js';
+import { shutdownToolRuntime } from './runtimes/pi/toolRuntime.js';
 
 // HTTP server entrypoint for development mode
 const server = buildServer();
@@ -16,3 +17,16 @@ server
     console.error(error);
     process.exit(1);
   });
+
+// Graceful shutdown: close HTTP + tool runtime
+async function gracefulShutdown(signal: string) {
+  console.log(`\n${signal} received — shutting down…`);
+  await Promise.allSettled([
+    server.close(),
+    shutdownToolRuntime(),
+  ]);
+  process.exit(0);
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

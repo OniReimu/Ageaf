@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import YAML from 'yaml';
 
 export type SkillEntry = {
   id: string;
@@ -11,6 +12,10 @@ export type SkillEntry = {
 };
 
 export type SkillsManifest = { version: number; skills: SkillEntry[] };
+
+export type SkillFrontmatter = {
+  allowedTools?: string[];
+};
 
 function resolveRepoRoot(): string {
   // Walk up from this file's directory until we find a directory containing package.json (host root),
@@ -41,6 +46,12 @@ function resolveManifestPath(): string {
   return path.join(resolveRepoRoot(), 'public', 'skills', 'manifest.json');
 }
 
+function resolveSkillPath(skill: SkillEntry): string {
+  return process.env.AGEAF_SKILLS_DIR
+    ? path.join(process.env.AGEAF_SKILLS_DIR, skill.path.replace(/^skills\//, ''))
+    : path.join(resolveRepoRoot(), 'public', skill.path);
+}
+
 export function loadSkillsManifest(): SkillsManifest {
   const manifestPath = resolveManifestPath();
   try {
@@ -55,29 +66,81 @@ export function loadSkillsManifest(): SkillsManifest {
   }
 }
 
-export function loadSkillMarkdown(skill: SkillEntry): string {
-  const skillPath = process.env.AGEAF_SKILLS_DIR
-    ? path.join(process.env.AGEAF_SKILLS_DIR, skill.path.replace(/^skills\//, ''))
-    : path.join(resolveRepoRoot(), 'public', skill.path);
+/**
+ * Read skill file including frontmatter (not stripped).
+ */
+export function loadSkillRaw(skill: SkillEntry): string {
+  const skillPath = resolveSkillPath(skill);
   try {
-    const raw = fs.readFileSync(skillPath, 'utf8');
-    // Strip YAML frontmatter if present
-    if (raw.startsWith('---')) {
-      const endIdx = raw.indexOf('\n---', 3);
-      if (endIdx >= 0) {
-        return raw.slice(endIdx + 4).trim();
-      }
-    }
-    return raw.trim();
+    return fs.readFileSync(skillPath, 'utf8');
   } catch {
     return '';
   }
 }
 
-export function buildSkillsGuidance(manifest: SkillsManifest): string {
+export function loadSkillMarkdown(skill: SkillEntry): string {
+  const raw = loadSkillRaw(skill);
+  if (!raw) return '';
+  // Strip YAML frontmatter if present
+  if (raw.startsWith('---')) {
+    const endIdx = raw.indexOf('\n---', 3);
+    if (endIdx >= 0) {
+      return raw.slice(endIdx + 4).trim();
+    }
+  }
+  return raw.trim();
+}
+
+// Cache parsed frontmatter to avoid re-reading on every request
+const frontmatterCache = new Map<string, SkillFrontmatter | null>();
+
+/**
+ * Parse YAML frontmatter from a skill file's raw content.
+ * Returns null if no frontmatter is present.
+ */
+export function parseSkillFrontmatter(raw: string): SkillFrontmatter | null {
+  if (!raw.startsWith('---')) return null;
+  const endIdx = raw.indexOf('\n---', 3);
+  if (endIdx < 0) return null;
+
+  const yamlStr = raw.slice(3, endIdx).trim();
+  try {
+    const parsed = YAML.parse(yamlStr) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    const result: SkillFrontmatter = {};
+    const tools = parsed['allowed-tools'];
+    if (Array.isArray(tools)) {
+      result.allowedTools = tools.filter((t): t is string => typeof t === 'string');
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get cached frontmatter for a skill. Parses and caches on first access.
+ */
+function getCachedFrontmatter(skill: SkillEntry): SkillFrontmatter | null {
+  const key = skill.id ?? skill.name;
+  if (frontmatterCache.has(key)) return frontmatterCache.get(key)!;
+
+  const raw = loadSkillRaw(skill);
+  const fm = parseSkillFrontmatter(raw);
+  frontmatterCache.set(key, fm);
+  return fm;
+}
+
+export function buildSkillsGuidance(
+  manifest: SkillsManifest,
+  activeToolNames?: string[],
+): string {
   if (manifest.skills.length === 0) {
     return '';
   }
+
+  const activeSet = activeToolNames ? new Set(activeToolNames) : null;
 
   const lines = [
     'Available Skills (CRITICAL):',
@@ -87,7 +150,20 @@ export function buildSkillsGuidance(manifest: SkillsManifest): string {
 
   for (const skill of manifest.skills) {
     const desc = skill.description.split('\n')[0]?.trim() ?? '';
-    lines.push(`  \u2022 /${skill.name} - ${desc}`);
+    let suffix = '';
+
+    // If we have active tools, annotate skills whose tools are all available
+    if (activeSet) {
+      const fm = getCachedFrontmatter(skill);
+      if (fm?.allowedTools && fm.allowedTools.length > 0) {
+        const allAvailable = fm.allowedTools.every((t) => activeSet.has(t));
+        if (allAvailable) {
+          suffix = ' [tools available]';
+        }
+      }
+    }
+
+    lines.push(`  \u2022 /${skill.name} - ${desc}${suffix}`);
   }
 
   lines.push(

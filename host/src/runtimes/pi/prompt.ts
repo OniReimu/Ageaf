@@ -8,6 +8,7 @@ export type PiPromptInput = {
   customSystemPrompt?: string;
   runtimeNote: string;
   skillsGuidance: string;
+  toolsGuidance?: string;
 };
 
 export function buildPiSystemPrompt(input: PiPromptInput): string {
@@ -21,6 +22,7 @@ export function buildPiSystemPrompt(input: PiPromptInput): string {
     customSystemPrompt,
     runtimeNote,
     skillsGuidance,
+    toolsGuidance,
   } = input;
 
   const responseGuidance = [
@@ -108,6 +110,7 @@ export function buildPiSystemPrompt(input: PiPromptInput): string {
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     responseGuidance,
+    toolsGuidance ?? '',
     patchGuidance,
     selectionPatchGuidance,
     hasOverleafFileBlocks ? fileUpdateGuidance : '',

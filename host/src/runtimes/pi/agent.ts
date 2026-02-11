@@ -10,7 +10,7 @@ import type { AgentMessage } from '@mariozechner/pi-agent-core';
 
 import type { JobEvent } from '../../types.js';
 import { PiStreamBuffer, extractOverleafFilesFromMessage } from './streamBuffer.js';
-import { createMermaidTools } from './tools.js';
+import { getAllAgentTools } from './toolRuntime.js';
 import { addPiUsage } from './context.js';
 
 type EmitEvent = (event: JobEvent) => void;
@@ -167,7 +167,7 @@ function getOrCreateAgent(conversationId?: string): Agent {
   }
 
   const agent = new Agent({ convertToLlm: convertToLlmStripSignatures });
-  agent.setTools(createMermaidTools());
+  agent.setTools(getAllAgentTools());
 
   if (conversationId) {
     agentSessions.set(conversationId, agent);

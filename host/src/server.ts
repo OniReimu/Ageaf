@@ -5,6 +5,7 @@ import { registerHealth } from './routes/health.js';
 import { registerJobs } from './routes/jobs.js';
 import { registerRuntime } from './routes/runtime.js';
 import registerSessionRoutes from './routes/sessions.js';
+import { shutdownToolRuntime } from './runtimes/pi/toolRuntime.js';
 
 export function buildServer() {
   const server = Fastify({ logger: false, bodyLimit: 50 * 1024 * 1024 });
@@ -31,6 +32,10 @@ export function buildServer() {
   registerJobs(server);
   registerRuntime(server);
   void registerSessionRoutes(server);
+
+  server.addHook('onClose', async () => {
+    await shutdownToolRuntime();
+  });
 
   return server;
 }
