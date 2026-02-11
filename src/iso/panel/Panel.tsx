@@ -19,6 +19,9 @@ import {
   fetchClaudeRuntimeMetadata,
   fetchCodexRuntimeContextUsage,
   fetchCodexRuntimeMetadata,
+  fetchPiRuntimeContextUsage,
+  fetchPiRuntimeMetadata,
+  updatePiRuntimePreferences,
   fetchHostHealth,
   openAttachmentDialog,
   respondToJobRequest,
@@ -334,6 +337,7 @@ function closeUnfinishedCodeFences(text: string): string {
 const PROVIDER_DISPLAY = {
   claude: { label: 'Anthropic' },
   codex: { label: 'OpenAI' },
+  pi: { label: 'BYOK' },
 } as const;
 
 /** Maximum number of \\input-referenced files to attach as read-only context. */
@@ -577,6 +581,7 @@ type RuntimeModel = {
   value: string;
   displayName: string;
   description: string;
+  provider?: string;
   supportedReasoningEfforts?: Array<{
     reasoningEffort: string;
     description: string;
@@ -677,6 +682,8 @@ const Panel = () => {
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModel[]>([]);
   const [thinkingModes, setThinkingModes] = useState<ThinkingMode[]>([]);
   const [currentModel, setCurrentModel] = useState<string | null>(null);
+  const [runtimeRefreshCounter, setRuntimeRefreshCounter] = useState(0);
+  const lastRefreshCounterRef = useRef(0);
   const [currentThinkingMode, setCurrentThinkingMode] = useState('off');
   const [currentThinkingTokens, setCurrentThinkingTokens] = useState<
     number | null
@@ -787,6 +794,11 @@ const Panel = () => {
       fetchedAt: number;
     };
     codex?: {
+      models: RuntimeModel[];
+      thinkingModes: ThinkingMode[];
+      fetchedAt: number;
+    };
+    pi?: {
       models: RuntimeModel[];
       thinkingModes: ThinkingMode[];
       fetchedAt: number;
@@ -1043,7 +1055,9 @@ const Panel = () => {
   const providerIndicatorClass =
     chatProvider === 'codex'
       ? 'ageaf-provider--openai'
-      : 'ageaf-provider--anthropic';
+      : chatProvider === 'pi'
+        ? 'ageaf-provider--pi'
+        : 'ageaf-provider--anthropic';
 
   const getConnectionHealthTooltip = () => {
     let baseMessage = '';
@@ -1051,7 +1065,7 @@ const Panel = () => {
       baseMessage = 'Host not running. Check if the host server is started.';
     } else if (!connectionHealth.runtimeWorking) {
       const cliName =
-        chatProvider === 'codex' ? 'Codex CLI' : 'Claude Code CLI';
+        chatProvider === 'codex' ? 'Codex CLI' : chatProvider === 'pi' ? 'BYOK runtime' : 'Claude Code CLI';
       baseMessage = `${cliName} not working.Check if CLI is installed and you are logged in.`;
     } else {
       baseMessage = 'Connected';
@@ -1104,6 +1118,9 @@ const Panel = () => {
     if (provider === 'codex') {
       return conversation.providerState?.codex?.lastUsage ?? null;
     }
+    if (provider === 'pi') {
+      return conversation.providerState?.pi?.lastUsage ?? null;
+    }
     return conversation.providerState?.claude?.lastUsage ?? null;
   };
 
@@ -1122,12 +1139,13 @@ const Panel = () => {
   };
 
   const getContextUsageThrottleMs = (provider: ProviderId) =>
-    provider === 'claude' ? 15000 : 5000;
+    provider === 'claude' ? 15000 : provider === 'pi' ? 5000 : 5000;
 
   const getOrderedSessionIds = (state: StoredProjectChat) => {
     const claudeConversations = state.providers.claude.conversations ?? [];
     const codexConversations = state.providers.codex.conversations ?? [];
-    return [...claudeConversations, ...codexConversations]
+    const piConversations = state.providers.pi?.conversations ?? [];
+    return [...claudeConversations, ...codexConversations, ...piConversations]
       .sort((a, b) => a.createdAt - b.createdAt)
       .map((conversation) => conversation.id);
   };
@@ -1137,6 +1155,9 @@ const Panel = () => {
       (conversation) => conversation.id === conversationId
     ) ??
     state.providers.codex.conversations.find(
+      (conversation) => conversation.id === conversationId
+    ) ??
+    (state.providers.pi?.conversations ?? []).find(
       (conversation) => conversation.id === conversationId
     ) ??
     null;
@@ -1264,6 +1285,13 @@ const Panel = () => {
           lastRuntimeOkAtRef.current = now;
         }
         runtimeWorking = configured || isFresh(lastRuntimeOkAtRef.current);
+      } else if (chatProvider === 'pi') {
+        // Pi: lightweight check via /v1/health signal, same pattern as Claude
+        const configured = Boolean(healthData?.pi?.configured);
+        if (configured) {
+          lastRuntimeOkAtRef.current = now;
+        }
+        runtimeWorking = configured || isFresh(lastRuntimeOkAtRef.current);
       } else {
         // Codex metadata is local CLI-backed and does not consume LLM tokens, but starting the
         // app-server repeatedly is still expensive. Throttle these checks.
@@ -1358,15 +1386,27 @@ const Panel = () => {
   useEffect(() => {
     let cancelled = false;
 
+    // When triggered by a manual refresh (counter changed), invalidate cached
+    // metadata so loadRuntime re-fetches from the host. Only fires on the click
+    // that bumped the counter, not on subsequent provider changes.
+    if (runtimeRefreshCounter !== lastRefreshCounterRef.current) {
+      lastRefreshCounterRef.current = runtimeRefreshCounter;
+      if (chatProvider === 'pi') delete metadataCacheRef.current.pi;
+      else if (chatProvider === 'codex') delete metadataCacheRef.current.codex;
+      else delete metadataCacheRef.current.claude;
+    }
+
     const loadRuntime = async () => {
       const options = await getOptions();
       if (cancelled) return;
       setSettings(options);
       setSettingsMessage('');
       setYoloMode(
-        chatProvider === 'codex'
-          ? (options.openaiApprovalPolicy ?? 'never') === 'never'
-          : options.claudeYoloMode ?? true
+        chatProvider === 'pi'
+          ? true
+          : chatProvider === 'codex'
+            ? (options.openaiApprovalPolicy ?? 'never') === 'never'
+            : options.claudeYoloMode ?? true
       );
 
       const conversationId = chatConversationIdRef.current;
@@ -1379,7 +1419,13 @@ const Panel = () => {
         getCachedStoredUsage(conversation, chatProvider)
       );
 
-      if (chatProvider === 'codex') {
+      if (chatProvider === 'pi') {
+        setRuntimeModels([]);
+        setThinkingModes(FALLBACK_THINKING_MODES);
+        setCurrentThinkingMode(options.piThinkingLevel ?? 'off');
+        setCurrentThinkingTokens(null);
+        setCurrentModel(options.piModel ?? null);
+      } else if (chatProvider === 'codex') {
         setRuntimeModels([]);
         setThinkingModes(
           FALLBACK_THINKING_MODES.map((mode) => ({
@@ -1403,6 +1449,71 @@ const Panel = () => {
       }
 
       try {
+        if (chatProvider === 'pi') {
+          // Check cache first
+          const cached = metadataCacheRef.current.pi;
+          const now = Date.now();
+          const cacheAge = cached ? now - cached.fetchedAt : Infinity;
+          const CACHE_TTL = 1 * 60 * 1000;
+
+          let models: RuntimeModel[];
+          let thinkingModes: ThinkingMode[];
+          let metadata: any = null;
+
+          if (cached && cacheAge < CACHE_TTL) {
+            models = cached.models;
+            thinkingModes = cached.thinkingModes;
+          } else {
+            metadata = await fetchPiRuntimeMetadata(options);
+            if (cancelled) return;
+            models = (metadata.models ?? []).map((m: any) => ({
+              value: m.value,
+              displayName: m.displayName ?? m.value,
+              provider: m.provider,
+              isDefault: false,
+            }));
+            thinkingModes = (metadata.thinkingLevels ?? []).map((level: any) => {
+              const rawId = level.id ?? level.value ?? level;
+              return {
+                id: rawId === 'xhigh' ? 'ultra' : rawId,
+                label: typeof level === 'string' ? level : level.label ?? level.id ?? level.value,
+                maxThinkingTokens: null,
+              };
+            });
+            if (thinkingModes.length === 0) {
+              thinkingModes = FALLBACK_THINKING_MODES;
+            }
+
+            metadataCacheRef.current.pi = {
+              models,
+              thinkingModes,
+              fetchedAt: now,
+            };
+          }
+
+          setRuntimeModels(models);
+          setThinkingModes(thinkingModes);
+          setCurrentModel(
+            metadata
+              ? metadata.currentModel ?? options.piModel ?? models[0]?.value ?? null
+              : options.piModel ?? models[0]?.value ?? null
+          );
+          {
+            const rawLevel = metadata
+              ? metadata.currentThinkingLevel ?? options.piThinkingLevel ?? 'off'
+              : options.piThinkingLevel ?? 'off';
+            setCurrentThinkingMode(rawLevel === 'xhigh' ? 'ultra' : rawLevel);
+          }
+          setCurrentThinkingTokens(null);
+          setYoloMode(true); // Pi is always YOLO
+
+          lastHostOkAtRef.current = now;
+          lastRuntimeOkAtRef.current = now;
+          setConnectionHealth({ hostConnected: true, runtimeWorking: true });
+          void refreshContextUsage({ provider: 'pi', conversationId });
+          return;
+        }
+
         if (chatProvider === 'codex') {
           // Check cache first - 1 minute TTL for faster model discovery
           const cached = metadataCacheRef.current.codex;
@@ -1564,6 +1675,15 @@ const Panel = () => {
         void refreshContextUsage({ provider: 'claude', conversationId });
       } catch {
         if (cancelled) return;
+        if (chatProvider === 'pi') {
+          setRuntimeModels([]);
+          setThinkingModes(FALLBACK_THINKING_MODES);
+          setCurrentThinkingMode(options.piThinkingLevel ?? 'off');
+          setCurrentThinkingTokens(null);
+          setCurrentModel(options.piModel ?? null);
+          setYoloMode(true);
+          return;
+        }
         setRuntimeModels(chatProvider === 'claude' ? CLAUDE_FALLBACK_MODELS : []);
         if (chatProvider === 'codex') {
           setThinkingModes(
@@ -1591,7 +1711,7 @@ const Panel = () => {
     return () => {
       cancelled = true;
     };
-  }, [chatProvider]);
+  }, [chatProvider, runtimeRefreshCounter]);
 
   // Periodically check connection health
   useEffect(() => {
@@ -2159,7 +2279,8 @@ const Panel = () => {
     const provider = stored.activeProvider;
     const hasConversations =
       (stored.providers.claude.conversations?.length ?? 0) > 0 ||
-      (stored.providers.codex.conversations?.length ?? 0) > 0;
+      (stored.providers.codex.conversations?.length ?? 0) > 0 ||
+      (stored.providers.pi?.conversations?.length ?? 0) > 0;
 
     if (!hasConversations) {
       chatProjectIdRef.current = projectId;
@@ -4498,6 +4619,30 @@ const Panel = () => {
     return ordered.length > 0 ? ordered : runtimeModels;
   };
 
+  const PROVIDER_NAME_MAP: Record<string, string> = {
+    openai: 'OpenAI',
+    anthropic: 'Anthropic',
+    google: 'Google',
+    xai: 'xAI',
+    groq: 'Groq',
+    mistral: 'Mistral',
+    openrouter: 'OpenRouter',
+  };
+
+  const formatProviderName = (provider: string): string =>
+    PROVIDER_NAME_MAP[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
+
+  const getGroupedRuntimeModels = (): Array<{ provider: string; models: RuntimeModel[] }> => {
+    const groups = new Map<string, RuntimeModel[]>();
+    for (const model of runtimeModels) {
+      const key = model.provider ?? 'unknown';
+      const arr = groups.get(key) ?? [];
+      arr.push(model);
+      groups.set(key, arr);
+    }
+    return Array.from(groups, ([provider, models]) => ({ provider, models }));
+  };
+
   const getRuntimeModelLabel = (model: RuntimeModel) => {
     const token =
       getKnownModelToken(model.value) ?? getKnownModelToken(model.displayName);
@@ -4530,6 +4675,9 @@ const Panel = () => {
   };
 
   const getSelectedModelLabel = () => {
+    if (chatProvider === 'pi' && !currentModel) {
+      return 'No model';
+    }
     const resolvedModel = currentModel ?? DEFAULT_MODEL_VALUE;
     const resolvedToken = getKnownModelToken(resolvedModel);
     if (resolvedToken && resolvedToken in MODEL_DISPLAY) {
@@ -4578,11 +4726,53 @@ const Panel = () => {
   const applyRuntimePreferences = async (payload: {
     model?: string | null;
     thinkingMode?: string | null;
+    provider?: string | null;
   }) => {
     const options = settings ?? (await getOptions());
     if (options.transport !== 'native' && !options.hostUrl) return;
 
     try {
+      if (chatProvider === 'pi') {
+        const response = await updatePiRuntimePreferences(options, {
+          provider: payload.provider,
+          model: payload.model,
+          thinkingLevel: payload.thinkingMode === 'ultra' ? 'xhigh' : payload.thinkingMode,
+        });
+        if (response.currentModel !== undefined) {
+          setCurrentModel(response.currentModel);
+        }
+        // Update thinking levels if the response includes per-model capabilities
+        if (Array.isArray(response.thinkingLevels) && response.thinkingLevels.length > 0) {
+          const nextModes: ThinkingMode[] = response.thinkingLevels.map((level: any) => {
+            const rawId = level.id ?? level.value ?? level;
+            return {
+              id: rawId === 'xhigh' ? 'ultra' : rawId,
+              label: typeof level === 'string' ? level : level.label ?? level.id ?? level.value,
+              maxThinkingTokens: null,
+            };
+          });
+          setThinkingModes(nextModes);
+        }
+        // Build a single persist payload to avoid stale-closure race between
+        // separate persistRuntimeOptions calls (model + thinking level).
+        const persistUpdates: Partial<Options> = {};
+        if (payload.provider) {
+          persistUpdates.piProvider = payload.provider;
+        }
+        if (payload.model) {
+          persistUpdates.piModel = payload.model;
+        }
+        if (response.currentThinkingLevel) {
+          const uiLevel =
+            response.currentThinkingLevel === 'xhigh' ? 'ultra' : response.currentThinkingLevel;
+          setCurrentThinkingMode(uiLevel);
+          persistUpdates.piThinkingLevel = uiLevel;
+        }
+        if (Object.keys(persistUpdates).length > 0) {
+          await persistRuntimeOptions(persistUpdates);
+        }
+        return;
+      }
       const response = await updateClaudeRuntimePreferences(options, payload);
       if (response.currentModel !== undefined) {
         setCurrentModel(response.currentModel);
@@ -4631,6 +4821,47 @@ const Panel = () => {
     contextRefreshInFlightRef.current = true;
 
     try {
+      if (provider === 'pi') {
+        const usage = await fetchPiRuntimeContextUsage(options, conversationId ?? undefined);
+        if (
+          usage.contextWindow ||
+          usage.usedTokens > 0 ||
+          usage.percentage !== null
+        ) {
+          const normalized = normalizeContextUsage({
+            usedTokens: usage.usedTokens,
+            contextWindow: usage.contextWindow,
+            percentage: usage.percentage,
+          });
+          const nextUsage: StoredContextUsage = {
+            usedTokens: normalized.usedTokens,
+            contextWindow: normalized.contextWindow,
+            percentage: normalized.percentage ?? null,
+            updatedAt: Date.now(),
+          };
+          const latestState = chatStateRef.current;
+          if (conversationId && latestState) {
+            chatStateRef.current = setConversationContextUsage(
+              latestState,
+              provider,
+              conversationId,
+              nextUsage
+            );
+            scheduleChatSave();
+          }
+          if (chatConversationIdRef.current === conversationId) {
+            setContextUsage(
+              normalizeContextUsage({
+                usedTokens: nextUsage.usedTokens,
+                contextWindow: nextUsage.contextWindow,
+                percentage: nextUsage.percentage,
+              })
+            );
+          }
+        }
+        return;
+      }
+
       if (provider === 'codex') {
         const threadId = conversation?.providerState?.codex?.threadId;
         const usage = await fetchCodexRuntimeContextUsage(options, {
@@ -4719,8 +4950,17 @@ const Panel = () => {
     }
   };
 
+  const onRefreshModels = () => {
+    setRuntimeRefreshCounter((c) => c + 1);
+  };
+
   const onSelectModel = async (model: string) => {
     setCurrentModel(model);
+    if (chatProvider === 'pi') {
+      await applyRuntimePreferences({ model });
+      void refreshContextUsage();
+      return;
+    }
     if (chatProvider === 'codex') {
       const selectedModel =
         runtimeModels.find((entry) => entry.value === model) ??
@@ -4763,6 +5003,12 @@ const Panel = () => {
     void refreshContextUsage();
   };
 
+  const onSelectPiModel = async (model: RuntimeModel) => {
+    setCurrentModel(model.value);
+    await applyRuntimePreferences({ model: model.value, provider: model.provider });
+    void refreshContextUsage();
+  };
+
   const onSelectThinkingMode = async (modeId: string) => {
     const mode =
       thinkingModes.find((entry) => entry.id === modeId) ??
@@ -4770,6 +5016,10 @@ const Panel = () => {
     const maxThinkingTokens = mode?.maxThinkingTokens ?? null;
     setCurrentThinkingMode(modeId);
     setCurrentThinkingTokens(maxThinkingTokens);
+    if (chatProvider === 'pi') {
+      await applyRuntimePreferences({ thinkingMode: modeId });
+      return;
+    }
     if (chatProvider === 'codex') {
       return;
     }
@@ -4781,6 +5031,7 @@ const Panel = () => {
   };
 
   const onToggleYoloMode = async () => {
+    if (chatProvider === 'pi') return; // Pi is always YOLO — no-op
     const next = !yoloMode;
     setYoloMode(next);
     if (chatProvider === 'codex') {
@@ -5909,8 +6160,79 @@ const Panel = () => {
           codexRuntimeModel?.defaultReasoningEffort ??
           null
           : null;
+      const sharedContext = {
+        message: finalMessageText,
+        selection: selection?.selection ?? '',
+        surroundingBefore: selection?.before ?? '',
+        surroundingAfter: selection?.after ?? '',
+        ...(messageImages
+          ? {
+            images: messageImages.map((image) => ({
+              id: image.id,
+              name: image.name,
+              mediaType: image.mediaType,
+              data: image.data,
+              size: image.size,
+            })),
+          }
+          : {}),
+        ...(messageAttachments
+          ? {
+            attachments: messageAttachments.map((attachment) => ({
+              id: attachment.id,
+              path: attachment.path,
+              name: attachment.name,
+              ext: attachment.ext,
+              sizeBytes: attachment.sizeBytes,
+              lineCount: attachment.lineCount,
+              content: attachment.content,
+            })),
+          }
+          : {}),
+        ...(messageDocuments
+          ? {
+            documents: messageDocuments.map((doc) => ({
+              id: doc.id,
+              name: doc.name,
+              mediaType: doc.mediaType,
+              data: doc.data,
+              path: doc.path,
+              size: doc.size,
+            })),
+          }
+          : {}),
+      };
+      const sharedUserSettings = {
+        displayName: options.displayName,
+        customSystemPrompt: skillsPrompt
+          ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
+          : options.customSystemPrompt,
+        debugCliEvents: options.debugCliEvents,
+      };
+
       const payload =
-        provider === 'codex'
+        provider === 'pi'
+          ? {
+            provider: 'pi' as const,
+            action,
+            runtime: {
+              pi: {
+                provider: options.piProvider ?? undefined,
+                model: currentModel ?? options.piModel ?? undefined,
+                thinkingLevel: (currentThinkingMode === 'ultra' ? 'xhigh' : currentThinkingMode) ?? options.piThinkingLevel ?? 'off',
+                conversationId: sessionConversationId,
+              },
+            },
+            overleaf: { url: window.location.href },
+            context: sharedContext,
+            policy: {
+              requireApproval: false,
+              allowNetwork: false,
+              maxFiles: 1,
+            },
+            userSettings: sharedUserSettings,
+          }
+          : provider === 'codex'
           ? {
             provider: 'codex' as const,
             action,
@@ -5925,60 +6247,13 @@ const Panel = () => {
               },
             },
             overleaf: { url: window.location.href },
-            context: {
-              message: finalMessageText,
-              selection: selection?.selection ?? '',
-              surroundingBefore: selection?.before ?? '',
-              surroundingAfter: selection?.after ?? '',
-              ...(messageImages
-                ? {
-                  images: messageImages.map((image) => ({
-                    id: image.id,
-                    name: image.name,
-                    mediaType: image.mediaType,
-                    data: image.data,
-                    size: image.size,
-                  })),
-                }
-                : {}),
-              ...(messageAttachments
-                ? {
-                  attachments: messageAttachments.map((attachment) => ({
-                    id: attachment.id,
-                    path: attachment.path,
-                    name: attachment.name,
-                    ext: attachment.ext,
-                    sizeBytes: attachment.sizeBytes,
-                    lineCount: attachment.lineCount,
-                    content: attachment.content,
-                  })),
-                }
-                : {}),
-              ...(messageDocuments
-                ? {
-                  documents: messageDocuments.map((doc) => ({
-                    id: doc.id,
-                    name: doc.name,
-                    mediaType: doc.mediaType,
-                    data: doc.data,
-                    path: doc.path,
-                    size: doc.size,
-                  })),
-                }
-                : {}),
-            },
+            context: sharedContext,
             policy: {
               requireApproval: false,
               allowNetwork: false,
               maxFiles: 1,
             },
-            userSettings: {
-              displayName: options.displayName,
-              customSystemPrompt: skillsPrompt
-                ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
-                : options.customSystemPrompt,
-              debugCliEvents: options.debugCliEvents,
-            },
+            userSettings: sharedUserSettings,
           }
           : {
             provider: 'claude' as const,
@@ -5996,61 +6271,16 @@ const Panel = () => {
               },
             },
             overleaf: { url: window.location.href },
-            context: {
-              message: finalMessageText,
-              selection: selection?.selection ?? '',
-              surroundingBefore: selection?.before ?? '',
-              surroundingAfter: selection?.after ?? '',
-              ...(messageImages
-                ? {
-                  images: messageImages.map((image) => ({
-                    id: image.id,
-                    name: image.name,
-                    mediaType: image.mediaType,
-                    data: image.data,
-                    size: image.size,
-                  })),
-                }
-                : {}),
-              ...(messageAttachments
-                ? {
-                  attachments: messageAttachments.map((attachment) => ({
-                    id: attachment.id,
-                    path: attachment.path,
-                    name: attachment.name,
-                    ext: attachment.ext,
-                    sizeBytes: attachment.sizeBytes,
-                    lineCount: attachment.lineCount,
-                    content: attachment.content,
-                  })),
-                }
-                : {}),
-              ...(messageDocuments
-                ? {
-                  documents: messageDocuments.map((doc) => ({
-                    id: doc.id,
-                    name: doc.name,
-                    mediaType: doc.mediaType,
-                    data: doc.data,
-                    path: doc.path,
-                    size: doc.size,
-                  })),
-                }
-                : {}),
-            },
+            context: sharedContext,
             policy: {
               requireApproval: false,
               allowNetwork: false,
               maxFiles: 1,
             },
             userSettings: {
-              displayName: options.displayName,
-              customSystemPrompt: skillsPrompt
-                ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
-                : options.customSystemPrompt,
+              ...sharedUserSettings,
               enableCommandBlocklist: options.enableCommandBlocklist,
               blockedCommandsUnix: options.blockedCommandsUnix,
-              debugCliEvents: options.debugCliEvents,
             },
           };
 
@@ -8058,6 +8288,15 @@ const Panel = () => {
             <div class="ageaf-landing__card-title">OpenAI</div>
             <div class="ageaf-landing__card-desc">Codex</div>
           </button>
+          <button
+            class="ageaf-landing__card"
+            type="button"
+            onClick={() => void onNewChat('pi')}
+            aria-label="Start a BYOK session"
+          >
+            <div class="ageaf-landing__card-title">BYOK</div>
+            <div class="ageaf-landing__card-desc">Pi</div>
+          </button>
         </div>
       </div>
       <div class="ageaf-landing__footer">
@@ -8506,6 +8745,15 @@ const Panel = () => {
                 />
               ) : null}
               <div class="ageaf-runtime">
+                <button
+                  class="ageaf-runtime__refresh"
+                  type="button"
+                  title="Refresh models"
+                  aria-label="Refresh models"
+                  onClick={onRefreshModels}
+                >
+                  &#x21bb;
+                </button>
                 <div class="ageaf-runtime__picker">
                   <button
                     class="ageaf-runtime__button"
@@ -8516,24 +8764,49 @@ const Panel = () => {
                       {getSelectedModelLabel()}
                     </span>
                   </button>
-                  <div class="ageaf-runtime__menu" role="listbox">
-                    {getOrderedRuntimeModels().map((model) => (
-                      <button
-                        class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''
-                          }`}
-                        type="button"
-                        onClick={() => onSelectModel(model.value)}
-                        key={model.value}
-                        aria-selected={isRuntimeModelSelected(model)}
-                      >
-                        <div class="ageaf-runtime__option-title">
-                          {getRuntimeModelLabel(model)}
+                  <div class={`ageaf-runtime__menu${chatProvider === 'pi' ? ' ageaf-runtime__menu--grouped' : ''}`} role="listbox">
+                    {chatProvider === 'pi' ? (
+                      getGroupedRuntimeModels().map((group) => (
+                        <div class="ageaf-runtime__group" key={group.provider}>
+                          <div class="ageaf-runtime__group-label">
+                            {formatProviderName(group.provider)}
+                            <span class="ageaf-runtime__group-arrow">&#x203a;</span>
+                          </div>
+                          <div class="ageaf-runtime__group-models">
+                            {group.models.map((model) => (
+                              <button
+                                class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''}`}
+                                type="button"
+                                onClick={() => onSelectPiModel(model)}
+                                key={model.value}
+                                aria-selected={isRuntimeModelSelected(model)}
+                              >
+                                <div class="ageaf-runtime__option-title">
+                                  {getRuntimeModelLabel(model)}
+                                </div>
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                        <div class="ageaf-runtime__option-description">
-                          {getRuntimeModelDescription(model)}
-                        </div>
-                      </button>
-                    ))}
+                      ))
+                    ) : (
+                      getOrderedRuntimeModels().map((model) => (
+                        <button
+                          class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''}`}
+                          type="button"
+                          onClick={() => onSelectModel(model.value)}
+                          key={model.value}
+                          aria-selected={isRuntimeModelSelected(model)}
+                        >
+                          <div class="ageaf-runtime__option-title">
+                            {getRuntimeModelLabel(model)}
+                          </div>
+                          <div class="ageaf-runtime__option-description">
+                            {getRuntimeModelDescription(model)}
+                          </div>
+                        </button>
+                      ))
+                    )}
                   </div>
                 </div>
                 <div class="ageaf-runtime__picker">
@@ -8593,17 +8866,20 @@ const Panel = () => {
                   class={`ageaf-runtime__yolo ${yoloMode ? 'is-on' : ''}`}
                   type="button"
                   role="switch"
-                  aria-checked={yoloMode}
+                  aria-checked={chatProvider === 'pi' ? true : yoloMode}
+                  disabled={chatProvider === 'pi'}
                   aria-label={
-                    chatProvider === 'codex'
-                      ? yoloMode
-                        ? 'Codex YOLO mode enabled'
-                        : 'Codex safe mode enabled'
-                      : yoloMode
-                        ? 'YOLO mode enabled'
-                        : 'Safe mode enabled'
+                    chatProvider === 'pi'
+                      ? 'BYOK always runs in YOLO mode'
+                      : chatProvider === 'codex'
+                        ? yoloMode
+                          ? 'Codex YOLO mode enabled'
+                          : 'Codex safe mode enabled'
+                        : yoloMode
+                          ? 'YOLO mode enabled'
+                          : 'Safe mode enabled'
                   }
-                  data-tooltip={yoloMode ? 'YOLO mode' : 'Safe mode'}
+                  data-tooltip={chatProvider === 'pi' ? 'Always YOLO' : yoloMode ? 'YOLO mode' : 'Safe mode'}
                   onClick={() => {
                     void onToggleYoloMode();
                   }}
@@ -8639,7 +8915,7 @@ const Panel = () => {
                   const state = chatStateRef.current;
                   const conversation = state ? findConversation(state, id) : null;
                   const providerLabel =
-                    conversation?.provider === 'codex' ? 'OpenAI' : 'Anthropic';
+                    conversation?.provider === 'codex' ? 'OpenAI' : conversation?.provider === 'pi' ? 'BYOK' : 'Anthropic';
 
                   // Get per-session activity status
                   const sessionState = sessionStates.current.get(id);
@@ -8721,6 +8997,14 @@ const Panel = () => {
                       role="menuitem"
                     >
                       OpenAI
+                    </button>
+                    <button
+                      class="ageaf-toolbar-menu__option"
+                      type="button"
+                      onClick={() => void onNewChat('pi')}
+                      role="menuitem"
+                    >
+                      BYOK
                     </button>
                   </div>
                 </div>

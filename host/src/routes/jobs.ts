@@ -7,6 +7,8 @@ import type { FastifyInstance } from 'fastify';
 import { runClaudeJob } from '../runtimes/claude/run.js';
 import { getCodexAppServer } from '../runtimes/codex/appServer.js';
 import { runCodexJob, type CodexRuntimeConfig } from '../runtimes/codex/run.js';
+import { runPiJob, type PiJobPayload } from '../runtimes/pi/run.js';
+import type { PiRuntimeConfig } from '../runtimes/pi/agent.js';
 import { startEventStream } from '../sse.js';
 import type { JobEvent } from '../types.js';
 import { validatePatch } from '../validate.js';
@@ -25,14 +27,14 @@ type JobRecord = {
   events: JobEvent[];
   subscribers: Set<JobSubscriber>;
   done: boolean;
-  provider: 'claude' | 'codex';
+  provider: 'claude' | 'codex' | 'pi';
   codex?: { cliPath?: string; envVars?: string; cwd: string };
 };
 
 const jobs = new Map<string, JobRecord>();
 
 type JobRequestPayload = {
-  provider?: 'claude' | 'codex';
+  provider?: 'claude' | 'codex' | 'pi';
   action?: string;
   context?: {
     selection?: string;
@@ -57,7 +59,7 @@ type JobRequestPayload = {
       content?: string;
     }>;
   };
-  runtime?: { claude?: ClaudeRuntimeConfig; codex?: CodexRuntimeConfig };
+  runtime?: { claude?: ClaudeRuntimeConfig; codex?: CodexRuntimeConfig; pi?: PiRuntimeConfig };
   userSettings?: {
     displayName?: string;
     customSystemPrompt?: string;
@@ -111,7 +113,7 @@ export function registerJobs(server: FastifyInstance) {
     };
 
     const payload = request.body as JobRequestPayload;
-    const provider = payload.provider === 'codex' ? 'codex' : 'claude';
+    const provider = payload.provider === 'codex' ? 'codex' : payload.provider === 'pi' ? 'pi' : 'claude';
     job.provider = provider;
     if (provider === 'claude' && payload.runtime?.claude) {
       setLastClaudeRuntimeConfig(payload.runtime.claude);
@@ -137,6 +139,11 @@ export function registerJobs(server: FastifyInstance) {
     void (async () => {
       try {
         emitEvent({ event: 'plan', data: { message: 'Job queued' } });
+
+        if (provider === 'pi') {
+          await runPiJob(payload as PiJobPayload, emitEvent);
+          return;
+        }
 
         if (provider === 'codex') {
           const action = payload.action ?? 'chat';
@@ -252,7 +259,7 @@ export function subscribeToJobEvents(jobId: string, subscriber: JobSubscriber) {
 }
 
 // Test-only helpers
-export function createJobForTest(provider: 'claude' | 'codex') {
+export function createJobForTest(provider: 'claude' | 'codex' | 'pi') {
   const id = crypto.randomUUID();
   jobs.set(id, {
     id,
@@ -264,7 +271,7 @@ export function createJobForTest(provider: 'claude' | 'codex') {
   return id;
 }
 
-export function createDoneJobForTest(provider: 'claude' | 'codex') {
+export function createDoneJobForTest(provider: 'claude' | 'codex' | 'pi') {
   const id = crypto.randomUUID();
   jobs.set(id, {
     id,

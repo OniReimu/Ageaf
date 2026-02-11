@@ -3,7 +3,7 @@ import type { Options } from '../../types';
 import { streamEvents, JobEvent } from './sse';
 
 export type JobPayload = {
-  provider: 'claude' | 'codex';
+  provider: 'claude' | 'codex' | 'pi';
   action: string;
   runtime?: {
     claude?: {
@@ -23,6 +23,12 @@ export type JobPayload = {
       model?: string;
       reasoningEffort?: string;
       threadId?: string;
+    };
+    pi?: {
+      provider?: string;
+      model?: string;
+      thinkingLevel?: string;
+      conversationId?: string;
     };
   };
   overleaf?: {
@@ -419,11 +425,103 @@ export type HostHealthResponse = {
   claude?: {
     configured?: boolean;
   };
+  pi?: {
+    configured?: boolean;
+  };
 };
+
+export type PiRuntimeMetadata = {
+  models: Array<{
+    value: string;
+    displayName: string;
+    provider: string;
+    reasoning: boolean;
+    contextWindow: number;
+  }>;
+  currentModel: string | null;
+  currentProvider: string | null;
+  availableProviders: Array<{ provider: string; hasApiKey: boolean }>;
+  thinkingLevels: Array<{ id: string; label: string }>;
+  currentThinkingLevel: string;
+};
+
+export async function fetchPiRuntimeMetadata(options: Options) {
+  if (!options.hostUrl) {
+    throw new Error('Host URL not configured');
+  }
+
+  const response = await fetch(
+    new URL('/v1/runtime/pi/metadata', options.hostUrl).toString()
+  );
+
+  if (!response.ok) {
+    throw new Error(`Pi runtime metadata request failed (${response.status})`);
+  }
+
+  return response.json() as Promise<PiRuntimeMetadata>;
+}
+
+export async function updatePiRuntimePreferences(
+  options: Options,
+  payload: { provider?: string | null; model?: string | null; thinkingLevel?: string | null }
+) {
+  if (!options.hostUrl) {
+    throw new Error('Host URL not configured');
+  }
+
+  const response = await fetch(
+    new URL('/v1/runtime/pi/preferences', options.hostUrl).toString(),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Pi runtime preferences request failed (${response.status})`);
+  }
+
+  return response.json() as Promise<{
+    currentProvider: string | null;
+    currentModel: string | null;
+    currentThinkingLevel: string;
+    thinkingLevels?: Array<{ id: string; label: string }>;
+  }>;
+}
+
+export type PiContextUsageResponse = {
+  configured: boolean;
+  model: string | null;
+  usedTokens: number;
+  contextWindow: number | null;
+  percentage: number | null;
+};
+
+export async function fetchPiRuntimeContextUsage(
+  options: Options,
+  conversationId?: string
+) {
+  if (!options.hostUrl) {
+    throw new Error('Host URL not configured');
+  }
+
+  const url = new URL('/v1/runtime/pi/context', options.hostUrl);
+  if (conversationId) {
+    url.searchParams.set('conversationId', conversationId);
+  }
+  const response = await fetch(url.toString());
+
+  if (!response.ok) {
+    throw new Error(`Pi runtime context request failed (${response.status})`);
+  }
+
+  return response.json() as Promise<PiContextUsageResponse>;
+}
 
 export async function deleteSession(
   options: Options,
-  provider: 'claude' | 'codex',
+  provider: 'claude' | 'codex' | 'pi',
   sessionId: string
 ): Promise<void> {
   if (!options.hostUrl) {

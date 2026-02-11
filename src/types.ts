@@ -53,6 +53,9 @@ export interface Options {
   openaiCodexCliPath?: string;
   openaiEnvVars?: string;
   openaiApprovalPolicy?: 'untrusted' | 'on-request' | 'on-failure' | 'never';
+  piProvider?: string;
+  piModel?: string;
+  piThinkingLevel?: string;
   displayName?: string;
   customSystemPrompt?: string;
   enableCommandBlocklist?: boolean;
