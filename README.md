@@ -13,16 +13,40 @@ Ageaf is an Chrome Plugin that adds an agent panel specifically to Overleaf, ena
 
 ## Authentication & Requirements
 
-Ageaf integrates with [Claude Code](https://code.claude.com/docs/en/overview) and [Codex CLI](https://developers.openai.com/codex/cli) agents. Per the terms of service of Anthropic and OpenAI, authentication and subscription management are handled through their official entrypoints:
+Ageaf supports three runtime providers. You only need **one** to get started.
 
-- **Claude Code**: [https://code.claude.com/docs/en/overview](https://code.claude.com/docs/en/overview)
-- **Codex CLI**: [https://developers.openai.com/codex/cli](https://developers.openai.com/codex/cli)
+### Claude Code (Anthropic)
 
-You must have either:
-- An official subscription (Claude Pro/Max/Teams/Enterprise or ChatGPT Plus/Pro/Business/Enterprise), or
-- Valid API keys
+Uses [Claude Code](https://code.claude.com/docs/en/overview) via the official CLI/SDK. Requires either an official subscription (Claude Pro/Max/Teams/Enterprise) or a valid Anthropic API key.
 
-**We strongly encourage using official subscriptions** for better cost-efficiency, higher token limits, and a seamless experience with Ageaf.
+### Codex CLI (OpenAI)
+
+Uses [Codex CLI](https://developers.openai.com/codex/cli). Requires either an official subscription (ChatGPT Plus/Pro/Business/Enterprise) or a valid OpenAI API key.
+
+### BYOK — Bring Your Own Key
+
+BYOK lets you use **any supported LLM provider** by setting API keys in a `.env` file. The host auto-detects which providers are available on startup.
+
+```bash
+cd host
+cp .env.example .env
+```
+
+Edit `host/.env` and uncomment the keys you need:
+
+```env
+ANTHROPIC_API_KEY=sk-ant-...      # Anthropic (Claude)
+OPENAI_API_KEY=sk-...             # OpenAI (GPT-4o, o3, etc.)
+GEMINI_API_KEY=...                # Google (Gemini)
+XAI_API_KEY=...                   # xAI (Grok)
+GROQ_API_KEY=...                  # Groq
+MISTRAL_API_KEY=...               # Mistral
+OPENROUTER_API_KEY=...            # OpenRouter (multi-provider)
+```
+
+Start the host (`npm run dev`), then select **BYOK** from the provider dropdown in the Ageaf panel. Use the model picker to choose your provider and model.
+
+**We strongly encourage using official subscriptions** (Claude Code or Codex CLI) for better cost-efficiency, higher token limits, and a seamless experience with Ageaf.
 
 ## Quick Start
 

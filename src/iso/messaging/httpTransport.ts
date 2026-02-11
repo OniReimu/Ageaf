@@ -9,6 +9,9 @@ import {
   updateClaudeRuntimePreferences as httpUpdateClaudeRuntimePreferences,
   fetchClaudeRuntimeContextUsage as httpFetchClaudeRuntimeContextUsage,
   fetchCodexRuntimeContextUsage as httpFetchCodexRuntimeContextUsage,
+  fetchPiRuntimeMetadata as httpFetchPiRuntimeMetadata,
+  updatePiRuntimePreferences as httpUpdatePiRuntimePreferences,
+  fetchPiRuntimeContextUsage as httpFetchPiRuntimeContextUsage,
   fetchHostHealth as httpFetchHostHealth,
   openAttachmentDialog as httpOpenAttachmentDialog,
   validateAttachmentEntries as httpValidateAttachmentEntries,
@@ -49,6 +52,16 @@ export function httpTransport(options: Options): Transport {
       payload?: { threadId?: string }
     ) => httpFetchCodexRuntimeContextUsage(options, payload),
 
+    fetchPiRuntimeMetadata: () => httpFetchPiRuntimeMetadata(options),
+
+    updatePiRuntimePreferences: (
+      payload: { provider?: string | null; model?: string | null; thinkingLevel?: string | null }
+    ) => httpUpdatePiRuntimePreferences(options, payload),
+
+    fetchPiRuntimeContextUsage: (
+      conversationId?: string
+    ) => httpFetchPiRuntimeContextUsage(options, conversationId),
+
     fetchHostHealth: () => httpFetchHostHealth(options),
 
     openAttachmentDialog: (
@@ -60,8 +73,8 @@ export function httpTransport(options: Options): Transport {
     ) => httpValidateAttachmentEntries(options, payload),
 
     deleteSession: (
-      provider: Parameters<typeof httpDeleteSession>[1],
-      sessionId: Parameters<typeof httpDeleteSession>[2]
+      provider: 'claude' | 'codex' | 'pi',
+      sessionId: string
     ) => httpDeleteSession(options, provider, sessionId),
   };
 }

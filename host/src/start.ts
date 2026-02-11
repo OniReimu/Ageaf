@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import 'dotenv/config';
 import { buildServer } from './server.js';
 
 // HTTP server entrypoint for development mode

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { getCodexAppServer } from '../runtimes/codex/appServer.js';
+import { evictPiSession } from '../runtimes/pi/run.js';
 
 type DeleteSessionParams = {
   provider: string;
@@ -23,8 +24,8 @@ export default async function registerSessionRoutes(server: FastifyInstance) {
     async (request, reply) => {
       const { provider, sessionId } = request.params;
 
-      if (provider !== 'claude' && provider !== 'codex') {
-        return reply.status(400).send({ error: 'Invalid provider. Must be "claude" or "codex".' });
+      if (provider !== 'claude' && provider !== 'codex' && provider !== 'pi') {
+        return reply.status(400).send({ error: 'Invalid provider. Must be "claude", "codex", or "pi".' });
       }
 
       if (!sessionId || !sessionId.trim()) {
@@ -35,6 +36,15 @@ export default async function registerSessionRoutes(server: FastifyInstance) {
       const sessionDir = path.join(os.homedir(), '.ageaf', provider, 'sessions', trimmedId);
 
       try {
+        // Evict Pi agent session (if applicable)
+        if (provider === 'pi') {
+          try {
+            evictPiSession(trimmedId);
+          } catch (error) {
+            console.error(`Failed to evict Pi session ${trimmedId}:`, error);
+          }
+        }
+
         // Delete Codex thread first (if applicable)
         if (provider === 'codex') {
           try {

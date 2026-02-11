@@ -896,6 +896,17 @@
   animation: ageaf-provider-flash-openai 1.5s ease-in-out infinite;
 }
 
+.ageaf-provider--pi .ageaf-provider__dot {
+  background: rgba(20, 184, 166, 0.9);
+  box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.2);
+}
+
+.ageaf-provider--disconnected.ageaf-provider--pi .ageaf-provider__dot {
+  border: 1px solid rgba(20, 184, 166, 0.9);
+  box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.2);
+  animation: ageaf-provider-flash-pi 1.5s ease-in-out infinite;
+}
+
 @keyframes ageaf-provider-flash-anthropic {
   0%,
   50% {
@@ -921,6 +932,20 @@
   75% {
     background: transparent;
     border-color: rgba(95, 160, 255, 0.9);
+  }
+}
+
+@keyframes ageaf-provider-flash-pi {
+  0%,
+  50% {
+    background: rgba(20, 184, 166, 0.9);
+    border-color: transparent;
+  }
+
+  25%,
+  75% {
+    background: transparent;
+    border-color: rgba(20, 184, 166, 0.9);
   }
 }
 
@@ -2573,6 +2598,35 @@
   min-width: 0;
 }
 
+.ageaf-runtime__refresh {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid rgba(57, 185, 138, 0.2);
+  background: transparent;
+  color: var(--ageaf-panel-muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  padding: 0;
+  line-height: 1;
+}
+
+.ageaf-runtime__refresh:hover,
+.ageaf-runtime__refresh:focus-visible {
+  color: var(--ageaf-panel-accent);
+  border-color: rgba(57, 185, 138, 0.5);
+}
+
+.ageaf-runtime__refresh:focus-visible {
+  outline: 2px solid var(--ageaf-panel-accent);
+  outline-offset: 2px;
+}
+
 .ageaf-runtime__picker {
   position: relative;
   flex-shrink: 0;
@@ -2686,6 +2740,79 @@
   font-size: 11px;
   color: var(--ageaf-panel-muted);
   line-height: 1.3;
+}
+
+/* ── Grouped model menu (BYOK / pi only) ────────────────── */
+.ageaf-runtime__menu--grouped {
+  min-width: 160px;
+  overflow: visible;
+}
+
+.ageaf-runtime__group {
+  position: relative;
+}
+
+.ageaf-runtime__group-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ageaf-panel-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: default;
+  transition: color 0.15s;
+}
+
+.ageaf-runtime__group:hover > .ageaf-runtime__group-label {
+  color: var(--ageaf-panel-text);
+  background: rgba(57, 185, 138, 0.08);
+}
+
+.ageaf-runtime__group-arrow {
+  font-size: 14px;
+}
+
+.ageaf-runtime__group-models {
+  display: none;
+  position: absolute;
+  left: calc(100% + 6px);
+  bottom: 0;
+  min-width: 200px;
+  width: max-content;
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  background: #0f1411;
+  border: 1px solid var(--ageaf-panel-border);
+  border-radius: 8px;
+  box-shadow: var(--ageaf-panel-shadow);
+  padding: 2px;
+  z-index: 20;
+}
+
+/* Bridge gap between provider row and submenu to prevent hover loss */
+.ageaf-runtime__group-models::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 100%;
+  width: 8px;
+}
+
+.ageaf-runtime__group:hover > .ageaf-runtime__group-models {
+  display: grid;
+  gap: 2px;
+}
+
+.ageaf-runtime__group + .ageaf-runtime__group {
+  border-top: 1px solid var(--ageaf-panel-border);
 }
 
 .ageaf-runtime__usage {

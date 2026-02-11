@@ -1,4 +1,4 @@
-export type ProviderId = 'claude' | 'codex';
+export type ProviderId = 'claude' | 'codex' | 'pi';
 
 export type CoTThinkingItem = {
   type: 'thinking';
@@ -112,6 +112,9 @@ export type StoredConversation = {
     claude?: {
       lastUsage?: StoredContextUsage;
     };
+    pi?: {
+      lastUsage?: StoredContextUsage;
+    };
   };
 };
 
@@ -149,6 +152,7 @@ export function createEmptyProjectChat(): StoredProjectChat {
     providers: {
       claude: { activeConversationId: null, conversations: [] },
       codex: { activeConversationId: null, conversations: [] },
+      pi: { activeConversationId: null, conversations: [] },
     },
   };
 }
@@ -167,12 +171,14 @@ export function createConversation(provider: ProviderId): StoredConversation {
     messages: [],
     ...(provider === 'codex'
       ? { providerState: { codex: {} } }
-      : { providerState: { claude: {} } }),
+      : provider === 'pi'
+        ? { providerState: { pi: {} } }
+        : { providerState: { claude: {} } }),
   };
 }
 
 function coerceProvider(value: any): ProviderId | null {
-  if (value === 'claude' || value === 'codex') return value;
+  if (value === 'claude' || value === 'codex' || value === 'pi') return value;
   return null;
 }
 
@@ -449,6 +455,12 @@ function normalizeConversation(raw: any, provider: ProviderId): StoredConversati
         providerStateRaw?.claude?.lastUsage ?? providerStateRaw?.claude?.last_usage
       )
       : null;
+  const piUsage =
+    provider === 'pi'
+      ? normalizeStoredContextUsage(
+        providerStateRaw?.pi?.lastUsage ?? providerStateRaw?.pi?.last_usage
+      )
+      : null;
   const threadId =
     provider === 'codex'
       ? typeof providerStateRaw?.codex?.threadId === 'string'
@@ -469,6 +481,9 @@ function normalizeConversation(raw: any, provider: ProviderId): StoredConversati
   }
   if (provider === 'claude' && claudeUsage) {
     providerState.claude = { lastUsage: claudeUsage };
+  }
+  if (provider === 'pi' && piUsage) {
+    providerState.pi = { lastUsage: piUsage };
   }
   return {
     id,
@@ -499,11 +514,12 @@ export function normalizeProjectChat(raw: any): StoredProjectChat | null {
 
   const claude = normalizeProviderState(providersRaw.claude, 'claude');
   const codex = normalizeProviderState(providersRaw.codex, 'codex');
+  const pi = normalizeProviderState(providersRaw.pi, 'pi');
 
   return {
     version: 1,
     activeProvider,
-    providers: { claude, codex },
+    providers: { claude, codex, pi },
   };
 }
 
