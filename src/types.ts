@@ -42,16 +42,11 @@ export interface EditorContentState {
 export interface Options {
   transport?: 'http' | 'native';
   hostUrl?: string;
-  claudeCliPath?: string;
-  claudeEnvVars?: string;
-  claudeLoadUserSettings?: boolean;
   claudeModel?: string;
   claudeThinkingMode?: string;
   claudeMaxThinkingTokens?: number | null;
   claudeSessionScope?: 'project' | 'home';
   claudeYoloMode?: boolean;
-  openaiCodexCliPath?: string;
-  openaiEnvVars?: string;
   openaiApprovalPolicy?: 'untrusted' | 'on-request' | 'on-failure' | 'never';
   piProvider?: string;
   piModel?: string;

@@ -25,8 +25,21 @@ if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
 
 const DEFAULT_TRANSPORT: Options['transport'] = __AGEAF_DEFAULT_TRANSPORT__;
 
-function applyOptionDefaults(input: Options): Options {
+// Legacy auth fields that now live in host .env — strip from extension storage.
+const LEGACY_AUTH_KEYS = [
+  'claudeCliPath',
+  'claudeEnvVars',
+  'claudeLoadUserSettings',
+  'openaiCodexCliPath',
+  'openaiEnvVars',
+];
+
+function applyOptionDefaults(input: Options): { options: Options; hadLegacyKeys: boolean } {
   const options = { ...(input ?? {}) } as Options;
+
+  // Strip legacy auth fields (keys now live in host .env)
+  const hadLegacyKeys = LEGACY_AUTH_KEYS.some((k) => k in options);
+  for (const k of LEGACY_AUTH_KEYS) delete (options as any)[k];
 
   if (options.transport !== 'http' && options.transport !== 'native') {
     options.transport = DEFAULT_TRANSPORT;
@@ -34,7 +47,6 @@ function applyOptionDefaults(input: Options): Options {
   if (options.transport !== 'native' && !options.hostUrl) {
     options.hostUrl = 'http://127.0.0.1:3210';
   }
-  if (options.claudeLoadUserSettings === undefined) options.claudeLoadUserSettings = true;
   options.claudeSessionScope = 'project';
   if (options.claudeYoloMode === undefined) options.claudeYoloMode = true;
 
@@ -64,7 +76,7 @@ function applyOptionDefaults(input: Options): Options {
   }
   if (options.debugCliEvents === undefined) options.debugCliEvents = false;
 
-  return options;
+  return { options, hadLegacyKeys };
 }
 
 export async function getOptions(): Promise<Options> {
@@ -77,19 +89,25 @@ export async function getOptions(): Promise<Options> {
   // If the extension context is gone (e.g. after reloading the extension),
   // accessing chrome.storage can throw "Extension context invalidated".
   if (typeof chrome === 'undefined' || !chrome.storage?.local) {
-    return applyOptionDefaults(lastKnownOptions ?? {});
+    return applyOptionDefaults(lastKnownOptions ?? {}).options;
   }
 
   try {
     const data = await chrome.storage.local.get([LOCAL_STORAGE_KEY_OPTIONS]);
-    const options = applyOptionDefaults((data[LOCAL_STORAGE_KEY_OPTIONS] ?? {}) as Options);
+    const { options, hadLegacyKeys } = applyOptionDefaults((data[LOCAL_STORAGE_KEY_OPTIONS] ?? {}) as Options);
+
+    // Immediately purge legacy auth fields from persistent storage.
+    if (hadLegacyKeys) {
+      chrome.storage.local.set({ [LOCAL_STORAGE_KEY_OPTIONS]: options }).catch(() => {});
+    }
+
     lastKnownOptions = options;
     cachedOptions = options;
     cacheTimestamp = Date.now();
     return options;
   } catch (error) {
     if (error instanceof Error && error.message.includes('Extension context invalidated')) {
-      return applyOptionDefaults(lastKnownOptions ?? {});
+      return applyOptionDefaults(lastKnownOptions ?? {}).options;
     }
     throw error;
   }
