@@ -1,4 +1,12 @@
-# <img src="public/icons/icon_48.png" width="45" align="left"> Ageaf
+<div align="center">
+  <img src="public/icons/ageaf_logo.png" alt="Ageaf" width="200">
+  <h1>Ageaf: AI Agent for Overleaf</h1>
+  <p>
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
+    <img src="https://img.shields.io/badge/Chrome-Extension-blue" alt="Chrome Extension">
+    <img src="https://img.shields.io/badge/manifest-v3-blue" alt="Manifest V3">
+  </p>
+</div>
 
 https://github.com/user-attachments/assets/8360eb0e-4285-407b-96ff-268df143e074
 
