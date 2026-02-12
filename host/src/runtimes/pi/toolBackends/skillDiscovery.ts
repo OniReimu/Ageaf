@@ -62,26 +62,58 @@ Instructions for the agent to follow when this skill is activated...`;
 
 type ScoredSkill = { skill: SkillEntry; score: number };
 
+function tokenize(text: string): string[] {
+  return text.toLowerCase().split(/[\s\-_/]+/).filter(Boolean);
+}
+
 function fuzzyMatchSkills(skills: SkillEntry[], query: string): ScoredSkill[] {
   const lowerQuery = query.toLowerCase();
+  const queryTokens = tokenize(query);
   const results: ScoredSkill[] = [];
 
   for (const skill of skills) {
     const nameLower = skill.name.toLowerCase();
     const descLower = skill.description.toLowerCase();
+    const tagsLower = skill.tags.map((t) => t.toLowerCase());
 
     let score = 0;
+
+    // Tier 1: whole-phrase matches (highest confidence)
     if (nameLower === lowerQuery) {
       score = 100;
     } else if (nameLower.includes(lowerQuery)) {
       score = 80;
     } else if (descLower.includes(lowerQuery)) {
       score = 60;
-    } else if (skill.tags.some((tag) => tag.toLowerCase().includes(lowerQuery))) {
-      score = 40;
+    } else if (tagsLower.some((tag) => tag.includes(lowerQuery))) {
+      score = 50;
     }
 
-    if (score >= 40) {
+    // Tier 2: per-word matching — score by fraction of query words that hit
+    if (score < 40 && queryTokens.length > 0) {
+      const nameTokens = tokenize(skill.name);
+      const descTokens = tokenize(skill.description);
+
+      let hits = 0;
+      for (const qt of queryTokens) {
+        if (nameTokens.some((nt) => nt.includes(qt) || qt.includes(nt))) {
+          hits += 2; // name hits are worth double
+        } else if (descTokens.some((dt) => dt.includes(qt) || qt.includes(dt))) {
+          hits += 1;
+        } else if (tagsLower.some((tag) => tag.includes(qt))) {
+          hits += 1;
+        }
+      }
+
+      // Require at least one word to hit; scale 20-45 based on coverage
+      if (hits > 0) {
+        const maxHits = queryTokens.length * 2; // all words hitting name
+        const ratio = Math.min(hits / maxHits, 1);
+        score = Math.max(score, 20 + Math.round(ratio * 25));
+      }
+    }
+
+    if (score >= 30) {
       results.push({ skill, score });
     }
   }
