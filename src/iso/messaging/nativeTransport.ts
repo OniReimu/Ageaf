@@ -175,10 +175,7 @@ export function nativeTransport(_options: Options): Transport {
         request: {
           method: 'POST',
           path: '/v1/runtime/codex/metadata',
-          body: {
-            cliPath: options.openaiCodexCliPath,
-            envVars: options.openaiEnvVars,
-          },
+          body: {},
         },
       });
       return unwrapNativeResponse(response) as CodexRuntimeMetadata;
@@ -218,8 +215,6 @@ export function nativeTransport(_options: Options): Transport {
           method: 'POST',
           path: '/v1/runtime/codex/context',
           body: {
-            cliPath: options.openaiCodexCliPath,
-            envVars: options.openaiEnvVars,
             threadId: payload?.threadId,
           },
         },

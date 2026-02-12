@@ -86,6 +86,7 @@ export function registerRuntime(server: FastifyInstance) {
   });
 
   server.post('/v1/runtime/codex/metadata', async (request, reply) => {
+    reloadDotenv();
     const body = request.body as { cliPath?: unknown; envVars?: unknown } | undefined;
     const cliPath = body && typeof body.cliPath === 'string' ? body.cliPath : undefined;
     const envVars = body && typeof body.envVars === 'string' ? body.envVars : undefined;
@@ -95,6 +96,7 @@ export function registerRuntime(server: FastifyInstance) {
   });
 
   server.post('/v1/runtime/codex/context', async (request, reply) => {
+    reloadDotenv();
     const body = request.body as {
       cliPath?: unknown;
       envVars?: unknown;

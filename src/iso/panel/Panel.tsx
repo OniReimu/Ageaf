@@ -677,7 +677,7 @@ const Panel = () => {
   const [toolRequestBusy, setToolRequestBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<
-    'connection' | 'authentication' | 'tools' | 'customization' | 'safety'
+    'connection' | 'tools' | 'customization' | 'safety'
   >('connection');
   const [settings, setSettings] = useState<Options | null>(null);
   const [settingsMessage, setSettingsMessage] = useState('');
@@ -780,12 +780,6 @@ const Panel = () => {
       fileGroupRole: roleMap,
     };
   }, [messages]);
-
-  // Ephemeral API keys (in-memory only, never persisted)
-  const [claudeApiKey, setClaudeApiKey] = useState<string>('');
-  const [openaiApiKey, setOpenaiApiKey] = useState<string>('');
-  const [showClaudeKey, setShowClaudeKey] = useState(false);
-  const [showOpenaiKey, setShowOpenaiKey] = useState(false);
 
   // Tool execution visibility tracking
   type ToolExecutionState = {
@@ -999,38 +993,6 @@ const Panel = () => {
   const convertThinkingToCoT = (thinking?: string[]): CoTItem[] => {
     if (!thinking) return [];
     return thinking.map((content) => ({ type: 'thinking', content }));
-  };
-
-  // Detect if user accidentally put API key in env vars field
-  const detectApiKeyInEnvVars = (envVars?: string): boolean => {
-    if (!envVars) return false;
-
-    const lines = envVars.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('#')) continue; // Skip comments
-
-      const match = trimmed.match(/^([^=]+)=(.+)$/);
-      if (!match) continue;
-
-      const [, key, value] = match;
-      const keyUpper = key.trim().toUpperCase();
-
-      // Detect API key patterns
-      if (
-        keyUpper.includes('API_KEY') ||
-        keyUpper.includes('APIKEY') ||
-        keyUpper.includes('SECRET') ||
-        keyUpper.includes('TOKEN')
-      ) {
-        // Check if value looks like an API key (starts with sk-, contains hyphens/long alphanum)
-        if (value.trim().match(/^sk-[a-zA-Z0-9_-]{20,}/) || value.length > 30) {
-          return true;
-        }
-      }
-    }
-
-    return false;
   };
 
   const isSendingRef = useRef(false);
@@ -5067,109 +5029,6 @@ const Panel = () => {
     await persistRuntimeOptions({ claudeYoloMode: next });
   };
 
-  // Helper to merge stored env vars with ephemeral API key
-  const buildEnvVarsWithApiKey = (
-    storedEnvVars: string | undefined,
-    apiKey: string,
-    keyVarName: string
-  ): string => {
-    // If no API key provided in UI, just return stored env vars
-    if (!apiKey) {
-      return storedEnvVars || '';
-    }
-
-    // Merge: API key takes precedence
-    const lines = (storedEnvVars || '').split('\n').filter((line) => {
-      const trimmed = line.trim();
-      // Remove any existing API_KEY lines from stored vars
-      return (
-        !trimmed.startsWith('ANTHROPIC_API_KEY=') &&
-        !trimmed.startsWith('OPENAI_API_KEY=')
-      );
-    });
-
-    // Add API key at the beginning
-    lines.unshift(`${keyVarName}=${apiKey}`);
-
-    return lines.join('\n');
-  };
-
-  const getRuntimeConfig = async () => {
-    const options = await getOptions();
-    if (chatProvider === 'codex') {
-      const conversationId = chatConversationIdRef.current;
-      const state = chatStateRef.current;
-      const conversation =
-        conversationId && state
-          ? findConversation(state, conversationId)
-          : null;
-      const codexThreadId = conversation?.providerState?.codex?.threadId;
-      const codexModelCandidate = currentModel ?? null;
-      const codexRuntimeModel =
-        (codexModelCandidate
-          ? runtimeModels.find((entry) => entry.value === codexModelCandidate)
-          : null) ??
-        runtimeModels.find((entry) => entry.isDefault) ??
-        runtimeModels.find(
-          (entry) => entry.supportedReasoningEfforts !== undefined
-        ) ??
-        runtimeModels[0] ??
-        null;
-      const codexModel =
-        codexRuntimeModel?.supportedReasoningEfforts !== undefined
-          ? codexRuntimeModel.value
-          : null;
-      const codexEffort = codexModel
-        ? getCodexEffortForThinkingMode(
-          currentThinkingMode as ThinkingMode['id'],
-          codexRuntimeModel ?? null
-        ) ??
-        codexRuntimeModel?.defaultReasoningEffort ??
-        null
-        : null;
-      // Build env vars with ephemeral API key if provided
-      const runtimeEnvVars = buildEnvVarsWithApiKey(
-        options.openaiEnvVars,
-        openaiApiKey,
-        'OPENAI_API_KEY'
-      );
-      return {
-        codex: {
-          cliPath: options.openaiCodexCliPath,
-          envVars: runtimeEnvVars,
-          approvalPolicy: options.openaiApprovalPolicy,
-          ...(codexModel ? { model: codexModel } : {}),
-          ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
-          ...(codexThreadId ? { threadId: codexThreadId } : {}),
-        },
-      };
-    } else {
-      const runtimeModel =
-        currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
-      const runtimeThinkingTokens =
-        currentThinkingTokens ?? options.claudeMaxThinkingTokens ?? null;
-      const conversationId = chatConversationIdRef.current;
-      // Build env vars with ephemeral API key if provided
-      const runtimeEnvVars = buildEnvVarsWithApiKey(
-        options.claudeEnvVars,
-        claudeApiKey,
-        'ANTHROPIC_API_KEY'
-      );
-      return {
-        claude: {
-          cliPath: options.claudeCliPath,
-          envVars: runtimeEnvVars,
-          loadUserSettings: options.claudeLoadUserSettings,
-          model: runtimeModel ?? undefined,
-          maxThinkingTokens: runtimeThinkingTokens ?? undefined,
-          sessionScope: 'project' as const,
-          yoloMode,
-          conversationId: conversationId ?? undefined,
-        },
-      };
-    }
-  };
-
   const thinkingEnabled = currentThinkingMode !== 'off';
 
   const formatElapsed = (seconds: number) => {
@@ -6262,8 +6121,6 @@ const Panel = () => {
             action,
             runtime: {
               codex: {
-                cliPath: options.openaiCodexCliPath,
-                envVars: options.openaiEnvVars,
                 approvalPolicy: options.openaiApprovalPolicy,
                 ...(codexModel ? { model: codexModel } : {}),
                 ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
@@ -6284,9 +6141,6 @@ const Panel = () => {
             action,
             runtime: {
               claude: {
-                cliPath: options.claudeCliPath,
-                envVars: options.claudeEnvVars,
-                loadUserSettings: options.claudeLoadUserSettings,
                 model: runtimeModel ?? undefined,
                 maxThinkingTokens: runtimeThinkingTokens ?? undefined,
                 sessionScope: 'project' as const,
@@ -7919,38 +7773,12 @@ const Panel = () => {
 
   const onSaveSettings = async () => {
     if (!settings) return;
-
-    // Warn if user has API key in env vars
-    const hasClaudeKey = detectApiKeyInEnvVars(settings.claudeEnvVars);
-    const hasOpenaiKey = detectApiKeyInEnvVars(settings.openaiEnvVars);
-
-    if (hasClaudeKey || hasOpenaiKey) {
-      const confirmed = confirm(
-        '⚠️ Warning: You appear to have an API key in the environment ' +
-          'variables field. This will be saved to browser storage.\n\n' +
-          'For better security, use the "API Key" field instead, which ' +
-          'keeps keys in memory only.\n\n' +
-          'Continue saving?'
-      );
-
-      if (!confirmed) {
-        setSettingsMessage('Save canceled');
-        return;
-      }
-    }
-
     try {
       await chrome.storage.local.set({ [LOCAL_STORAGE_KEY_OPTIONS]: settings });
       invalidateOptionsCache();
-      // API keys entered in dedicated fields are NOT saved
-      const message =
-        claudeApiKey || openaiApiKey
-          ? 'Saved (API keys kept in memory only)'
-          : 'Saved';
-      setSettingsMessage(message);
+      setSettingsMessage('Saved');
       void refreshContextUsage({ force: true });
     } catch (error) {
-      // Extension context invalidated - show error message
       if (
         error instanceof Error &&
         error.message.includes('Extension context invalidated')
@@ -9342,14 +9170,6 @@ const Panel = () => {
                 Connection
               </button>
               <button
-                class={`ageaf-settings__tab ${settingsTab === 'authentication' ? 'is-active' : ''
-                  }`}
-                type="button"
-                onClick={() => setSettingsTab('authentication')}
-              >
-                Authentication
-              </button>
-              <button
                 class={`ageaf-settings__tab ${settingsTab === 'customization' ? 'is-active' : ''
                   }`}
                 type="button"
@@ -9446,270 +9266,6 @@ const Panel = () => {
                             Retry
                           </button>
                         </>
-                      )}
-                    </div>
-                  ) : null}
-                  {settingsTab === 'authentication' ? (
-                    <div class="ageaf-settings__section">
-                      <h3>Authentication</h3>
-                      <h4 class="ageaf-settings__subhead">Anthropic</h4>
-                      <div
-                        class="ageaf-settings__info-box"
-                        style="background: rgba(57, 185, 138, 0.08); border: 1px solid rgba(57, 185, 138, 0.25); border-left: 4px solid #39b98a; padding: 12px; margin-bottom: 16px; border-radius: 6px;"
-                      >
-                        <strong>🔐 Secure API Key Input</strong>
-                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                          Enter your API key here for use with Claude CLI. The
-                          key is kept in memory only and never saved to browser
-                          storage. You'll need to re-enter it after browser
-                          restart.
-                        </p>
-                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                          <strong>Alternatively:</strong> Set ANTHROPIC_API_KEY
-                          in your terminal environment and leave this field
-                          empty.
-                        </p>
-                      </div>
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-claude-api-key"
-                      >
-                        API Key (Session Only - Not Saved)
-                      </label>
-                      <div
-                        style="display: flex; gap: 8px; margin-bottom: 16px;"
-                      >
-                        <input
-                          id="ageaf-claude-api-key"
-                          class="ageaf-settings__input"
-                          type={showClaudeKey ? 'text' : 'password'}
-                          value={claudeApiKey}
-                          onInput={(event) =>
-                            setClaudeApiKey(
-                              (event.target as HTMLInputElement).value
-                            )
-                          }
-                          onPaste={(event) =>
-                            setClaudeApiKey(
-                              event.clipboardData?.getData('text') || ''
-                            )
-                          }
-                          placeholder="sk-ant-... (optional if set in terminal)"
-                          style="flex: 1;"
-                        />
-                        <button
-                          type="button"
-                          class="ageaf-settings__button"
-                          onClick={() => setShowClaudeKey(!showClaudeKey)}
-                          style="min-width: 80px;"
-                        >
-                          {showClaudeKey ? 'Hide' : 'Show'}
-                        </button>
-                        {claudeApiKey && (
-                          <button
-                            type="button"
-                            class="ageaf-settings__button"
-                            onClick={() => setClaudeApiKey('')}
-                            style="min-width: 80px;"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-claude-cli"
-                      >
-                        Claude CLI path (optional)
-                      </label>
-                      <input
-                        id="ageaf-claude-cli"
-                        class="ageaf-settings__input"
-                        type="text"
-                        value={settings.claudeCliPath ?? ''}
-                        onInput={(event) =>
-                          updateSettings({
-                            claudeCliPath: (event.target as HTMLInputElement)
-                              .value,
-                          })
-                        }
-                        placeholder="Leave empty to auto-detect"
-                      />
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-claude-env"
-                      >
-                        Environment variables (KEY=VALUE)
-                      </label>
-                      <p class="ageaf-settings__hint">
-                        <strong>Note:</strong> Use the API Key field above for
-                        sensitive keys. This field is for non-sensitive
-                        variables like ANTHROPIC_BASE_URL or ANTHROPIC_MODEL.
-                      </p>
-                      <textarea
-                        id="ageaf-claude-env"
-                        class="ageaf-settings__textarea"
-                        rows={6}
-                        value={settings.claudeEnvVars ?? ''}
-                        onInput={(event) =>
-                          updateSettings({
-                            claudeEnvVars: (event.target as HTMLTextAreaElement)
-                              .value,
-                          })
-                        }
-                        placeholder={
-                          'ANTHROPIC_BASE_URL=https://api.anthropic.com\nANTHROPIC_MODEL=claude-sonnet-4-5'
-                        }
-                      />
-                      {detectApiKeyInEnvVars(settings.claudeEnvVars) && (
-                        <div
-                          class="ageaf-settings__warning-box"
-                          style="background: rgba(255, 179, 87, 0.08); border: 1px solid rgba(255, 179, 87, 0.25); border-left: 4px solid #ffb357; padding: 12px; margin-top: 12px; margin-bottom: 12px; border-radius: 6px;"
-                        >
-                          <strong>⚠️ API Key Detected in Environment Variables</strong>
-                          <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                            You appear to have entered an API key in the
-                            environment variables field. For better security, use
-                            the "API Key" field above instead. Keys entered there
-                            are kept in memory only and never saved.
-                          </p>
-                        </div>
-                      )}
-                      <label class="ageaf-settings__checkbox">
-                        <input
-                          type="checkbox"
-                          checked={settings.claudeLoadUserSettings ?? false}
-                          onChange={(event) =>
-                            updateSettings({
-                              claudeLoadUserSettings:
-                                event.currentTarget.checked,
-                            })
-                          }
-                        />
-                        Load ~/.claude/settings.json (user permissions)
-                      </label>
-                      <h4 class="ageaf-settings__subhead">OpenAI</h4>
-                      <div
-                        class="ageaf-settings__info-box"
-                        style="background: rgba(57, 185, 138, 0.08); border: 1px solid rgba(57, 185, 138, 0.25); border-left: 4px solid #39b98a; padding: 12px; margin-bottom: 16px; border-radius: 6px;"
-                      >
-                        <strong>🔐 Secure API Key Input</strong>
-                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                          Enter your API key here for use with Codex CLI. The
-                          key is kept in memory only and never saved to browser
-                          storage. You'll need to re-enter it after browser
-                          restart.
-                        </p>
-                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                          <strong>Alternatively:</strong> Set OPENAI_API_KEY in
-                          your terminal environment and leave this field empty.
-                        </p>
-                      </div>
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-openai-api-key"
-                      >
-                        API Key (Session Only - Not Saved)
-                      </label>
-                      <div
-                        style="display: flex; gap: 8px; margin-bottom: 16px;"
-                      >
-                        <input
-                          id="ageaf-openai-api-key"
-                          class="ageaf-settings__input"
-                          type={showOpenaiKey ? 'text' : 'password'}
-                          value={openaiApiKey}
-                          onInput={(event) =>
-                            setOpenaiApiKey(
-                              (event.target as HTMLInputElement).value
-                            )
-                          }
-                          onPaste={(event) =>
-                            setOpenaiApiKey(
-                              event.clipboardData?.getData('text') || ''
-                            )
-                          }
-                          placeholder="sk-... (optional if set in terminal)"
-                          style="flex: 1;"
-                        />
-                        <button
-                          type="button"
-                          class="ageaf-settings__button"
-                          onClick={() => setShowOpenaiKey(!showOpenaiKey)}
-                          style="min-width: 80px;"
-                        >
-                          {showOpenaiKey ? 'Hide' : 'Show'}
-                        </button>
-                        {openaiApiKey && (
-                          <button
-                            type="button"
-                            class="ageaf-settings__button"
-                            onClick={() => setOpenaiApiKey('')}
-                            style="min-width: 80px;"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-codex-cli"
-                      >
-                        Codex CLI path (optional)
-                      </label>
-                      <input
-                        id="ageaf-codex-cli"
-                        class="ageaf-settings__input"
-                        type="text"
-                        value={settings.openaiCodexCliPath ?? ''}
-                        onInput={(event) =>
-                          updateSettings({
-                            openaiCodexCliPath: (
-                              event.target as HTMLInputElement
-                            ).value,
-                          })
-                        }
-                        placeholder="Leave empty to auto-detect"
-                      />
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-openai-env"
-                      >
-                        Environment variables (KEY=VALUE)
-                      </label>
-                      <p class="ageaf-settings__hint">
-                        <strong>Note:</strong> Use the API Key field above for
-                        sensitive keys. This field is for non-sensitive
-                        variables like OPENAI_BASE_URL.
-                      </p>
-                      <textarea
-                        id="ageaf-openai-env"
-                        class="ageaf-settings__textarea"
-                        rows={6}
-                        value={settings.openaiEnvVars ?? ''}
-                        onInput={(event) =>
-                          updateSettings({
-                            openaiEnvVars: (event.target as HTMLTextAreaElement)
-                              .value,
-                          })
-                        }
-                        placeholder={
-                          'OPENAI_BASE_URL=https://api.openai.com'
-                        }
-                      />
-                      {detectApiKeyInEnvVars(settings.openaiEnvVars) && (
-                        <div
-                          class="ageaf-settings__warning-box"
-                          style="background: rgba(255, 179, 87, 0.08); border: 1px solid rgba(255, 179, 87, 0.25); border-left: 4px solid #ffb357; padding: 12px; margin-top: 12px; margin-bottom: 12px; border-radius: 6px;"
-                        >
-                          <strong>⚠️ API Key Detected in Environment Variables</strong>
-                          <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                            You appear to have entered an API key in the
-                            environment variables field. For better security, use
-                            the "API Key" field above instead. Keys entered there
-                            are kept in memory only and never saved.
-                          </p>
-                        </div>
                       )}
                     </div>
                   ) : null}

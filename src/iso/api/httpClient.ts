@@ -7,9 +7,6 @@ export type JobPayload = {
   action: string;
   runtime?: {
     claude?: {
-      cliPath?: string;
-      envVars?: string;
-      loadUserSettings?: boolean;
       model?: string;
       maxThinkingTokens?: number | null;
       sessionScope?: 'project' | 'home';
@@ -17,8 +14,6 @@ export type JobPayload = {
       conversationId?: string;
     };
     codex?: {
-      cliPath?: string;
-      envVars?: string;
       approvalPolicy?: 'untrusted' | 'on-request' | 'on-failure' | 'never';
       model?: string;
       reasoningEffort?: string;
@@ -192,10 +187,7 @@ export async function fetchCodexRuntimeMetadata(options: Options) {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        cliPath: options.openaiCodexCliPath,
-        envVars: options.openaiEnvVars,
-      }),
+      body: JSON.stringify({}),
     }
   );
 
@@ -394,8 +386,6 @@ export async function fetchCodexRuntimeContextUsage(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        cliPath: options.openaiCodexCliPath,
-        envVars: options.openaiEnvVars,
         threadId: payload?.threadId,
       }),
     }
