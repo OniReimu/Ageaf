@@ -1,4 +1,5 @@
 import { getProviders, getEnvApiKey } from '@mariozechner/pi-ai';
+import { getCustomProviders } from './customProviders.js';
 
 export type PiRuntimeStatus = {
   configured: boolean;
@@ -20,10 +21,13 @@ export function getPiRuntimeStatus(): PiRuntimeStatus {
   }
 
   const providers = getProviders();
-  const availableProviders = providers.map((provider) => ({
+  const availableProviders: Array<{ provider: string; hasApiKey: boolean }> = providers.map((provider) => ({
     provider,
     hasApiKey: Boolean(getEnvApiKey(provider)),
   }));
+
+  // Append custom providers (DeepSeek, Qwen, etc.)
+  availableProviders.push(...getCustomProviders());
 
   const configured = availableProviders.some((p) => p.hasApiKey);
 
@@ -42,17 +46,11 @@ export function getPiRuntimeStatus(): PiRuntimeStatus {
     if (firstWithKey) activeProvider = firstWithKey.provider;
   }
 
-  // Environment variable overrides
-  const envProvider = process.env.AGEAF_PI_PROVIDER?.trim();
-  if (envProvider) activeProvider = envProvider;
-
-  const envModel = process.env.AGEAF_PI_MODEL?.trim() ?? null;
-
   return {
     configured,
     availableProviders,
     activeProvider,
-    activeModel: envModel,
+    activeModel: null,
     mock: false,
   };
 }

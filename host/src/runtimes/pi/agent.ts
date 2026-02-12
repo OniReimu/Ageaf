@@ -6,6 +6,7 @@ import {
   getEnvApiKey,
 } from '@mariozechner/pi-ai';
 import type { Model, AssistantMessage, Message, Usage } from '@mariozechner/pi-ai';
+import { getCustomProviderApiKey, getCustomModels, getCustomProviders } from './customProviders.js';
 import type { AgentMessage } from '@mariozechner/pi-agent-core';
 
 import type { JobEvent } from '../../types.js';
@@ -89,69 +90,104 @@ const agentSessions = new Map<string, Agent>();
 
 const DEFAULT_TURN_TIMEOUT_MS = 300_000; // 5 minutes
 
-function resolveModel(config?: PiRuntimeConfig): Model<any> | null {
-  // Priority: env override > config > auto-detect
-  const providerName =
-    process.env.AGEAF_PI_PROVIDER?.trim() ??
-    config?.provider ??
-    null;
-  const modelId =
-    process.env.AGEAF_PI_MODEL?.trim() ??
-    config?.model ??
-    null;
+export type ResolveModelResult = {
+  model: Model<any> | null;
+  failReason?: string;
+};
 
-  if (providerName && modelId) {
-    // Try to find exact model
-    try {
-      const models = getModels(providerName as any);
-      const found = models.find((m) => m.id === modelId);
-      if (found) return found;
-    } catch {
-      // Fall through to auto-detect
-    }
-  }
+export function resolveModel(config?: PiRuntimeConfig): ResolveModelResult {
+  const providerName = config?.provider ?? null;
+  const modelId = config?.model ?? null;
 
+  // ── Explicit provider set ──────────────────────────────────
   if (providerName) {
-    // Use first model from specified provider
-    try {
-      const models = getModels(providerName as any);
-      if (models.length > 0) return models[0];
-    } catch {
-      // Fall through
+    // 1a. Try custom providers
+    const customModels = getCustomModels(providerName);
+    if (customModels.length > 0) {
+      if (modelId) {
+        const found = customModels.find((m) => m.id === modelId);
+        if (found) return { model: found };
+        return { model: null, failReason: `Model "${modelId}" not found for provider "${providerName}".` };
+      }
+      return { model: customModels[0] };
     }
+
+    // 1b. Try pi-ai registry (must also have API key)
+    if (getEnvApiKey(providerName)) {
+      try {
+        const models = getModels(providerName as any);
+        if (modelId) {
+          const found = models.find((m) => m.id === modelId);
+          if (found) return { model: found };
+          return { model: null, failReason: `Model "${modelId}" not found for provider "${providerName}".` };
+        }
+        if (models.length > 0) return { model: models[0] };
+      } catch { /* provider not in registry */ }
+    }
+
+    return { model: null, failReason: `Provider "${providerName}" not found or has no API key configured.` };
   }
 
-  // Auto-detect: anthropic > openai > google > first with key
-  const preferred = ['anthropic', 'openai', 'google'];
+  // ── Auto-detect (no explicit provider) ─────────────────────
   const providers = getProviders();
+  const findModel = (models: any[]) => modelId ? models.find((m: any) => m.id === modelId) : null;
+
+  // 2a. If modelId is set, scan ALL keyed providers (pi-ai + custom) to find it
+  if (modelId) {
+    for (const provider of providers) {
+      if (!getEnvApiKey(provider)) continue;
+      try {
+        const models = getModels(provider as any);
+        const found = findModel(models);
+        if (found) return { model: found };
+      } catch { continue; }
+    }
+
+    for (const { provider: provName, hasApiKey } of getCustomProviders()) {
+      if (!hasApiKey) continue;
+      const models = getCustomModels(provName);
+      const found = findModel(models);
+      if (found) return { model: found };
+    }
+
+    // modelId from UI config not found — soft-fail, fall through to auto-detect
+  }
+
+  // 2b. Pure auto-detect: preferred providers → custom → any keyed provider
+  const preferred = ['anthropic', 'openai', 'google'];
 
   for (const pref of preferred) {
     if (!providers.includes(pref as any)) continue;
     if (!getEnvApiKey(pref)) continue;
     try {
       const models = getModels(pref as any);
-      if (modelId) {
-        const found = models.find((m) => m.id === modelId);
-        if (found) return found;
-      }
-      if (models.length > 0) return models[0];
-    } catch {
-      continue;
-    }
+      if (models.length > 0) return { model: models[0] };
+    } catch { continue; }
   }
 
-  // Fallback: first provider with an API key
+  for (const { provider: provName, hasApiKey } of getCustomProviders()) {
+    if (!hasApiKey) continue;
+    const models = getCustomModels(provName);
+    if (models.length > 0) return { model: models[0] };
+  }
+
   for (const provider of providers) {
     if (!getEnvApiKey(provider)) continue;
     try {
       const models = getModels(provider as any);
-      if (models.length > 0) return models[0];
-    } catch {
-      continue;
-    }
+      if (models.length > 0) return { model: models[0] };
+    } catch { continue; }
   }
 
-  return null;
+  return { model: null, failReason: 'No API key found. Add an API key (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY, or DASHSCOPE_API_KEY) to host/.env, then restart the host.' };
+}
+
+export function makeApiKeyResolver(): (provider: string) => string | undefined {
+  return (provider: string) => {
+    const customKey = getCustomProviderApiKey(provider);
+    if (customKey) return customKey;
+    return getEnvApiKey(provider);
+  };
 }
 
 function resolveThinkingLevel(config?: PiRuntimeConfig): ThinkingLevel {
@@ -166,7 +202,10 @@ function getOrCreateAgent(conversationId?: string): Agent {
     if (existing) return existing;
   }
 
-  const agent = new Agent({ convertToLlm: convertToLlmStripSignatures });
+  const agent = new Agent({
+    convertToLlm: convertToLlmStripSignatures,
+    getApiKey: makeApiKeyResolver(),
+  });
   agent.setTools(getAllAgentTools());
 
   if (conversationId) {
@@ -196,13 +235,13 @@ export async function runPiText(input: PiTextRunInput): Promise<PiRunResult> {
     return { resultText: 'Mock response.', emittedPatchFiles: new Set() };
   }
 
-  const model = resolveModel(input.config);
+  const { model, failReason } = resolveModel(input.config);
   if (!model) {
     input.emitEvent({
       event: 'done',
       data: {
         status: 'not_configured',
-        message: 'No API key found. Add an API key (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY) to host/.env, then restart the host.',
+        message: failReason,
       },
     });
     return { resultText: null, emittedPatchFiles: new Set() };

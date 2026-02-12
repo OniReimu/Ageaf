@@ -1,4 +1,5 @@
 import { config as dotenvConfig } from 'dotenv';
+import { getCustomProviderEnvKeys } from './runtimes/pi/customProviders.js';
 
 /**
  * All provider API key env vars that pi-ai checks via getEnvApiKey().
@@ -31,7 +32,8 @@ const PROVIDER_ENV_KEYS = [
  * This ensures that removing a key from .env actually removes it.
  */
 export function reloadDotenv(): void {
-  for (const key of PROVIDER_ENV_KEYS) {
+  const allKeys = [...PROVIDER_ENV_KEYS, ...getCustomProviderEnvKeys()];
+  for (const key of allKeys) {
     delete process.env[key];
   }
   dotenvConfig({ override: true });

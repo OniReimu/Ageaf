@@ -163,26 +163,3 @@ test('POST /v1/runtime/pi/preferences returns thinkingLevels and auto-downgrades
   }
 });
 
-test('AGEAF_PI_PROVIDER env override appears in metadata', async () => {
-  process.env.AGEAF_PI_PROVIDER = 'test-provider-override';
-  const server = buildServer();
-
-  try {
-    const response = await server.inject({
-      method: 'GET',
-      url: '/v1/runtime/pi/metadata',
-    });
-
-    assert.equal(response.statusCode, 200);
-    const body = JSON.parse(response.body);
-    // The env override should be reflected in currentProvider
-    assert.equal(
-      body.currentProvider,
-      'test-provider-override',
-      'AGEAF_PI_PROVIDER should override provider detection'
-    );
-  } finally {
-    delete process.env.AGEAF_PI_PROVIDER;
-    await server.close();
-  }
-});

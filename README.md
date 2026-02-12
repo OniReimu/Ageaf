@@ -42,11 +42,38 @@ XAI_API_KEY=...                   # xAI (Grok)
 GROQ_API_KEY=...                  # Groq
 MISTRAL_API_KEY=...               # Mistral
 OPENROUTER_API_KEY=...            # OpenRouter (multi-provider)
+DEEPSEEK_API_KEY=...              # DeepSeek (V3, R1)
+DASHSCOPE_API_KEY=...             # Alibaba (Qwen Max/Plus/Turbo)
 ```
 
 Start the host (`npm run dev`), then select **BYOK** from the provider dropdown in the Ageaf panel. Use the model picker to choose your provider and model.
 
 **We strongly encourage using official subscriptions** (Claude Code or Codex CLI) for better cost-efficiency, higher token limits, and a seamless experience with Ageaf.
+
+### Supported Models
+
+BYOK supports **1,000+ models** across 20+ providers. Here is a highlight of supported model families:
+
+| Provider | Models | API Key |
+| --- | --- | --- |
+| **Anthropic** | Claude Opus 4.6, Claude Sonnet 4.5, Claude Haiku 4.5, Claude 3.7/3.5 series | `ANTHROPIC_API_KEY` |
+| **OpenAI** | GPT-5.2, GPT-5.1, GPT-5, GPT-4.1, GPT-4o, o4-mini, o3, o3-pro, Codex | `OPENAI_API_KEY` |
+| **Google** | Gemini 3 Pro, Gemini 3 Flash, Gemini 2.5 Pro/Flash, Gemini 2.0 Flash | `GEMINI_API_KEY` |
+| **DeepSeek** | DeepSeek V3, DeepSeek R1 | `DEEPSEEK_API_KEY` |
+| **Alibaba Qwen** | Qwen Max, Qwen Plus, Qwen Turbo (via DashScope) | `DASHSCOPE_API_KEY` |
+| **xAI** | Grok 4, Grok 3, Grok 2 | `XAI_API_KEY` |
+| **Mistral** | Mistral Large, Devstral, Codestral, Magistral, Pixtral | `MISTRAL_API_KEY` |
+| **Groq** | Llama 4, Llama 3.3, DeepSeek R1, Qwen, Kimi K2 | `GROQ_API_KEY` |
+| **OpenRouter** | 180+ models from all major providers in one API | `OPENROUTER_API_KEY` |
+| **Amazon Bedrock** | 70+ models including Nova, Claude, Llama, Mistral | Bedrock credentials |
+| **Azure OpenAI** | Full GPT and o-series lineup | Azure credentials |
+| **Google Vertex** | Gemini models via Google Cloud | Vertex credentials |
+| **Cerebras** | Ultra-fast inference for GPT-OSS, Qwen, GLM | `CEREBRAS_API_KEY` |
+| **HuggingFace** | DeepSeek, Kimi K2, Qwen, MiniMax, MiMo | `HF_TOKEN` |
+| **MiniMax** | MiniMax M2, M2.1 | `MINIMAX_API_KEY` |
+| **Z.AI (Zhipu)** | GLM-4.7, GLM-4.6, GLM-4.5 | `ZAI_API_KEY` |
+
+> Add just one API key and Ageaf auto-detects the available models. Mix and match as many providers as you like.
 
 ## Quick Start
 
