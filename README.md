@@ -1,6 +1,5 @@
 <div align="center">
-  <img src="public/icons/ageaf_logo.png" alt="Ageaf" width="200">
-  <h1>Ageaf: AI Agent for Overleaf</h1>
+  <h1><img src="public/icons/icon_48.png" alt="Ageaf" width="45"> Ageaf: AI Agent for Overleaf</h1>
   <p>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
     <img src="https://img.shields.io/badge/Chrome-Extension-blue" alt="Chrome Extension">
