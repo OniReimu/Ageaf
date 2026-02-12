@@ -1,4 +1,5 @@
 import { getProviders, getModels, getEnvApiKey, supportsXhigh } from '@mariozechner/pi-ai';
+import { getAllCustomModels } from './customProviders.js';
 import type { ThinkingLevel } from '@mariozechner/pi-agent-core';
 
 export type PiModelInfo = {
@@ -48,6 +49,16 @@ export function getPiAvailableModels(): PiModelInfo[] {
     } catch {
       // Skip providers that fail to enumerate models
     }
+  }
+
+  for (const model of getAllCustomModels()) {
+    models.push({
+      value: model.id,
+      displayName: model.name,
+      provider: model.provider,
+      reasoning: model.reasoning,
+      contextWindow: model.contextWindow,
+    });
   }
 
   return models;
