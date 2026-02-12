@@ -25,6 +25,7 @@ export class PiStreamBuffer {
   private emittedFileStarted = new Set<string>();
 
   private readonly HOLD_BACK_CHARS = 32;
+  private readonly MAX_DIAGRAM_CHARS = 350_000;
   private readonly payloadStartRe =
     /```(?:ageaf[-_]?patch)|<<<\s*AGEAF_REWRITE\s*>>>|<<<\s*AGEAF_FILE_UPDATE\b/i;
   private readonly fileUpdateOpenRe =
@@ -43,10 +44,25 @@ export class PiStreamBuffer {
 
   flush(): void {
     if (this.insideDiagramFence) {
-      const partialFence = '```ageaf-diagram\n' + this.diagramBuffer + '\n```\n';
-      this.emitEvent({ event: 'delta', data: { text: partialFence } });
-      this.insideDiagramFence = false;
-      this.diagramBuffer = '';
+      const closeIdx = this.findDiagramCloseIndex(this.diagramBuffer);
+      if (closeIdx !== -1) {
+        const afterBackticks = closeIdx + 3;
+        const afterClose = this.diagramBuffer.slice(afterBackticks);
+        const closingLineMatch = afterClose.match(/^[ \t]*\r?\n/);
+        const closingLineLen = closingLineMatch ? closingLineMatch[0].length : 0;
+        const fenceContent = this.diagramBuffer.slice(0, closeIdx);
+        this.emitDiagramFence(fenceContent);
+        const remaining = this.diagramBuffer.slice(afterBackticks + closingLineLen);
+        this.insideDiagramFence = false;
+        this.diagramBuffer = '';
+        if (remaining) {
+          this.emitVisibleDelta(remaining);
+        }
+      } else {
+        this.emitDiagramFence(this.diagramBuffer);
+        this.insideDiagramFence = false;
+        this.diagramBuffer = '';
+      }
     }
     if (this.payloadStarted) return;
     if (!this.visibleBuffer) return;
@@ -70,24 +86,21 @@ export class PiStreamBuffer {
     // Diagram fence accumulation mode
     if (this.insideDiagramFence) {
       this.diagramBuffer += text;
-      const closeIdx = this.diagramBuffer.indexOf('\n```');
+      const closeIdx = this.findDiagramCloseIndex(this.diagramBuffer);
       if (closeIdx !== -1) {
-        const afterBackticks = closeIdx + 4;
-        const ch = this.diagramBuffer[afterBackticks];
-        if (ch === undefined || ch === '\n' || ch === '\r' || ch === ' ' || ch === '\t') {
-          const fenceContent = this.diagramBuffer.slice(0, closeIdx);
-          const completeFence = '```ageaf-diagram\n' + fenceContent + '\n```\n';
-          this.emitEvent({ event: 'delta', data: { text: completeFence } });
-          this.insideDiagramFence = false;
-          const nlPos = this.diagramBuffer.slice(afterBackticks).indexOf('\n');
-          const closingLineLen = nlPos >= 0 ? nlPos + 1 : this.diagramBuffer.length - afterBackticks;
-          const remaining = this.diagramBuffer.slice(afterBackticks + closingLineLen);
-          this.diagramBuffer = '';
-          if (remaining) {
-            this.emitVisibleDelta(remaining);
-          }
-          return;
+        const afterBackticks = closeIdx + 3;
+        const afterClose = this.diagramBuffer.slice(afterBackticks);
+        const closingLineMatch = afterClose.match(/^[ \t]*\r?\n/);
+        const closingLineLen = closingLineMatch ? closingLineMatch[0].length : 0;
+        const fenceContent = this.diagramBuffer.slice(0, closeIdx);
+        this.emitDiagramFence(fenceContent);
+        this.insideDiagramFence = false;
+        const remaining = this.diagramBuffer.slice(afterBackticks + closingLineLen);
+        this.diagramBuffer = '';
+        if (remaining) {
+          this.emitVisibleDelta(remaining);
         }
+        return;
       }
       return;
     }
@@ -176,6 +189,40 @@ export class PiStreamBuffer {
     if (lastMatchEnd > 0) {
       this.payloadBuffer = this.payloadBuffer.slice(lastMatchEnd);
     }
+  }
+
+  private findDiagramCloseIndex(buffer: string): number {
+    let cursor = 0;
+    while (cursor < buffer.length) {
+      const idx = buffer.indexOf('```', cursor);
+      if (idx === -1) return -1;
+      const next = buffer[idx + 3];
+      if (
+        next === undefined ||
+        next === '\n' ||
+        next === '\r' ||
+        next === ' ' ||
+        next === '\t'
+      ) {
+        return idx;
+      }
+      cursor = idx + 3;
+    }
+    return -1;
+  }
+
+  private emitDiagramFence(content: string): void {
+    if (content.length > this.MAX_DIAGRAM_CHARS) {
+      this.emitEvent({
+        event: 'delta',
+        data: {
+          text: '\n*Diagram output too large to render safely. Showing text only.*\n',
+        },
+      });
+      return;
+    }
+    const fence = '```ageaf-diagram\n' + content + '\n```\n';
+    this.emitEvent({ event: 'delta', data: { text: fence } });
   }
 }
 
