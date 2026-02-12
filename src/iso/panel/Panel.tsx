@@ -340,6 +340,20 @@ const PROVIDER_DISPLAY = {
   pi: { label: 'BYOK' },
 } as const;
 
+/** Tips shown in the header ticker, cycling automatically. */
+const TIPS = [
+  '⌘K to focus the input',
+  'Enter to send a message',
+  'Esc to cancel a response',
+  '@ to mention files',
+  '/ to browse workflows',
+  'Select text → Rewrite it',
+  'Attach PDFs & docs',
+  'Switch providers via + menu',
+  'Shift+Enter for new line',
+  'Thinking mode for harder tasks',
+];
+
 /** Maximum number of \\input-referenced files to attach as read-only context. */
 const MAX_INPUT_REFERENCES = 20;
 
@@ -690,6 +704,7 @@ const Panel = () => {
   >(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [yoloMode, setYoloMode] = useState(true);
+  const [tipIndex, setTipIndex] = useState(0);
   const [copiedItems, setCopiedItems] = useState<Record<string, boolean>>({});
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>(
     []
@@ -1195,6 +1210,15 @@ const Panel = () => {
         resizeFrameRef.current = null;
       }
     };
+  }, []);
+
+  // Auto-cycle header tips (rule 5.1: tipDirection derived from tipIndex)
+  const tipDirection = tipIndex % 2 === 0 ? 'up' : 'down';
+  useEffect(() => {
+    const id = setInterval(() => {
+      setTipIndex((prev) => (prev + 1) % TIPS.length);
+    }, 8000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
@@ -8384,6 +8408,14 @@ const Panel = () => {
               >
                 ?
               </a>
+            </div>
+            <div
+              class={`ageaf-tips ageaf-tips--${tipDirection}`}
+              key={tipIndex}
+              aria-live="polite"
+              aria-label="Tip"
+            >
+              {TIPS[tipIndex]}
             </div>
           </header>
         ) : null}

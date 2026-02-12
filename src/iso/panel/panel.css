@@ -267,11 +267,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   padding: 10px 16px;
   border-bottom: 1px solid var(--ageaf-panel-border);
   background: transparent;
   min-width: 0;
-  gap: 10px;
+  column-gap: 10px;
+  row-gap: 2px;
 }
 
 .ageaf-panel__header-actions {
@@ -300,6 +302,49 @@
 .ageaf-panel__help:hover {
   border-color: var(--ageaf-panel-accent);
   background: var(--ageaf-panel-accent-soft);
+}
+
+/* ── Tips ticker ── */
+.ageaf-tips {
+  width: 100%;
+  overflow: hidden;
+  height: 16px;
+  font-size: 11px;
+  line-height: 16px;
+  color: rgba(245, 158, 11, 0.7);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: right;
+}
+
+.ageaf-tips--up {
+  animation: ageaf-tip-up 0.35s ease both;
+}
+
+.ageaf-tips--down {
+  animation: ageaf-tip-down 0.35s ease both;
+}
+
+@keyframes ageaf-tip-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ageaf-tip-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .ageaf-panel__logo {
