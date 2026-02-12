@@ -9509,7 +9509,7 @@ const Panel = () => {
                       </label>
                       <select
                         id="ageaf-skill-trust-mode"
-                        class="ageaf-settings__select"
+                        class="ageaf-settings__input"
                         value={settings.skillTrustMode ?? 'verified'}
                         onChange={(event) =>
                           updateSettings({
