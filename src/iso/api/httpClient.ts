@@ -411,6 +411,7 @@ export async function fetchHostHealth(options: Options) {
 
 export type HostHealthResponse = {
   status: string;
+  startedAt?: string;
   // Present on current host implementation; optional for forwards/backwards compatibility.
   claude?: {
     configured?: boolean;
@@ -453,7 +454,7 @@ export async function fetchPiRuntimeMetadata(options: Options) {
 
 export async function updatePiRuntimePreferences(
   options: Options,
-  payload: { provider?: string | null; model?: string | null; thinkingLevel?: string | null }
+  payload: { provider?: string | null; model?: string | null; thinkingLevel?: string | null; skillTrustMode?: string | null }
 ) {
   if (!options.hostUrl) {
     throw new Error('Host URL not configured');
@@ -477,6 +478,7 @@ export async function updatePiRuntimePreferences(
     currentModel: string | null;
     currentThinkingLevel: string;
     thinkingLevels?: Array<{ id: string; label: string }>;
+    skillTrustMode?: string;
   }>;
 }
 

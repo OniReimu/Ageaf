@@ -796,6 +796,8 @@ const Panel = () => {
   const lastHostOkAtRef = useRef(0);
   const lastRuntimeOkAtRef = useRef(0);
   const lastCodexMetadataCheckAtRef = useRef(0);
+  const lastSyncedTrustModeRef = useRef<string | null>(null);
+  const lastHostStartedAtRef = useRef<string | null>(null);
   const metadataCacheRef = useRef<{
     claude?: {
       models: RuntimeModel[];
@@ -1261,6 +1263,22 @@ const Panel = () => {
     const hostConnected = isFresh(lastHostOkAtRef.current);
     let runtimeWorking = false;
 
+    // Detect host restart via startedAt — reset trust mode sync so preferences re-sync.
+    // This catches brief restarts (<15s) where hostConnected never goes false.
+    if (healthData?.startedAt && healthData.startedAt !== lastHostStartedAtRef.current) {
+      if (lastHostStartedAtRef.current !== null) {
+        // Host identity changed — force re-sync
+        lastSyncedTrustModeRef.current = null;
+      }
+      lastHostStartedAtRef.current = healthData.startedAt;
+    }
+
+    // Also reset on full disconnect (backward compat with hosts without startedAt)
+    if (!hostConnected) {
+      lastSyncedTrustModeRef.current = null;
+      lastHostStartedAtRef.current = null;
+    }
+
     if (hostConnected) {
       if (chatProvider === 'claude') {
         // IMPORTANT: do NOT call /v1/runtime/claude/metadata here.
@@ -1276,6 +1294,17 @@ const Panel = () => {
         const configured = Boolean(healthData?.pi?.configured);
         if (configured) {
           lastRuntimeOkAtRef.current = now;
+
+          // Sync skillTrustMode to host (value-tracked: re-syncs on host restart or value change)
+          const persistedTrustMode = options.skillTrustMode ?? 'verified';
+          if (persistedTrustMode !== lastSyncedTrustModeRef.current) {
+            try {
+              await updatePiRuntimePreferences(options, { skillTrustMode: persistedTrustMode });
+              lastSyncedTrustModeRef.current = persistedTrustMode;
+            } catch {
+              // Leave as-is — next health check retries
+            }
+          }
         }
         runtimeWorking = configured || isFresh(lastRuntimeOkAtRef.current);
       } else {
@@ -7778,6 +7807,14 @@ const Panel = () => {
       invalidateOptionsCache();
       setSettingsMessage('Saved');
       void refreshContextUsage({ force: true });
+
+      // Sync skillTrustMode to host (fire-and-forget, non-blocking)
+      if (settings.skillTrustMode) {
+        updatePiRuntimePreferences(settings, { skillTrustMode: settings.skillTrustMode }).then(
+          () => { lastSyncedTrustModeRef.current = settings.skillTrustMode ?? null; },
+          (err) => { console.warn('[Ageaf] Failed to sync skillTrustMode:', err); },
+        );
+      }
     } catch (error) {
       if (
         error instanceof Error &&
@@ -9461,6 +9498,32 @@ const Panel = () => {
                       />
                       <p class="ageaf-settings__hint">
                         Patterns to block on Unix, one per line. Supports regex.
+                      </p>
+
+                      <label
+                        class="ageaf-settings__label"
+                        for="ageaf-skill-trust-mode"
+                        style={{ marginTop: '16px' }}
+                      >
+                        Skill Discovery Trust Mode
+                      </label>
+                      <select
+                        id="ageaf-skill-trust-mode"
+                        class="ageaf-settings__select"
+                        value={settings.skillTrustMode ?? 'verified'}
+                        onChange={(event) =>
+                          updateSettings({
+                            skillTrustMode: (event.target as HTMLSelectElement).value as 'verified' | 'open',
+                          })
+                        }
+                      >
+                        <option value="verified">Verified only (recommended)</option>
+                        <option value="open">Open ecosystem (any source)</option>
+                      </select>
+                      <p class="ageaf-settings__hint">
+                        Controls which skill sources are allowed when discovering
+                        new skills. Verified restricts to trusted publishers
+                        (Anthropic, Vercel).
                       </p>
                     </div>
                   ) : null}

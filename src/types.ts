@@ -58,6 +58,7 @@ export interface Options {
   showThinkingAndTools?: boolean;
   debugCliEvents?: boolean;
   surroundingContextLimit?: number;
+  skillTrustMode?: 'verified' | 'open';
 }
 export interface StreamChunk {
   kind: "token" | "error",

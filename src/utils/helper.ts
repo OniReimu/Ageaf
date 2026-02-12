@@ -76,6 +76,8 @@ function applyOptionDefaults(input: Options): { options: Options; hadLegacyKeys:
   }
   if (options.debugCliEvents === undefined) options.debugCliEvents = false;
 
+  if (!options.skillTrustMode) options.skillTrustMode = 'verified';
+
   return { options, hadLegacyKeys };
 }
 

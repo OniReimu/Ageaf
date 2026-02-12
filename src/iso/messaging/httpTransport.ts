@@ -55,7 +55,7 @@ export function httpTransport(options: Options): Transport {
     fetchPiRuntimeMetadata: () => httpFetchPiRuntimeMetadata(options),
 
     updatePiRuntimePreferences: (
-      payload: { provider?: string | null; model?: string | null; thinkingLevel?: string | null }
+      payload: { provider?: string | null; model?: string | null; thinkingLevel?: string | null; skillTrustMode?: string | null }
     ) => httpUpdatePiRuntimePreferences(options, payload),
 
     fetchPiRuntimeContextUsage: (

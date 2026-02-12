@@ -47,11 +47,13 @@ export type Transport = {
     provider?: string | null;
     model?: string | null;
     thinkingLevel?: string | null;
+    skillTrustMode?: string | null;
   }) => Promise<{
     currentProvider: string | null;
     currentModel: string | null;
     currentThinkingLevel: string;
     thinkingLevels?: Array<{ id: string; label: string }>;
+    skillTrustMode?: string;
   }>;
   fetchPiRuntimeContextUsage: (conversationId?: string) => Promise<PiContextUsageResponse>;
   fetchHostHealth: () => Promise<HostHealthResponse>;
