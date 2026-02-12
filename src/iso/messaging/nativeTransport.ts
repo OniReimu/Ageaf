@@ -235,6 +235,7 @@ export function nativeTransport(_options: Options): Transport {
       provider?: string | null;
       model?: string | null;
       thinkingLevel?: string | null;
+      skillTrustMode?: string | null;
     }) {
       const response = await sendNativeRequest({
         id: crypto.randomUUID(),
@@ -246,6 +247,7 @@ export function nativeTransport(_options: Options): Transport {
         currentModel: string | null;
         currentThinkingLevel: string;
         thinkingLevels?: Array<{ id: string; label: string }>;
+        skillTrustMode?: string;
       };
     },
 

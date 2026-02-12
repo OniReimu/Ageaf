@@ -20,6 +20,11 @@ test('GET /v1/health returns ok', async () => {
     const body = await response.json();
     assert.equal(body.status, 'ok');
     assert.ok(body.claude);
+
+    // startedAt should be a valid ISO timestamp (for host restart detection)
+    assert.ok(typeof body.startedAt === 'string', 'startedAt should be a string');
+    const parsed = Date.parse(body.startedAt);
+    assert.ok(!isNaN(parsed), 'startedAt should be a valid ISO date');
   } finally {
     await server.close();
   }

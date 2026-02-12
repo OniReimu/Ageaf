@@ -136,6 +136,7 @@ export function registerRuntime(server: FastifyInstance) {
       provider?: string | null;
       model?: string | null;
       thinkingLevel?: string | null;
+      skillTrustMode?: string | null;
     };
 
     const preferences = updatePiPreferences(body ?? {});
@@ -157,6 +158,7 @@ export function registerRuntime(server: FastifyInstance) {
       currentModel,
       currentThinkingLevel: finalPreferences.thinkingLevel,
       thinkingLevels,
+      skillTrustMode: finalPreferences.skillTrustMode,
     });
   });
 

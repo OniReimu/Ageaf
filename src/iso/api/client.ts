@@ -93,12 +93,13 @@ export async function fetchPiRuntimeMetadata(options: Options): Promise<PiRuntim
 
 export async function updatePiRuntimePreferences(
   options: Options,
-  payload: { provider?: string | null; model?: string | null; thinkingLevel?: string | null }
+  payload: { provider?: string | null; model?: string | null; thinkingLevel?: string | null; skillTrustMode?: string | null }
 ): Promise<{
   currentProvider: string | null;
   currentModel: string | null;
   currentThinkingLevel: string;
   thinkingLevels?: Array<{ id: string; label: string }>;
+  skillTrustMode?: string;
 }> {
   return createTransport(options).updatePiRuntimePreferences(payload);
 }

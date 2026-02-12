@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
@@ -11,11 +12,29 @@ export type SkillEntry = {
   path: string;
 };
 
+export type DiscoveredSkillEntry = SkillEntry & {
+  discoveredAt: string;
+  trustLevel: 'verified' | 'community';
+  registryUrl?: string;
+};
+
 export type SkillsManifest = { version: number; skills: SkillEntry[] };
+
+export type DiscoveredManifest = { version: number; skills: DiscoveredSkillEntry[] };
 
 export type SkillFrontmatter = {
   allowedTools?: string[];
 };
+
+export type ValidatedSkillContent = {
+  name: string | null;
+  description: string;
+  allowedTools: string[];
+};
+
+// Regex for valid skill/source names: lowercase alphanumeric with hyphens
+const VALID_NAME_REGEX = /^[a-z0-9][a-z0-9-]*$/;
+const VALID_SKILL_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 
 function resolveRepoRoot(): string {
   // Walk up from this file's directory until we find a directory containing package.json (host root),
@@ -47,12 +66,33 @@ function resolveManifestPath(): string {
 }
 
 function resolveSkillPath(skill: SkillEntry): string {
+  // Discovered skills are stored under ~/.ageaf/pi/skills/
+  if (skill.id.startsWith('discovered/')) {
+    return path.join(resolveDiscoveredDir(), skill.path);
+  }
   return process.env.AGEAF_SKILLS_DIR
     ? path.join(process.env.AGEAF_SKILLS_DIR, skill.path.replace(/^skills\//, ''))
     : path.join(resolveRepoRoot(), 'public', skill.path);
 }
 
-export function loadSkillsManifest(): SkillsManifest {
+// --- Discovered skills infrastructure ---
+
+export function resolveDiscoveredDir(): string {
+  if (process.env.AGEAF_DISCOVERED_SKILLS_DIR) {
+    return process.env.AGEAF_DISCOVERED_SKILLS_DIR;
+  }
+  return path.join(os.homedir(), '.ageaf', 'pi', 'skills');
+}
+
+function resolveDiscoveredManifestPath(): string {
+  return path.join(resolveDiscoveredDir(), 'discovered-manifest.json');
+}
+
+/**
+ * Load the static (bundled) skills manifest from public/skills/manifest.json.
+ * Exported so skillDiscovery.ts can search native skills independently.
+ */
+export function loadStaticManifest(): SkillsManifest {
   const manifestPath = resolveManifestPath();
   try {
     const raw = fs.readFileSync(manifestPath, 'utf8');
@@ -64,6 +104,169 @@ export function loadSkillsManifest(): SkillsManifest {
   } catch {
     return { version: 1, skills: [] };
   }
+}
+
+/**
+ * Load the discovered skills manifest from ~/.ageaf/pi/skills/discovered-manifest.json.
+ * Returns an empty manifest if the file doesn't exist or is invalid.
+ */
+export function loadDiscoveredManifest(): DiscoveredManifest {
+  const manifestPath = resolveDiscoveredManifestPath();
+  try {
+    const raw = fs.readFileSync(manifestPath, 'utf8');
+    const parsed = JSON.parse(raw) as DiscoveredManifest;
+    if (!Array.isArray(parsed.skills)) {
+      return { version: 1, skills: [] };
+    }
+    return parsed;
+  } catch {
+    return { version: 1, skills: [] };
+  }
+}
+
+/**
+ * Load merged manifest (static + discovered). Static skills take precedence on name conflict.
+ * This is the main entry point used by run.ts and buildSkillsGuidance().
+ */
+export function loadSkillsManifest(): SkillsManifest {
+  const staticManifest = loadStaticManifest();
+  const discoveredManifest = loadDiscoveredManifest();
+
+  if (discoveredManifest.skills.length === 0) {
+    return staticManifest;
+  }
+
+  // Precedence: static > discovered (first by name wins among discovered).
+  // Discovered entries are sorted by id (alphabetical by source) in addDiscoveredSkill(),
+  // so the first occurrence of a name is deterministic.
+  const staticNames = new Set(staticManifest.skills.map((s) => s.name.toLowerCase()));
+  const seenDiscoveredNames = new Set<string>();
+  const dedupedDiscovered = discoveredManifest.skills.filter((s) => {
+    const lower = s.name.toLowerCase();
+    if (staticNames.has(lower) || seenDiscoveredNames.has(lower)) return false;
+    seenDiscoveredNames.add(lower);
+    return true;
+  });
+  const mergedSkills = [
+    ...staticManifest.skills,
+    ...dedupedDiscovered,
+  ];
+
+  return { version: 1, skills: mergedSkills };
+}
+
+// In-process promise chain to prevent race conditions on concurrent manifest writes
+let manifestWriteChain: Promise<void> = Promise.resolve();
+
+/**
+ * Add a discovered skill to the local cache directory.
+ * Writes SKILL.md to ~/.ageaf/pi/skills/{source}/{name}/SKILL.md
+ * and updates discovered-manifest.json.
+ */
+export async function addDiscoveredSkill(
+  content: string,
+  meta: {
+    name: string;
+    source: string;
+    trustLevel: 'verified' | 'community';
+    registryUrl?: string;
+    description?: string;
+  },
+): Promise<DiscoveredSkillEntry> {
+  // Validate name and source to prevent path traversal
+  if (!VALID_NAME_REGEX.test(meta.source)) {
+    throw new Error(`Invalid source name: ${meta.source} — must match ${VALID_NAME_REGEX}`);
+  }
+  if (!VALID_SKILL_NAME_REGEX.test(meta.name)) {
+    throw new Error(`Invalid skill name: ${meta.name} — must match ${VALID_SKILL_NAME_REGEX}`);
+  }
+
+  const discoveredDir = resolveDiscoveredDir();
+  const skillDir = path.join(discoveredDir, meta.source, meta.name);
+  const skillPath = path.join(skillDir, 'SKILL.md');
+
+  // Build the entry
+  const entry: DiscoveredSkillEntry = {
+    id: `discovered/${meta.source}/${meta.name}`,
+    name: meta.name,
+    description: meta.description ?? '',
+    tags: [],
+    path: `${meta.source}/${meta.name}/SKILL.md`,
+    discoveredAt: new Date().toISOString(),
+    trustLevel: meta.trustLevel,
+    registryUrl: meta.registryUrl,
+  };
+
+  // Chain writes to prevent concurrent manifest corruption
+  const writeOp = manifestWriteChain.then(async () => {
+    // Write SKILL.md
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(skillPath, content, 'utf8');
+
+    // Read-modify-write discovered-manifest.json
+    const manifest = loadDiscoveredManifest();
+    // Remove existing entry with same id if present (update case)
+    manifest.skills = manifest.skills.filter((s) => s.id !== entry.id);
+    manifest.skills.push(entry);
+    manifest.skills.sort((a, b) => a.id.localeCompare(b.id));
+
+    const manifestPath = resolveDiscoveredManifestPath();
+    fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+  });
+
+  manifestWriteChain = writeOp.catch(() => {});
+  await writeOp;
+
+  return entry;
+}
+
+/**
+ * Validate SKILL.md content: checks frontmatter structure, requires description,
+ * returns name (optional) and allowedTools.
+ * Throws on structural failures (missing delimiters, unparseable YAML, missing description).
+ */
+export function validateSkillContent(raw: string): ValidatedSkillContent {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('---')) {
+    throw new Error('Invalid SKILL.md: missing opening --- frontmatter delimiter');
+  }
+
+  const endIdx = trimmed.indexOf('\n---', 3);
+  if (endIdx < 0) {
+    throw new Error('Invalid SKILL.md: missing closing --- frontmatter delimiter');
+  }
+
+  const yamlStr = trimmed.slice(3, endIdx).trim();
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = YAML.parse(yamlStr) as Record<string, unknown>;
+  } catch (err) {
+    throw new Error(`Invalid SKILL.md: YAML parse error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Invalid SKILL.md: frontmatter is not an object');
+  }
+
+  // Description is required
+  const description = parsed.description;
+  if (typeof description !== 'string' || !description.trim()) {
+    throw new Error('Invalid SKILL.md: missing or empty "description" in frontmatter');
+  }
+
+  // Name is optional — returned as string | null
+  const name = typeof parsed.name === 'string' && parsed.name.trim()
+    ? parsed.name.trim()
+    : null;
+
+  // Extract allowed-tools via existing logic
+  const tools = parsed['allowed-tools'];
+  const allowedTools = Array.isArray(tools)
+    ? tools.filter((t): t is string => typeof t === 'string')
+    : [];
+
+  return { name, description: description.trim(), allowedTools };
 }
 
 /**
@@ -141,10 +344,11 @@ export function buildSkillsGuidance(
   }
 
   const activeSet = activeToolNames ? new Set(activeToolNames) : null;
+  const hasFindSkill = activeSet?.has('find_skill') ?? false;
 
   const lines = [
     'Available Skills (CRITICAL):',
-    '- Ageaf supports built-in skill directives.',
+    '- Ageaf supports skill directives.',
     '- Available skills include:',
   ];
 
@@ -169,9 +373,23 @@ export function buildSkillsGuidance(
   lines.push(
     '- If the user includes a /skillName directive, you MUST follow that skill for this request.',
     '- Skill text may be injected under "Additional instructions" for the request; do NOT try to locate skills on disk.',
-    '- These skills are part of the Ageaf system and do NOT require external installation.',
     '- Do not announce skill-loading or mention internal skill frameworks; just apply the skill.',
   );
+
+  // When find_skill is available, add skill discovery guidance
+  if (hasFindSkill) {
+    lines.push(
+      '',
+      'Skill Discovery:',
+      '- If a task would benefit from a specialized skill not listed above, use the find_skill tool to search for one.',
+      '- The find_skill tool searches native skills first, then previously installed skills, then online registries (npm, GitHub).',
+      '- If no skill is found, use the create_skill tool to author one on the fly.',
+    );
+  } else {
+    lines.push(
+      '- These skills are part of the Ageaf system and do NOT require external installation.',
+    );
+  }
 
   return lines.join('\n');
 }
