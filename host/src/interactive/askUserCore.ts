@@ -99,6 +99,53 @@ export function resolveAskUserRequest(
   return true;
 }
 
+// ─── Active Codex job tracking ───
+// Codex uses an out-of-process MCP stdio server that calls back via HTTP.
+// Since the stdio server doesn't have ALS context, we correlate callbacks
+// using the Codex CLI's process ID: the stdio server sends process.ppid
+// and the host matches it against the registered appServer PID.
+//
+// Multiple jobs can share the same Codex CLI PID (app-servers are reused by
+// config key), so we store a stack per PID. The runtime enforces a per-PID
+// turn lock (see run.ts:acquirePidTurnLock) that serializes concurrent turns
+// sharing the same app-server, so at most one entry per PID is active at a
+// time. The stack is a defensive safety net, not a concurrency mechanism.
+const activeCodexJobs = new Map<number, string[]>(); // Codex CLI PID → stack of jobIds
+
+/** Mark a Codex job as actively executing a turn. Keyed by the Codex CLI PID. */
+export function registerActiveCodexJob(pid: number, jobId: string): void {
+  const stack = activeCodexJobs.get(pid);
+  if (stack) {
+    stack.push(jobId);
+  } else {
+    activeCodexJobs.set(pid, [jobId]);
+  }
+}
+
+/** Remove a specific Codex job from the active set (turn completed). */
+export function unregisterActiveCodexJob(pid: number, jobId: string): void {
+  const stack = activeCodexJobs.get(pid);
+  if (!stack) return;
+  const idx = stack.indexOf(jobId);
+  if (idx >= 0) stack.splice(idx, 1);
+  if (stack.length === 0) activeCodexJobs.delete(pid);
+}
+
+/** Resolve a Codex job ID by the Codex CLI PID (from stdio server's process.ppid). */
+export function resolveCodexJobByPid(ppid: number): string | null {
+  const stack = activeCodexJobs.get(ppid);
+  return stack?.length ? stack[stack.length - 1] : null;
+}
+
+/** Fallback: get any active Codex job ID when PID is unavailable. */
+export function getActiveCodexJobId(): string | null {
+  let last: string | null = null;
+  for (const stack of activeCodexJobs.values()) {
+    if (stack.length > 0) last = stack[stack.length - 1];
+  }
+  return last;
+}
+
 /**
  * Called by Pi tool execute() and Claude MCP handler.
  * Reads jobId from AsyncLocalStorage — no module-level state needed.

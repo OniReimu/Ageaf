@@ -23,6 +23,30 @@ import {
   parseBlockedCommandPatterns,
   type CompiledBlockedCommandPattern,
 } from '../claude/safety.js';
+import { registerActiveCodexJob, unregisterActiveCodexJob } from '../../interactive/askUserCore.js';
+
+// ─── Per-PID turn lock ───
+// The ask_user stdio MCP server identifies its parent job via process.ppid only.
+// If two concurrent turns share the same Codex CLI PID (app-server reuse), the
+// host can't distinguish which turn triggered the callback. This lock serializes
+// turns per PID so at most one job is registered (and actively turning) per PID.
+const pidTurnLocks = new Map<number, Promise<void>>();
+
+function acquirePidTurnLock(pid: number): { acquired: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const prev = pidTurnLocks.get(pid) ?? Promise.resolve();
+  const tail = prev.then(() => gate);
+  pidTurnLocks.set(pid, tail);
+  return {
+    acquired: prev,
+    release: () => {
+      release();
+      // Clean up if no subsequent acquirer has chained onto this PID
+      if (pidTurnLocks.get(pid) === tail) pidTurnLocks.delete(pid);
+    },
+  };
+}
 
 // Debug logging to console (enabled via AGEAF_DEBUG_CLI=true)
 const debugToConsole = process.env.AGEAF_DEBUG_CLI === 'true';
@@ -638,6 +662,7 @@ function buildPrompt(
     '  • /ml-paper-writing - Write publication-ready ML/AI papers for NeurIPS, ICML, ICLR, ACL, AAAI, COLM',
     '  • /doc-coauthoring - Structured workflow for co-authoring documentation and technical specs',
     '  • /mermaid - Render Mermaid diagrams (flowcharts, sequence, state, class, ER) via built-in MCP tool',
+    '  • /venue-compliance - Check LaTeX manuscript compliance with venue submission requirements (uses mcp__ageaf-interactive__ask_user for interactive Q&A)',
     '- If the user includes a /skillName directive, you MUST follow that skill for this request.',
     '- Skill text (instructions) may be injected under "Additional instructions" for the request; do NOT try to locate skills on disk.',
     '- These skills are part of the Ageaf system and do NOT require external installation.',
@@ -663,27 +688,28 @@ function buildPrompt(
   return baseParts.join('\n\n');
 }
 
-// Path to the standalone MCP stdio server for Mermaid rendering.
+// Paths to standalone MCP stdio servers.
 // In production (compiled JS): import.meta.url is in dist/src/runtimes/codex/run.js
 // In dev mode (tsx):           import.meta.url is in src/runtimes/codex/run.ts
-// We always need the compiled file at dist/src/mcp/mermaidStdioServer.js.
-function resolveMermaidStdioServerPath(): string {
+// We always need the compiled files at dist/src/mcp/*.js.
+function resolveStdioServerPath(filename: string): string {
   const thisFile = fileURLToPath(import.meta.url);
   const thisDir = path.dirname(thisFile);
   // Walk up to find the host/ root (contains package.json)
   let dir = thisDir;
   for (let i = 0; i < 10; i++) {
     if (fs.existsSync(path.join(dir, 'package.json'))) {
-      return path.join(dir, 'dist', 'src', 'mcp', 'mermaidStdioServer.js');
+      return path.join(dir, 'dist', 'src', 'mcp', filename);
     }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
   // Fallback: relative path from this file (works in production)
-  return path.resolve(thisDir, '../../mcp/mermaidStdioServer.js');
+  return path.resolve(thisDir, `../../mcp/${filename}`);
 }
-const mermaidStdioServerPath = resolveMermaidStdioServerPath();
+const mermaidStdioServerPath = resolveStdioServerPath('mermaidStdioServer.js');
+const askUserStdioServerPath = resolveStdioServerPath('askUserStdioServer.js');
 
 // One-time MCP registration via `codex mcp add` (idempotent).
 // The `config` field in thread/start does NOT register MCP servers,
@@ -691,7 +717,7 @@ const mermaidStdioServerPath = resolveMermaidStdioServerPath();
 const execFileAsync = promisify(execFile);
 const mcpRegisteredForCli = new Set<string>();
 
-async function ensureMermaidMcpRegistered(
+async function ensureMcpServersRegistered(
   cliPath?: string,
   envVars?: string
 ): Promise<void> {
@@ -705,7 +731,6 @@ async function ensureMermaidMcpRegistered(
   const command =
     resolvedCliPath && resolvedCliPath.length > 0 ? resolvedCliPath : 'codex';
   if (mcpRegisteredForCli.has(command)) return;
-  mcpRegisteredForCli.add(command);
 
   const customEnv = parseEnvironmentVariables(envVars ?? '');
   const env = {
@@ -714,24 +739,35 @@ async function ensureMermaidMcpRegistered(
     PATH: getEnhancedPath(customEnv.PATH, resolvedCliPath),
   };
 
-  try {
-    await execFileAsync(
-      command,
-      ['mcp', 'add', 'ageaf-mermaid', '--', 'node', mermaidStdioServerPath],
-      { timeout: 15000, env }
-    );
-    if (debugToConsole) {
-      console.log('[CODEX DEBUG] registered ageaf-mermaid MCP server via codex mcp add');
-    }
-  } catch (err) {
-    // Silently ignore — old CLI versions may not support `mcp add`.
-    // The model will fall back to outputting raw mermaid code.
-    if (debugToConsole) {
-      console.log('[CODEX DEBUG] codex mcp add failed (non-fatal)', {
-        error: err instanceof Error ? err.message : String(err),
-      });
+  const servers = [
+    { name: 'ageaf-mermaid', path: mermaidStdioServerPath },
+    { name: 'ageaf-interactive', path: askUserStdioServerPath },
+  ];
+
+  let allSucceeded = true;
+  for (const srv of servers) {
+    try {
+      await execFileAsync(
+        command,
+        ['mcp', 'add', srv.name, '--', 'node', srv.path],
+        { timeout: 15000, env }
+      );
+      if (debugToConsole) {
+        console.log(`[CODEX DEBUG] registered ${srv.name} MCP server via codex mcp add`);
+      }
+    } catch (err) {
+      allSucceeded = false;
+      // Silently ignore — old CLI versions may not support `mcp add`.
+      if (debugToConsole) {
+        console.log(`[CODEX DEBUG] codex mcp add ${srv.name} failed (non-fatal)`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
+
+  // Only mark as registered if all servers succeeded — allows retry on transient failure
+  if (allSucceeded) mcpRegisteredForCli.add(command);
 }
 
 export async function runCodexJob(
@@ -819,9 +855,9 @@ export async function runCodexJob(
     typeof runtime.reasoningEffort === 'string' && runtime.reasoningEffort.trim()
       ? runtime.reasoningEffort.trim()
       : null;
-  // Pre-register Mermaid MCP server before starting app-server.
+  // Pre-register MCP servers before starting app-server.
   // This is idempotent and runs `codex mcp add` once per CLI path.
-  await ensureMermaidMcpRegistered(runtime.cliPath, runtime.envVars);
+  await ensureMcpServersRegistered(runtime.cliPath, runtime.envVars);
 
   const appServer = await getCodexAppServer({
     cliPath: runtime.cliPath,
@@ -1886,174 +1922,194 @@ export async function runCodexJob(
     });
   }
 
-  emitTrace('Codex: sending turn/start request');
-  if (debugToConsole) {
-    debugLog('sending turn/start', {
-      ...(options?.jobId ? { jobId: options.jobId } : {}),
-      threadId,
-      approvalPolicy: effectiveApprovalPolicy,
-      blocklistEnabled: compiledBlockedPatterns.length > 0,
-      model: model ?? undefined,
-      effort: effort ?? undefined,
-    });
+  // Track active Codex job for ask_user HTTP callback correlation.
+  // Keyed by the Codex CLI PID so the stdio server can identify the job via process.ppid.
+  // A per-PID turn lock serializes concurrent turns that share the same app-server,
+  // ensuring at most one registered job per PID during active turns.
+  const codexJobId = options?.jobId;
+  const codexCliPid = appServer.getPid();
+
+  let releasePidLock: (() => void) | null = null;
+  if (codexCliPid && codexJobId) {
+    const lock = acquirePidTurnLock(codexCliPid);
+    await lock.acquired;
+    releasePidLock = lock.release;
+    registerActiveCodexJob(codexCliPid, codexJobId);
   }
-  const turnResponse = await appServer.request(
-    'turn/start',
-    {
-      threadId,
-      input,
-      cwd,
-      approvalPolicy: effectiveApprovalPolicy,
-      sandboxPolicy: { type: 'readOnly' },
-      model,
-      effort,
-      summary: null,
-      outputSchema: null,
-      collaborationMode: null,
-    },
-    { timeoutMs: 30000 }
-  );
-  lastMessageTime = Date.now();
-  emitTrace('Codex: turn/start acknowledged', {
-    hasResult: Boolean((turnResponse as any)?.result),
-    hasError: Boolean((turnResponse as any)?.error),
-  });
-  if (debugToConsole) {
-    debugLog('turn/start acknowledged', {
-      ...(options?.jobId ? { jobId: options.jobId } : {}),
+
+  try {
+    emitTrace('Codex: sending turn/start request');
+    if (debugToConsole) {
+      debugLog('sending turn/start', {
+        ...(options?.jobId ? { jobId: options.jobId } : {}),
+        threadId,
+        approvalPolicy: effectiveApprovalPolicy,
+        blocklistEnabled: compiledBlockedPatterns.length > 0,
+        model: model ?? undefined,
+        effort: effort ?? undefined,
+      });
+    }
+    const turnResponse = await appServer.request(
+      'turn/start',
+      {
+        threadId,
+        input,
+        cwd,
+        approvalPolicy: effectiveApprovalPolicy,
+        sandboxPolicy: { type: 'readOnly' },
+        model,
+        effort,
+        summary: null,
+        outputSchema: null,
+        collaborationMode: null,
+      },
+      { timeoutMs: 30000 }
+    );
+    lastMessageTime = Date.now();
+    emitTrace('Codex: turn/start acknowledged', {
       hasResult: Boolean((turnResponse as any)?.result),
       hasError: Boolean((turnResponse as any)?.error),
     });
-  }
-
-  if (!done && turnResponse && Object.prototype.hasOwnProperty.call(turnResponse, 'error')) {
-    done = true;
-    const errorMessage = String((turnResponse as any).error?.message ?? (turnResponse as any).error ?? 'Turn failed');
-    emitEvent({
-      event: 'done',
-      data: { status: 'error', message: errorMessage, threadId },
-    });
-    unsubscribe();
-    resolveDone();
-  }
-
-  // Ensure the job never hangs forever if the Codex CLI stalls (common near 100% context).
-  let heartbeatId: NodeJS.Timeout | null = null;
-  let timeoutId: NodeJS.Timeout | null = null;
-  const timeoutPromise = new Promise<void>((resolve) => {
-    if (!Number.isFinite(TURN_TIMEOUT_MS) || TURN_TIMEOUT_MS <= 0) return;
-    timeoutId = setTimeout(() => resolve(), TURN_TIMEOUT_MS);
-  });
-
-  heartbeatId = setInterval(() => {
-    if (done) return;
-    const now = Date.now();
-    if (now - lastHeartbeatAt < HEARTBEAT_MS) return;
-    lastHeartbeatAt = now;
-    const totalSec = Math.round((now - turnStartTime) / 1000);
-    const idleSec = Math.round((now - lastMessageTime) / 1000);
-    emitEvent({
-      event: 'plan',
-      data: { message: `Waiting for Codex… (${totalSec}s, last event ${idleSec}s ago)` },
-    });
-
-    // Emit richer diagnostics to trace (debug-only) every ~30s.
-    if (debugCliEvents && now - lastTraceDiagnosticsAt >= 30000) {
-      lastTraceDiagnosticsAt = now;
-      emitTrace('Codex: waiting diagnostics', {
-        threadId,
-        totalSec,
-        idleSec,
-        anyIdleSec: Math.round((now - diagnostics.lastAnyMessageTime) / 1000),
-        turnTimeoutSec: Number.isFinite(TURN_TIMEOUT_MS) ? Math.round(TURN_TIMEOUT_MS / 1000) : 0,
-        seenTurnStarted: diagnostics.seenTurnStarted,
-        seenAnyDelta: diagnostics.seenAnyDelta,
-        seenTurnCompleted: diagnostics.seenTurnCompleted,
-        totalEvents: diagnostics.totalEvents,
-        matchedEvents: diagnostics.matchedEvents,
-        filteredEvents: diagnostics.filteredEvents,
-        missingThreadIdEvents: diagnostics.missingThreadIdEvents,
-        lastAnyMethod: diagnostics.lastAnyMethod || undefined,
-        lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
-        ...(diagnostics.lastRateLimitSummary
-          ? {
-            lastRateLimit: diagnostics.lastRateLimitSummary,
-            rateLimitIdleSec: Math.round((now - diagnostics.lastRateLimitAt) / 1000),
-          }
-          : {}),
-        ...(diagnostics.lastStderrLine
-          ? {
-            lastStderr: redactTraceLine(diagnostics.lastStderrLine),
-            stderrIdleSec: Math.round((now - diagnostics.lastStderrAt) / 1000),
-          }
-          : {}),
-      });
-    }
-
-    if (debugToConsole && now - lastConsoleDiagnosticsAt >= 30000) {
-      lastConsoleDiagnosticsAt = now;
-      debugLog('waiting diagnostics', {
-        ...(options?.jobId ? { jobId: options.jobId } : {}),
-        threadId,
-        totalSec,
-        idleSec,
-        anyIdleSec: Math.round((now - diagnostics.lastAnyMessageTime) / 1000),
-        seenTurnStarted: diagnostics.seenTurnStarted,
-        seenAnyDelta: diagnostics.seenAnyDelta,
-        seenTurnCompleted: diagnostics.seenTurnCompleted,
-        totalEvents: diagnostics.totalEvents,
-        matchedEvents: diagnostics.matchedEvents,
-        filteredEvents: diagnostics.filteredEvents,
-        missingThreadIdEvents: diagnostics.missingThreadIdEvents,
-        lastAnyMethod: diagnostics.lastAnyMethod || undefined,
-        lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
-        ...(diagnostics.lastRateLimitSummary
-          ? {
-            lastRateLimit: diagnostics.lastRateLimitSummary,
-            rateLimitIdleSec: Math.round((now - diagnostics.lastRateLimitAt) / 1000),
-          }
-          : {}),
-        ...(diagnostics.lastStderrLine
-          ? {
-            lastStderr: redactTraceLine(diagnostics.lastStderrLine),
-            stderrIdleSec: Math.round((now - diagnostics.lastStderrAt) / 1000),
-          }
-          : {}),
-      });
-    }
-  }, HEARTBEAT_MS);
-
-  await Promise.race([donePromise, timeoutPromise]);
-  if (!done) {
-    done = true;
-    const seconds = Math.round(TURN_TIMEOUT_MS / 1000);
-    const last = diagnostics.lastMatchedMethod || diagnostics.lastAnyMethod || 'unknown';
-    emitEvent({
-      event: 'done',
-      data: {
-        status: 'error',
-        message: `Codex timed out after ${seconds}s (last event: ${last}). Try starting a new chat.`,
-        threadId,
-      },
-    });
-    emitTrace('Codex: timed out', {
-      threadId,
-      seconds,
-      lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
-      lastAnyMethod: diagnostics.lastAnyMethod || undefined,
-      ...(diagnostics.lastRateLimitSummary ? { lastRateLimit: diagnostics.lastRateLimitSummary } : {}),
-    });
     if (debugToConsole) {
-      debugLog('timed out', {
+      debugLog('turn/start acknowledged', {
         ...(options?.jobId ? { jobId: options.jobId } : {}),
+        hasResult: Boolean((turnResponse as any)?.result),
+        hasError: Boolean((turnResponse as any)?.error),
+      });
+    }
+
+    if (!done && turnResponse && Object.prototype.hasOwnProperty.call(turnResponse, 'error')) {
+      done = true;
+      const errorMessage = String((turnResponse as any).error?.message ?? (turnResponse as any).error ?? 'Turn failed');
+      emitEvent({
+        event: 'done',
+        data: { status: 'error', message: errorMessage, threadId },
+      });
+      unsubscribe();
+      resolveDone();
+    }
+
+    // Ensure the job never hangs forever if the Codex CLI stalls (common near 100% context).
+    let heartbeatId: NodeJS.Timeout | null = null;
+    let timeoutId: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<void>((resolve) => {
+      if (!Number.isFinite(TURN_TIMEOUT_MS) || TURN_TIMEOUT_MS <= 0) return;
+      timeoutId = setTimeout(() => resolve(), TURN_TIMEOUT_MS);
+    });
+
+    heartbeatId = setInterval(() => {
+      if (done) return;
+      const now = Date.now();
+      if (now - lastHeartbeatAt < HEARTBEAT_MS) return;
+      lastHeartbeatAt = now;
+      const totalSec = Math.round((now - turnStartTime) / 1000);
+      const idleSec = Math.round((now - lastMessageTime) / 1000);
+      emitEvent({
+        event: 'plan',
+        data: { message: `Waiting for Codex… (${totalSec}s, last event ${idleSec}s ago)` },
+      });
+
+      // Emit richer diagnostics to trace (debug-only) every ~30s.
+      if (debugCliEvents && now - lastTraceDiagnosticsAt >= 30000) {
+        lastTraceDiagnosticsAt = now;
+        emitTrace('Codex: waiting diagnostics', {
+          threadId,
+          totalSec,
+          idleSec,
+          anyIdleSec: Math.round((now - diagnostics.lastAnyMessageTime) / 1000),
+          turnTimeoutSec: Number.isFinite(TURN_TIMEOUT_MS) ? Math.round(TURN_TIMEOUT_MS / 1000) : 0,
+          seenTurnStarted: diagnostics.seenTurnStarted,
+          seenAnyDelta: diagnostics.seenAnyDelta,
+          seenTurnCompleted: diagnostics.seenTurnCompleted,
+          totalEvents: diagnostics.totalEvents,
+          matchedEvents: diagnostics.matchedEvents,
+          filteredEvents: diagnostics.filteredEvents,
+          missingThreadIdEvents: diagnostics.missingThreadIdEvents,
+          lastAnyMethod: diagnostics.lastAnyMethod || undefined,
+          lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
+          ...(diagnostics.lastRateLimitSummary
+            ? {
+              lastRateLimit: diagnostics.lastRateLimitSummary,
+              rateLimitIdleSec: Math.round((now - diagnostics.lastRateLimitAt) / 1000),
+            }
+            : {}),
+          ...(diagnostics.lastStderrLine
+            ? {
+              lastStderr: redactTraceLine(diagnostics.lastStderrLine),
+              stderrIdleSec: Math.round((now - diagnostics.lastStderrAt) / 1000),
+            }
+            : {}),
+        });
+      }
+
+      if (debugToConsole && now - lastConsoleDiagnosticsAt >= 30000) {
+        lastConsoleDiagnosticsAt = now;
+        debugLog('waiting diagnostics', {
+          ...(options?.jobId ? { jobId: options.jobId } : {}),
+          threadId,
+          totalSec,
+          idleSec,
+          anyIdleSec: Math.round((now - diagnostics.lastAnyMessageTime) / 1000),
+          seenTurnStarted: diagnostics.seenTurnStarted,
+          seenAnyDelta: diagnostics.seenAnyDelta,
+          seenTurnCompleted: diagnostics.seenTurnCompleted,
+          totalEvents: diagnostics.totalEvents,
+          matchedEvents: diagnostics.matchedEvents,
+          filteredEvents: diagnostics.filteredEvents,
+          missingThreadIdEvents: diagnostics.missingThreadIdEvents,
+          lastAnyMethod: diagnostics.lastAnyMethod || undefined,
+          lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
+          ...(diagnostics.lastRateLimitSummary
+            ? {
+              lastRateLimit: diagnostics.lastRateLimitSummary,
+              rateLimitIdleSec: Math.round((now - diagnostics.lastRateLimitAt) / 1000),
+            }
+            : {}),
+          ...(diagnostics.lastStderrLine
+            ? {
+              lastStderr: redactTraceLine(diagnostics.lastStderrLine),
+              stderrIdleSec: Math.round((now - diagnostics.lastStderrAt) / 1000),
+            }
+            : {}),
+        });
+      }
+    }, HEARTBEAT_MS);
+
+    await Promise.race([donePromise, timeoutPromise]);
+    if (!done) {
+      done = true;
+      const seconds = Math.round(TURN_TIMEOUT_MS / 1000);
+      const last = diagnostics.lastMatchedMethod || diagnostics.lastAnyMethod || 'unknown';
+      emitEvent({
+        event: 'done',
+        data: {
+          status: 'error',
+          message: `Codex timed out after ${seconds}s (last event: ${last}). Try starting a new chat.`,
+          threadId,
+        },
+      });
+      emitTrace('Codex: timed out', {
         threadId,
         seconds,
-        last,
+        lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
+        lastAnyMethod: diagnostics.lastAnyMethod || undefined,
         ...(diagnostics.lastRateLimitSummary ? { lastRateLimit: diagnostics.lastRateLimitSummary } : {}),
       });
+      if (debugToConsole) {
+        debugLog('timed out', {
+          ...(options?.jobId ? { jobId: options.jobId } : {}),
+          threadId,
+          seconds,
+          last,
+          ...(diagnostics.lastRateLimitSummary ? { lastRateLimit: diagnostics.lastRateLimitSummary } : {}),
+        });
+      }
     }
+    unsubscribe();
+    if (timeoutId) clearTimeout(timeoutId);
+    if (heartbeatId) clearInterval(heartbeatId);
+  } finally {
+    if (codexCliPid && codexJobId) unregisterActiveCodexJob(codexCliPid, codexJobId);
+    if (releasePidLock) releasePidLock();
   }
-  unsubscribe();
-  if (timeoutId) clearTimeout(timeoutId);
-  if (heartbeatId) clearInterval(heartbeatId);
 }
