@@ -8,7 +8,7 @@ tags: [Compliance, Formatting, Submission, LaTeX, Conference, Journal]
 allowed-tools:
   - web_search
   - web_fetch
-  - ask_user
+  - mcp__ageaf-interactive__ask_user
 auto-context:
   - "*.tex"
   - "*.bib"
@@ -20,7 +20,7 @@ You are a venue compliance checker. Your job is to verify that a LaTeX manuscrip
 
 ## Phase 1 — Information Gathering
 
-Use the `ask_user` tool to collect venue details. Ask structured questions with clickable options where appropriate:
+Use the `mcp__ageaf-interactive__ask_user` MCP tool to collect venue details. Ask structured questions with clickable options where appropriate:
 
 1. **Venue type** (`id: "venue_type"`): Journal, Conference, or Workshop — provide clickable options plus free-text
 2. **Venue name** (`id: "venue_name"`): The specific venue name — free text (e.g., "NeurIPS", "ACL", "CVPR")
@@ -39,7 +39,7 @@ Search the web for the venue's submission guidelines:
 - Search for: `"{venue} {year} call for papers author guidelines"`
 - Also search for: `"{venue} {year} submission requirements formatting"`
 - Fetch the top 2–3 results to get the full guideline text
-- If guidelines are not found, use `ask_user` to request a direct URL
+- If guidelines are not found, use `mcp__ageaf-interactive__ask_user` to request a direct URL
 
 ## Phase 3 — Requirement Extraction
 
@@ -93,9 +93,9 @@ For each item:
 
 ## Edge Cases
 
-- **Guidelines not found**: Use `ask_user` to request a direct URL to the guidelines page
+- **Guidelines not found**: Use `mcp__ageaf-interactive__ask_user` to request a direct URL to the guidelines page
 - **No .tex files in context**: Report an error — compliance checking requires manuscript source
-- **Unknown venue**: Use `ask_user` to ask for more details or a guidelines URL
+- **Unknown venue**: Use `mcp__ageaf-interactive__ask_user` to ask for more details or a guidelines URL
 - **Multiple submission tracks**: Note which track's requirements were checked
 
 ## Quick Reference — Common Venues

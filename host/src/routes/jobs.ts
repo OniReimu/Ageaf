@@ -16,7 +16,7 @@ import { runRewriteSelection } from '../workflows/rewriteSelection.js';
 import { runFixCompileError } from '../workflows/fixCompileError.js';
 import { setLastClaudeRuntimeConfig } from '../runtimes/claude/state.js';
 import type { ClaudeRuntimeConfig } from '../runtimes/claude/agent.js';
-import { runWithJobContext, registerJobEmitter, unregisterJobEmitter, resolveAskUserRequest } from '../interactive/askUserCore.js';
+import { runWithJobContext, registerJobEmitter, unregisterJobEmitter, resolveAskUserRequest, resolveCodexJobByPid, getActiveCodexJobId, executeAskUser, type AskUserQuestion } from '../interactive/askUserCore.js';
 
 type JobSubscriber = {
   send: (event: JobEvent) => void;
@@ -197,44 +197,80 @@ export function registerJobs(server: FastifyInstance) {
       return;
     }
 
-    // Handle Pi / Claude ask_user responses
+    const body = request.body as { requestId?: unknown; result?: unknown };
+    const reqId = body?.requestId;
+
+    // Try ask_user resolution first — works for all providers (Pi, Claude, Codex)
+    if (typeof reqId === 'string') {
+      const resolved = resolveAskUserRequest(id, reqId, body.result);
+      if (resolved) {
+        reply.send({ ok: true });
+        return;
+      }
+    }
+
+    // Pi/Claude: ask_user is the only interactive mechanism
     if (job.provider === 'pi' || job.provider === 'claude') {
-      const body = request.body as { requestId?: unknown; result?: unknown };
-      const reqId = body?.requestId;
       if (typeof reqId !== 'string') {
         reply.status(400).send({ error: 'invalid_requestId' });
-        return;
-      }
-      // Validate both jobId AND requestId — prevents cross-job resolution
-      const resolved = resolveAskUserRequest(id, String(reqId), body.result);
-      if (!resolved) {
+      } else {
         reply.status(404).send({ error: 'no_pending_request' });
-        return;
       }
-      reply.send({ ok: true });
       return;
     }
 
+    // Codex: fall through to native handler (approval, user input)
     if (job.provider !== 'codex' || !job.codex) {
       reply.status(400).send({ error: 'unsupported' });
       return;
     }
 
-    const body = request.body as { requestId?: unknown; result?: unknown };
-    const requestId = body?.requestId;
-    if (typeof requestId !== 'number' && typeof requestId !== 'string') {
+    if (typeof reqId !== 'number' && typeof reqId !== 'string') {
       reply.status(400).send({ error: 'invalid_requestId' });
       return;
     }
 
     try {
       const appServer = await getCodexAppServer(job.codex);
-      await appServer.respond(requestId, body.result);
+      await appServer.respond(reqId, body.result);
       reply.send({ ok: true });
     } catch (error) {
       reply.status(500).send({
         error: 'failed',
         message: error instanceof Error ? error.message : 'Failed to respond',
+      });
+    }
+  });
+
+  // Internal endpoint: called by the ask_user stdio MCP server (Codex runtime).
+  // The stdio server runs out-of-process and doesn't have ALS job context,
+  // so it discovers the active Codex job via getActiveCodexJobId().
+  server.post('/v1/internal/ask-user', async (request, reply) => {
+    const body = request.body as { questions?: unknown; ppid?: unknown };
+    if (!Array.isArray(body?.questions)) {
+      reply.status(400).send({ error: 'invalid_questions' });
+      return;
+    }
+
+    // Correlate by Codex CLI PID (exact match), fall back to last-active heuristic.
+    // The fallback is needed because the Codex CLI may spawn MCP servers through
+    // an intermediate process (shell, subprocess manager), making process.ppid
+    // differ from appServer.getPid().
+    const ppid = typeof body.ppid === 'number' ? body.ppid : null;
+    const jobId = (ppid ? resolveCodexJobByPid(ppid) : null) ?? getActiveCodexJobId();
+    if (!jobId) {
+      reply.status(503).send({ error: 'no_active_codex_job' });
+      return;
+    }
+
+    try {
+      const result = await runWithJobContext(jobId, () =>
+        executeAskUser(body.questions as AskUserQuestion[])
+      );
+      reply.send(result);
+    } catch (error) {
+      reply.status(500).send({
+        error: error instanceof Error ? error.message : 'ask_user failed',
       });
     }
   });
