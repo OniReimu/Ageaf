@@ -54,6 +54,25 @@
       "path": "skills/custom/paper-reviewer/SKILL.md"
     },
     {
+      "id": "custom/venue-compliance",
+      "name": "venue-compliance",
+      "description": "Check if a LaTeX manuscript complies with venue submission requirements. Searches for call-for-papers or author guidelines, extracts formatting rules, and produces a compliance checklist.\n",
+      "tags": [
+        "Compliance",
+        "Formatting",
+        "Submission",
+        "LaTeX",
+        "Conference",
+        "Journal"
+      ],
+      "source": "custom",
+      "path": "skills/custom/venue-compliance/SKILL.md",
+      "autoContext": [
+        "*.tex",
+        "*.bib"
+      ]
+    },
+    {
       "id": "k-dense/citation-management",
       "name": "citation-management",
       "description": "Comprehensive citation management for academic research. Search Google Scholar and PubMed for papers, extract accurate metadata, validate citations, and generate properly formatted BibTeX entries. This skill should be used when you need to find papers, verify citation information, convert DOIs to BibTeX, or ensure reference accuracy in scientific writing.",

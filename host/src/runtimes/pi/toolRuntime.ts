@@ -3,6 +3,7 @@ import type { ToolBackend, ToolCatalogEntry } from './toolBackends/types.js';
 import { createMcpMermaidBackend } from './toolBackends/mcp.js';
 import { createBuiltinBackend } from './toolBackends/builtin.js';
 import { createSkillDiscoveryBackend } from './toolBackends/skillDiscovery.js';
+import { createAskUserBackend } from './toolBackends/askUser.js';
 
 type State = 'idle' | 'initializing' | 'ready' | 'shutting-down';
 
@@ -17,6 +18,7 @@ function createBackends(): ToolBackend[] {
   return [
     createMcpMermaidBackend(),
     createBuiltinBackend(),
+    createAskUserBackend(),
     createSkillDiscoveryBackend(),
   ];
 }

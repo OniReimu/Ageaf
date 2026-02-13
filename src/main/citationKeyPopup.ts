@@ -1,5 +1,5 @@
 import { getCmView } from './helpers';
-import { detectProjectFilesHeuristic } from '../iso/panel/Panel';
+import { detectProjectFilesFromDom } from '../iso/panel/Panel';
 import { parseBibTeXFile } from './citations/bibTeXParser';
 import type { Cm6ExportsLite } from './citations/citationDecorations';
 
@@ -285,7 +285,7 @@ function normalizeAuthor(raw: string): string {
 
 async function buildBibIndex(): Promise<BibIndex> {
   const projectId = getProjectIdFromPathname(window.location.pathname);
-  const files = detectProjectFilesHeuristic();
+  const files = detectProjectFilesFromDom();
   const bibDocs = files.filter((f: any) => f.ext === 'bib' && f.entityType === 'doc' && typeof f.id === 'string');
   const byKey = new Map<string, BibEntryMeta[]>();
 

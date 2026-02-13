@@ -70,6 +70,7 @@ function parseSkillFile(filePath, skillsDir) {
     tags: Array.isArray(data.tags) ? data.tags : [],
     source,
     path: `skills/${relativePath.replace(/\\/g, '/')}`, // Normalize path separators
+    ...(Array.isArray(data['auto-context']) ? { autoContext: data['auto-context'] } : {}),
   };
 }
 
