@@ -16,6 +16,7 @@ import { runRewriteSelection } from '../workflows/rewriteSelection.js';
 import { runFixCompileError } from '../workflows/fixCompileError.js';
 import { setLastClaudeRuntimeConfig } from '../runtimes/claude/state.js';
 import type { ClaudeRuntimeConfig } from '../runtimes/claude/agent.js';
+import { runWithJobContext, registerJobEmitter, unregisterJobEmitter, resolveAskUserRequest } from '../interactive/askUserCore.js';
 
 type JobSubscriber = {
   send: (event: JobEvent) => void;
@@ -137,40 +138,43 @@ export function registerJobs(server: FastifyInstance) {
     reply.send({ jobId: id });
 
     void (async () => {
+      registerJobEmitter(id, emitEvent as (event: { event: string; data?: unknown }) => void);
       try {
-        emitEvent({ event: 'plan', data: { message: 'Job queued' } });
+        await runWithJobContext(id, async () => {
+          emitEvent({ event: 'plan', data: { message: 'Job queued' } });
 
-        if (provider === 'pi') {
-          await runPiJob(payload as PiJobPayload, emitEvent);
-          return;
-        }
-
-        if (provider === 'codex') {
-          const action = payload.action ?? 'chat';
-          if (action !== 'chat' && action !== 'rewrite' && action !== 'fix_error') {
-            emitEvent({
-              event: 'done',
-              data: {
-                status: 'error',
-                message: `Unsupported action for OpenAI provider: ${action}`,
-              },
-            });
+          if (provider === 'pi') {
+            await runPiJob(payload as PiJobPayload, emitEvent);
             return;
           }
-          await runCodexJob(payload, emitEvent, { jobId: id });
-          return;
-        }
 
-        if (payload.action === 'rewrite') {
-          await runRewriteSelection(payload, emitEvent);
-          return;
-        }
-        if (payload.action === 'fix_error') {
-          await runFixCompileError(payload, emitEvent);
-          return;
-        }
+          if (provider === 'codex') {
+            const action = payload.action ?? 'chat';
+            if (action !== 'chat' && action !== 'rewrite' && action !== 'fix_error') {
+              emitEvent({
+                event: 'done',
+                data: {
+                  status: 'error',
+                  message: `Unsupported action for OpenAI provider: ${action}`,
+                },
+              });
+              return;
+            }
+            await runCodexJob(payload, emitEvent, { jobId: id });
+            return;
+          }
 
-        await runClaudeJob(payload, emitEvent);
+          if (payload.action === 'rewrite') {
+            await runRewriteSelection(payload, emitEvent);
+            return;
+          }
+          if (payload.action === 'fix_error') {
+            await runFixCompileError(payload, emitEvent);
+            return;
+          }
+
+          await runClaudeJob(payload, emitEvent);
+        });
       } catch (error) {
         emitEvent({
           event: 'done',
@@ -179,6 +183,8 @@ export function registerJobs(server: FastifyInstance) {
             message: error instanceof Error ? error.message : 'Job failed',
           },
         });
+      } finally {
+        unregisterJobEmitter(id);
       }
     })();
   });
@@ -188,6 +194,24 @@ export function registerJobs(server: FastifyInstance) {
     const job = jobs.get(id);
     if (!job) {
       reply.status(404).send({ error: 'not_found' });
+      return;
+    }
+
+    // Handle Pi / Claude ask_user responses
+    if (job.provider === 'pi' || job.provider === 'claude') {
+      const body = request.body as { requestId?: unknown; result?: unknown };
+      const reqId = body?.requestId;
+      if (typeof reqId !== 'string') {
+        reply.status(400).send({ error: 'invalid_requestId' });
+        return;
+      }
+      // Validate both jobId AND requestId — prevents cross-job resolution
+      const resolved = resolveAskUserRequest(id, String(reqId), body.result);
+      if (!resolved) {
+        reply.status(404).send({ error: 'no_pending_request' });
+        return;
+      }
+      reply.send({ ok: true });
       return;
     }
 

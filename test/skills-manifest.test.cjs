@@ -18,9 +18,11 @@ test('generateSkillsManifest creates valid manifest', async () => {
   // - ai-research: 20-ml-paper-writing
   // - anthropic: doc-coauthoring
   // - custom: humanizer
+  // - custom: mermaid
   // - custom: paper-reviewer
+  // - custom: venue-compliance
   // - k-dense: citation-management
-  assert.strictEqual(manifest.skills.length, 5, `Expected 5 skills, got ${manifest.skills.length}`);
+  assert.strictEqual(manifest.skills.length, 7, `Expected 7 skills, got ${manifest.skills.length}`);
 
   const paperSkill = manifest.skills.find((s) => s.name === 'ml-paper-writing');
   assert.ok(paperSkill, 'Should include ml-paper-writing skill');
@@ -45,6 +47,17 @@ test('generateSkillsManifest creates valid manifest', async () => {
   const citationSkill = manifest.skills.find((s) => s.name === 'citation-management');
   assert.ok(citationSkill, 'Should include citation-management skill');
   assert.strictEqual(citationSkill.source, 'k-dense', 'citation-management should be from k-dense source');
+
+  const mermaidSkill = manifest.skills.find((s) => s.name === 'mermaid');
+  assert.ok(mermaidSkill, 'Should include mermaid skill');
+  assert.strictEqual(mermaidSkill.source, 'custom', 'mermaid should be from custom source');
+
+  const venueSkill = manifest.skills.find((s) => s.name === 'venue-compliance');
+  assert.ok(venueSkill, 'Should include venue-compliance skill');
+  assert.strictEqual(venueSkill.source, 'custom', 'venue-compliance should be from custom source');
+  assert.ok(Array.isArray(venueSkill.autoContext), 'venue-compliance should have autoContext');
+  assert.ok(venueSkill.autoContext.includes('*.tex'), 'venue-compliance autoContext should include *.tex');
+  assert.ok(venueSkill.autoContext.includes('*.bib'), 'venue-compliance autoContext should include *.bib');
 
   // Verify skill structure
   const firstSkill = manifest.skills[0];

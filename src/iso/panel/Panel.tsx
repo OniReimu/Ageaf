@@ -3064,7 +3064,7 @@ const Panel = () => {
 
   const processSkillDirectives = async (
     text: string
-  ): Promise<{ skillsPrompt: string; strippedText: string }> => {
+  ): Promise<{ skillsPrompt: string; strippedText: string; autoContextPatterns: string[] }> => {
     // Extract skill directives from text (e.g., /langchain, /vllm)
     // Pattern: (start OR whitespace/bracket) + "/" + (allowed chars)
     const pattern = /(^|[\s([{])\/\s*([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
@@ -3083,7 +3083,7 @@ const Panel = () => {
     }
 
     if (directiveNames.length === 0) {
-      return { skillsPrompt: '', strippedText: text };
+      return { skillsPrompt: '', strippedText: text, autoContextPatterns: [] };
     }
 
     // Load skills manifest and find matching skills
@@ -3091,6 +3091,7 @@ const Panel = () => {
       const manifest = await loadSkillsManifest();
       const skillContents: string[] = [];
       const resolvedNames = new Set<string>();
+      const autoContextPatterns: string[] = [];
 
       for (const name of directiveNames) {
         const skill = manifest.skills.find(
@@ -3100,6 +3101,9 @@ const Panel = () => {
           const markdown = await loadSkillMarkdown(skill);
           skillContents.push(`# Skill: ${skill.name}\n\n${markdown}`);
           resolvedNames.add(name);
+          if (skill.autoContext) {
+            autoContextPatterns.push(...skill.autoContext);
+          }
         }
       }
 
@@ -3151,18 +3155,19 @@ const Panel = () => {
           return {
             skillsPrompt,
             strippedText: Array.from(unique).join('\n\n'),
+            autoContextPatterns,
           };
         }
       }
 
 
-      return { skillsPrompt, strippedText };
+      return { skillsPrompt, strippedText, autoContextPatterns };
     } catch (err) {
       console.error(
         '[processSkillDirectives] Failed to process skill directives:',
         err
       );
-      return { skillsPrompt: '', strippedText: text };
+      return { skillsPrompt: '', strippedText: text, autoContextPatterns: [] };
     }
   };
 
@@ -5607,7 +5612,7 @@ const Panel = () => {
 
     startThinkingTimer(sessionConversationId);
 
-    const resolveMentionFiles = async (rawText: string) => {
+    const resolveMentionFiles = async (rawText: string): Promise<{ text: string; resolvedPaths: Set<string> }> => {
       const fileRegex = /@\[file:([^\]]+)\]/g;
       const folderRegex = /@\[folder:([^\]]+)\]/g;
       const fileRefs = Array.from(rawText.matchAll(fileRegex))
@@ -5616,7 +5621,7 @@ const Panel = () => {
       const folderRefs = Array.from(rawText.matchAll(folderRegex))
         .map((m) => String(m[1] ?? '').trim())
         .filter(Boolean);
-      if (fileRefs.length === 0 && folderRefs.length === 0) return rawText;
+      if (fileRefs.length === 0 && folderRefs.length === 0) return { text: rawText, resolvedPaths: new Set<string>() };
 
       const MAX_CHARS = 200_000;
       const MAX_FILES_PER_FOLDER = 5;
@@ -5624,6 +5629,7 @@ const Panel = () => {
         window.location.pathname
       );
       const fileContentCache = new Map<string, string>();
+      const resolvedPaths = new Set<string>();
 
       const normalizeMentionRef = (ref: string) => {
         let s = ref.trim();
@@ -5896,6 +5902,7 @@ const Panel = () => {
         const fileResults: Array<{ ref: string; injection: string }> = [];
         for (const { ref, content } of docResults) {
           if (content != null) {
+            resolvedPaths.add(ref);
             // eslint-disable-next-line no-await-in-loop
             fileResults.push({
               ref,
@@ -5906,6 +5913,7 @@ const Panel = () => {
             // eslint-disable-next-line no-await-in-loop
             const bridgeContent = await fetchViaBridge(ref);
             if (bridgeContent != null) {
+              resolvedPaths.add(ref);
               // eslint-disable-next-line no-await-in-loop
               fileResults.push({
                 ref,
@@ -5959,6 +5967,7 @@ const Panel = () => {
           for (const { entry, content } of folderDocResults) {
             const ref = entry.path || entry.name;
             if (content != null) {
+              resolvedPaths.add(ref);
               // eslint-disable-next-line no-await-in-loop
               folderBlock += await resolveFileFromContent(ref, content);
             } else {
@@ -5966,6 +5975,7 @@ const Panel = () => {
               // eslint-disable-next-line no-await-in-loop
               const bridgeContent = await fetchViaBridge(ref);
               if (bridgeContent != null) {
+                resolvedPaths.add(ref);
                 // eslint-disable-next-line no-await-in-loop
                 folderBlock += await resolveFileFromContent(ref, bridgeContent);
               } else {
@@ -5977,12 +5987,12 @@ const Panel = () => {
         const token = `@[folder:${folder}]`;
         nextText = nextText.split(token).join(folderBlock);
       }
-      return nextText;
+      return { text: nextText, resolvedPaths };
     };
 
     try {
       const selection = await bridge.requestSelection();
-      const resolvedMessageText = await resolveMentionFiles(text);
+      const { text: resolvedMessageText, resolvedPaths: mentionResolvedPaths } = await resolveMentionFiles(text);
 
       // Auto-invoke humanizer skill for writing/editing actions
       const autoInvokeHumanizer = (messageText: string): string => {
@@ -6025,10 +6035,160 @@ const Panel = () => {
       };
 
       const messageWithAutoSkills = autoInvokeHumanizer(resolvedMessageText);
-      const { skillsPrompt, strippedText } = await processSkillDirectives(
+      const { skillsPrompt, strippedText, autoContextPatterns } = await processSkillDirectives(
         messageWithAutoSkills
       );
-      const finalMessageText = strippedText;
+
+      // Auto-context: attach project files matching skill patterns
+      let autoContextBlocks = '';
+      if (autoContextPatterns.length > 0) {
+        const MAX_AUTO_CONTEXT_FILES = 20;
+        const MAX_AUTO_CONTEXT_BYTES = 500_000;
+
+        const matchAutoContext = (pattern: string, filename: string): boolean => {
+          if (pattern.startsWith('*.'))
+            return filename.toLowerCase().endsWith(pattern.slice(1).toLowerCase());
+          return filename.toLowerCase() === pattern.toLowerCase();
+        };
+
+        // Source entries from renamed exported detector.
+        const rawEntries = detectProjectFilesFromDom().filter((e) => e.kind !== 'folder');
+
+        // Canonicalize with id-first / exact-path-first dedupe.
+        const rank = (e: OverleafEntry) =>
+          (e.path.includes('/') ? 2 : 0) + (e.id ? 1 : 0);
+
+        const canonical = new Map<string, OverleafEntry>();
+        for (const entry of rawEntries) {
+          const key = entry.id ? `id:${entry.id}` : `path:${entry.path.toLowerCase()}`;
+          const prev = canonical.get(key);
+          if (!prev || rank(entry) > rank(prev)) canonical.set(key, entry);
+        }
+        const allEntries = Array.from(canonical.values());
+
+        const candidates = allEntries.filter((e) =>
+          autoContextPatterns.some((p) => matchAutoContext(p, e.name))
+        );
+
+        // For basename fallback safety: only allow fallback when basename is unique.
+        const basenameCounts = new Map<string, number>();
+        for (const entry of candidates) {
+          const base = entry.name.toLowerCase();
+          basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
+        }
+
+        const acProjectId = getOverleafProjectIdFromPathname(window.location.pathname);
+
+        const acFindDocIdForRef = (ref: string) => {
+          const want = ref.trim().toLowerCase();
+          if (!want) return null;
+          const nodes = Array.from(
+            document.querySelectorAll('[data-file-id][data-file-type="doc"]')
+          );
+          for (const node of nodes) {
+            if (!(node instanceof HTMLElement)) continue;
+            if (node.closest('#ageaf-panel-root')) continue;
+            const treeItem = node.closest('[role="treeitem"]') as HTMLElement | null;
+            const name = (
+              treeItem?.getAttribute('aria-label') ??
+              treeItem?.textContent ??
+              ''
+            ).trim();
+            if (!name) continue;
+            if (name.trim().toLowerCase() !== want) continue;
+            const id = node.getAttribute('data-file-id')?.trim();
+            if (id) return id;
+          }
+          return null;
+        };
+
+        const acFetchDocDownload = async (docId: string) => {
+          if (!acProjectId) throw new Error('Missing project id');
+          const candidates = [
+            `/Project/${encodeURIComponent(acProjectId)}/doc/${encodeURIComponent(docId)}/download`,
+            `/project/${encodeURIComponent(acProjectId)}/doc/${encodeURIComponent(docId)}/download`,
+          ];
+          let lastErr: unknown = null;
+          for (const url of candidates) {
+            try {
+              const resp = await fetch(url, { credentials: 'include' });
+              if (!resp.ok) { lastErr = new Error(`HTTP ${resp.status}`); continue; }
+              return await resp.text();
+            } catch (err) { lastErr = err; }
+          }
+          throw lastErr instanceof Error ? lastErr : new Error('Doc download failed');
+        };
+
+        const acLangForExt = (name: string) => {
+          const ext = getFileExtension(name);
+          if (ext === '.tex') return 'tex';
+          if (ext === '.bib') return 'bibtex';
+          if (ext === '.md') return 'markdown';
+          return 'text';
+        };
+
+        const acWrapFileBlock = (name: string, content: string): string => {
+          const lang = acLangForExt(name);
+          return `\n\n[Overleaf file: ${name}]\n\`\`\`${lang}\n${content}\n\`\`\`\n`;
+        };
+
+        let totalBytes = 0;
+        let filesAdded = 0;
+        const skippedFiles: string[] = [];
+        const ambiguousFallbackSkips: string[] = [];
+
+        for (const entry of candidates) {
+          if (filesAdded >= MAX_AUTO_CONTEXT_FILES) break;
+
+          // Dedupe by canonical path only (never by basename)
+          if (mentionResolvedPaths.has(entry.path)) continue;
+
+          let docId = entry.id;
+
+          // Last resort fallback by basename ONLY if unique among candidates
+          if (!docId) {
+            const base = entry.name.toLowerCase();
+            const uniqueBasename = (basenameCounts.get(base) ?? 0) === 1;
+            if (uniqueBasename) {
+              docId = acFindDocIdForRef(entry.name) ?? undefined;
+            } else {
+              ambiguousFallbackSkips.push(entry.path);
+              continue;
+            }
+          }
+
+          let content: string | null = null;
+          if (acProjectId && docId) {
+            try {
+              content = await acFetchDocDownload(docId);
+            } catch {
+              content = null;
+            }
+          }
+
+          if (content == null) {
+            skippedFiles.push(entry.path);
+            continue;
+          }
+
+          // Byte cap: check AFTER fetch, BEFORE append
+          if (totalBytes + content.length > MAX_AUTO_CONTEXT_BYTES) continue;
+
+          totalBytes += content.length;
+          filesAdded++;
+          autoContextBlocks += acWrapFileBlock(entry.path, content);
+        }
+
+        if (skippedFiles.length > 0) {
+          autoContextBlocks += `\n\n[Auto-context warning: could not fetch ${skippedFiles.length} file(s): ${skippedFiles.join(', ')}]\n`;
+        }
+
+        if (ambiguousFallbackSkips.length > 0) {
+          autoContextBlocks += `\n\n[Auto-context warning: skipped ${ambiguousFallbackSkips.length} file(s) due to ambiguous basename fallback: ${ambiguousFallbackSkips.join(', ')}]\n`;
+        }
+      }
+
+      const finalMessageText = strippedText + autoContextBlocks;
       const options = await getOptions();
       const runtimeModel =
         currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
@@ -9559,9 +9719,19 @@ const Panel = () => {
 
 // Export helper functions for use by citation indicator
 export { Panel };
-export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
-  const entries: OverleafEntry[] = [];
-  const seen = new Set<string>();
+export const detectProjectFilesFromDom = (): OverleafEntry[] => {
+  const byPathKind = new Map<string, OverleafEntry>();
+
+  const entryScore = (e: OverleafEntry) =>
+    (e.id ? 4 : 0) + (e.entityType ? 2 : 0) + (e.path.includes('/') ? 1 : 0);
+
+  const addEntry = (entry: OverleafEntry) => {
+    const key = `${entry.path}:${entry.kind}`.toLowerCase();
+    const prev = byPathKind.get(key);
+    if (!prev || entryScore(entry) > entryScore(prev)) {
+      byPathKind.set(key, prev ? { ...prev, ...entry } : entry);
+    }
+  };
 
   const extractFilenameFromLabel = (raw: string): string | null => {
     let value = raw.trim();
@@ -9600,11 +9770,37 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
     return /\bfolder\b/i.test(cn);
   };
 
-  const addEntry = (entry: OverleafEntry) => {
-    const key = `${entry.path}:${entry.kind}`.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    entries.push(entry);
+  const isTabLike = (node: HTMLElement) =>
+    node.matches('[role="tab"], .cm-tab, .cm-tab-label');
+
+  const getLabelText = (node: HTMLElement) =>
+    normalizeLabel(
+      node.getAttribute('aria-label')?.trim() ||
+      node.getAttribute('title')?.trim() ||
+      node.textContent?.trim() ||
+      ''
+    );
+
+  const buildTreePath = (node: HTMLElement, name: string, kind: OverleafEntry['kind']) => {
+    const parts: string[] = [];
+    let current: HTMLElement | null = node;
+    while (current) {
+      if (current === node) {
+        current = current.parentElement;
+        continue;
+      }
+      if (
+        current.getAttribute?.('role') === 'treeitem' &&
+        isFolderLike(current)
+      ) {
+        const label = getLabelText(current);
+        if (label) parts.unshift(label);
+      }
+      current = current.parentElement;
+    }
+    if (kind !== 'folder') parts.push(name);
+    const path = parts.length > 0 ? parts.join('/') : name;
+    return path;
   };
 
   // Scan tabs + file tree nodes (same broad selectors as editorBridge.findClickableByName)
@@ -9656,6 +9852,12 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
             ? 'img'
             : 'other';
 
+    // For tab nodes, keep basename-only path (no folder context in DOM).
+    // For tree nodes, build folder-qualified path by walking parent treeitem folders.
+    // Use `base` (basename) not `extracted` (which may already contain slashes)
+    // to avoid doubled paths like `sections/sections/main.tex`.
+    const path = isTabLike(node) ? extracted : buildTreePath(node, base, kind);
+
     // Prefer extracting Overleaf entity id/type from the file tree markup
     // (file tree nodes contain a descendant with `data-file-id`).
     const idNode = node.matches?.('[data-file-id]')
@@ -9666,7 +9868,7 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
       idNode?.getAttribute?.('data-file-type')?.trim() || undefined;
 
     addEntry({
-      path: extracted,
+      path,
       name: base,
       ext,
       kind,
@@ -9675,5 +9877,5 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
     });
   }
 
-  return entries;
+  return Array.from(byPathKind.values());
 };

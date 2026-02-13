@@ -12,6 +12,7 @@ export interface SkillEntry {
   tags: string[];
   source: string;
   path: string;
+  autoContext?: string[];
 }
 
 export interface SkillsManifest {
