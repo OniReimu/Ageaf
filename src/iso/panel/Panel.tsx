@@ -4098,7 +4098,19 @@ const Panel = () => {
           try {
             const selection = await bridge.requestSelection();
             const selectedText = selection?.selection ?? '';
-            if (selectedText && selectedText.trim()) {
+            const textNormalized = text
+              .replace(/\r\n/g, '\n')
+              .replace(/\r/g, '\n')
+              .trim();
+            const selectedTextNormalized = selectedText
+              .replace(/\r\n/g, '\n')
+              .replace(/\r/g, '\n')
+              .trim();
+            const matchesClipboardSelection =
+              textNormalized.length > 0 &&
+              selectedTextNormalized.length > 0 &&
+              selectedTextNormalized === textNormalized;
+            if (matchesClipboardSelection) {
               const activeName = normalizeFilenameLabel(selection?.activeName);
               const lineFrom =
                 typeof selection?.lineFrom === 'number'
@@ -4109,7 +4121,7 @@ const Panel = () => {
                   ? selection.lineTo
                   : undefined;
               insertChipFromText(
-                selectedText,
+                text,
                 activeName ?? undefined,
                 lineFrom,
                 lineTo
