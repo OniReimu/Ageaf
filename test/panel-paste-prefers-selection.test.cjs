@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-test('Pasting large text prefers Overleaf selection over clipboard', () => {
+test('Pasting large text keeps clipboard text as chip content', () => {
   const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
   const contents = fs.readFileSync(panelPath, 'utf8');
 
@@ -15,5 +15,9 @@ test('Pasting large text prefers Overleaf selection over clipboard', () => {
   const snippet = contents.slice(start, end);
   assert.match(snippet, /shouldChipPaste/);
   assert.match(snippet, /requestSelection/);
+  assert.match(
+    snippet,
+    /insertChipFromText\(\s*text,\s*activeName \?\? undefined,\s*lineFrom,\s*lineTo\s*\)/
+  );
+  assert.doesNotMatch(snippet, /insertChipFromText\(selectedText/);
 });
-
