@@ -21,3 +21,24 @@ test('Pasting large text keeps clipboard text as chip content', () => {
   );
   assert.doesNotMatch(snippet, /insertChipFromText\(selectedText/);
 });
+
+test('Pasting large text from outside current selection falls back to plain text', () => {
+  const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
+  const contents = fs.readFileSync(panelPath, 'utf8');
+
+  const start = contents.indexOf('const handlePaste');
+  assert.ok(start >= 0, 'expected handlePaste implementation');
+  const end = contents.indexOf('const hasImageTransfer', start);
+  assert.ok(end >= 0, 'expected handlePaste to appear before hasImageTransfer');
+
+  const snippet = contents.slice(start, end);
+  const marker = 'if (matchesClipboardSelection)';
+  const markerIndex = snippet.indexOf(marker);
+  assert.ok(markerIndex >= 0, 'expected selection-clipboard matching guard');
+  const asyncBranchEnd = snippet.indexOf('})();', markerIndex);
+  assert.ok(asyncBranchEnd > markerIndex, 'expected async paste branch body');
+  const asyncBranch = snippet.slice(markerIndex, asyncBranchEnd);
+
+  assert.match(asyncBranch, /insertTextAtCursor\(text\);/);
+  assert.doesNotMatch(asyncBranch, /insertChipFromText\(text\);/);
+});
