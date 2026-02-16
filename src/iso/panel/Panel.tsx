@@ -4131,11 +4131,11 @@ const Panel = () => {
           } catch {
             // ignore selection errors and fallback to clipboard
           }
-          insertChipFromText(text);
+          insertTextAtCursor(text);
         })();
         return;
       }
-      insertChipFromText(text);
+      insertTextAtCursor(text);
     } else {
       insertTextAtCursor(text);
     }
