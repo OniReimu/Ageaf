@@ -578,13 +578,7 @@ async function runQuery(
 
           if (parsedPatch?.success) {
             const pd = parsedPatch.data as Patch;
-            if (pd.kind === 'replaceRangeInFile') {
-              for (const hunk of computePerHunkReplacements(pd.filePath, pd.expectedOldText, pd.text)) {
-                emitEvent({ event: 'patch', data: hunk });
-              }
-            } else {
-              emitEvent({ event: 'patch', data: pd });
-            }
+            emitEvent({ event: 'patch', data: pd });
           } else {
             emitEvent({
               event: 'done',
@@ -600,13 +594,7 @@ async function runQuery(
             const parsed = PatchSchema.safeParse(candidate);
             if (parsed.success) {
               const pd = parsed.data as Patch;
-              if (pd.kind === 'replaceRangeInFile') {
-                for (const hunk of computePerHunkReplacements(pd.filePath, pd.expectedOldText, pd.text)) {
-                  emitEvent({ event: 'patch', data: hunk });
-                }
-              } else {
-                emitEvent({ event: 'patch', data: pd });
-              }
+              emitEvent({ event: 'patch', data: pd });
             }
           }
         }

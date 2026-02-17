@@ -1771,13 +1771,7 @@ export async function runCodexJob(
             if (fence) {
               try {
                 const patch = validatePatch(JSON.parse(fence));
-                if (patch.kind === 'replaceRangeInFile') {
-                  for (const hunk of computePerHunkReplacements(patch.filePath, patch.expectedOldText, patch.text)) {
-                    emitEvent({ event: 'patch', data: hunk });
-                  }
-                } else {
-                  emitEvent({ event: 'patch', data: patch });
-                }
+                emitEvent({ event: 'patch', data: patch });
                 patchEmitted = true;
               } catch {
                 // Ignore patch parse failures; user can still read the raw response.
