@@ -7374,7 +7374,8 @@ const Panel = () => {
       return;
     }
 
-    // Step 3: Send as attachment (compact chip in chat) + skill directive
+    // Step 3: Send as [Overleaf file:] block (enables AGEAF_FILE_UPDATE path)
+    // plus attachment chip for compact display in the chat transcript.
     const lineCount = bibContent.split('\n').length;
     const bibAttachment: FileAttachment = {
       id: `ref-check-${Date.now()}`,
@@ -7386,10 +7387,16 @@ const Panel = () => {
       content: bibContent,
     };
 
+    const fileBlock = `\n\n[Overleaf file: ${bibEntry.path}]\n\`\`\`bibtex\n${bibContent}\n\`\`\`\n`;
+
     const message = `/citation-management Check all references in ${bibEntry.path} for accuracy. `
       + 'Detect hallucinated or fabricated citations, verify bibliographic details '
       + '(DOIs, titles, authors, years, venues), and identify any arXiv preprints '
-      + 'that have since been published. Replace preprint entries with their published versions.';
+      + 'that have since been published. '
+      + 'For each incorrect or fabricated entry, DELETE it from the file and replace it with the verified version. '
+      + 'For preprint entries that have since been published, replace the preprint entry with the published version. '
+      + 'Output the complete updated file using AGEAF_FILE_UPDATE markers.'
+      + fileBlock;
 
     void sendMessage(message, [], [bibAttachment], [], 'chat');
   };
