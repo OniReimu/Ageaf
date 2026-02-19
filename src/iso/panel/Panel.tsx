@@ -92,7 +92,7 @@ import {
 
 const DEFAULT_WIDTH = 360;
 const MIN_WIDTH = 280;
-const MAX_WIDTH = 560;
+const MAX_WIDTH = 900;
 const DEFAULT_MODEL_VALUE = 'sonnet';
 const DEFAULT_MODEL_LABEL = 'Sonnet';
 const INTERRUPTED_BY_USER_MARKER = 'INTERRUPTED BY USER';
@@ -2102,12 +2102,14 @@ const Panel = () => {
         ? { attachments: message.attachments.map(({ content, ...rest }) => rest) }
         : {}),
       ...(message.documents && message.documents.length > 0
-        ? { documents: message.documents.map((doc) => ({
+        ? {
+          documents: message.documents.map((doc) => ({
             id: doc.id,
             name: doc.name,
             mediaType: doc.mediaType,
             size: doc.size,
-          })) }
+          }))
+        }
         : {}),
       ...(message.patchReview ? { patchReview: message.patchReview } : {}),
     }));
@@ -6371,51 +6373,51 @@ const Panel = () => {
             userSettings: sharedUserSettings,
           }
           : provider === 'codex'
-          ? {
-            provider: 'codex' as const,
-            action,
-            runtime: {
-              codex: {
-                approvalPolicy: options.openaiApprovalPolicy,
-                ...(codexModel ? { model: codexModel } : {}),
-                ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
-                ...(codexThreadId ? { threadId: codexThreadId } : {}),
+            ? {
+              provider: 'codex' as const,
+              action,
+              runtime: {
+                codex: {
+                  approvalPolicy: options.openaiApprovalPolicy,
+                  ...(codexModel ? { model: codexModel } : {}),
+                  ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
+                  ...(codexThreadId ? { threadId: codexThreadId } : {}),
+                },
               },
-            },
-            overleaf: { url: window.location.href },
-            context: sharedContext,
-            policy: {
-              requireApproval: false,
-              allowNetwork: false,
-              maxFiles: 1,
-            },
-            userSettings: sharedUserSettings,
-          }
-          : {
-            provider: 'claude' as const,
-            action,
-            runtime: {
-              claude: {
-                model: runtimeModel ?? undefined,
-                maxThinkingTokens: runtimeThinkingTokens ?? undefined,
-                sessionScope: 'project' as const,
-                yoloMode,
-                conversationId: sessionConversationId,
+              overleaf: { url: window.location.href },
+              context: sharedContext,
+              policy: {
+                requireApproval: false,
+                allowNetwork: false,
+                maxFiles: 1,
               },
-            },
-            overleaf: { url: window.location.href },
-            context: sharedContext,
-            policy: {
-              requireApproval: false,
-              allowNetwork: false,
-              maxFiles: 1,
-            },
-            userSettings: {
-              ...sharedUserSettings,
-              enableCommandBlocklist: options.enableCommandBlocklist,
-              blockedCommandsUnix: options.blockedCommandsUnix,
-            },
-          };
+              userSettings: sharedUserSettings,
+            }
+            : {
+              provider: 'claude' as const,
+              action,
+              runtime: {
+                claude: {
+                  model: runtimeModel ?? undefined,
+                  maxThinkingTokens: runtimeThinkingTokens ?? undefined,
+                  sessionScope: 'project' as const,
+                  yoloMode,
+                  conversationId: sessionConversationId,
+                },
+              },
+              overleaf: { url: window.location.href },
+              context: sharedContext,
+              policy: {
+                requireApproval: false,
+                allowNetwork: false,
+                maxFiles: 1,
+              },
+              userSettings: {
+                ...sharedUserSettings,
+                enableCommandBlocklist: options.enableCommandBlocklist,
+                blockedCommandsUnix: options.blockedCommandsUnix,
+              },
+            };
 
       const { jobId } = await createJob(options, payload, {
         signal: abortController.signal,
@@ -7765,14 +7767,14 @@ const Panel = () => {
           const bPatch = b.patchReview;
           const aFrom =
             aPatch &&
-            (aPatch.kind === 'replaceSelection' ||
-              aPatch.kind === 'replaceRangeInFile')
+              (aPatch.kind === 'replaceSelection' ||
+                aPatch.kind === 'replaceRangeInFile')
               ? aPatch.from ?? 0
               : 0;
           const bFrom =
             bPatch &&
-            (bPatch.kind === 'replaceSelection' ||
-              bPatch.kind === 'replaceRangeInFile')
+              (bPatch.kind === 'replaceSelection' ||
+                bPatch.kind === 'replaceRangeInFile')
               ? bPatch.from ?? 0
               : 0;
           return bFrom - aFrom;
