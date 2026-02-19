@@ -501,6 +501,35 @@ export const ClearChatIcon = ({ class: className, style }: IconProps) => (
   </svg>
 );
 
+export const CheckReferencesIcon = ({ class: className, style }: IconProps) => (
+  <svg
+    class={className}
+    style={style}
+    viewBox="0 0 20 20"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    stroke="currentColor"
+  >
+    <path
+      d="M4 2.5h8a2 2 0 012 2v11a2 2 0 01-2 2H4a.5.5 0 01-.5-.5V3a.5.5 0 01.5-.5z"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M7 6h4M7 9h4"
+      stroke-width="1.5"
+      stroke-linecap="round"
+    />
+    <path
+      d="M12 12l2 2 4-4"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </svg>
+);
+
 /* ═══════════════════════════════════════════════════════════════════════════
    EXPORT ALL
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -525,6 +554,7 @@ export const Icons = {
   CodexIcon,
   // Toolbar actions
   RewriteIcon,
+  CheckReferencesIcon,
   AttachFilesIcon,
   NewChatIconAlt,
   CloseSessionIcon,

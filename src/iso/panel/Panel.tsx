@@ -83,6 +83,7 @@ import Icons from './ageaf-icons';
 import {
   SettingsIcon,
   RewriteIcon,
+  CheckReferencesIcon,
   AttachFilesIcon,
   NewChatIconAlt,
   CloseSessionIcon,
@@ -226,6 +227,7 @@ const FILE_ATTACHMENT_EXTENSIONS = [
   '.ini',
   '.log',
   '.tex',
+  '.bib',
 ];
 const MAX_FILE_ATTACHMENTS = 10;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -2097,7 +2099,7 @@ const Panel = () => {
         ? { images: message.images }
         : {}),
       ...(message.attachments && message.attachments.length > 0
-        ? { attachments: message.attachments }
+        ? { attachments: message.attachments.map(({ content, ...rest }) => rest) }
         : {}),
       ...(message.documents && message.documents.length > 0
         ? { documents: message.documents.map((doc) => ({
@@ -3785,6 +3787,58 @@ const Panel = () => {
       if (normalized) return normalized;
     }
 
+    return null;
+  };
+
+  const getActiveFileId = (): string | null => {
+    const selectors = [
+      '[role="tab"][aria-selected="true"]',
+      '.cm-tab.is-active',
+      '.cm-tab[aria-selected="true"]',
+      '.cm-tab--active',
+      '[role="treeitem"][aria-selected="true"]',
+      '.file-tree-item.is-selected',
+      '.file-tree-item.selected',
+    ];
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      if (!el || !(el instanceof HTMLElement)) continue;
+      if (el.closest('#ageaf-panel-root')) continue;
+      const idNode = el.matches?.('[data-file-id]')
+        ? el
+        : (el.querySelector?.('[data-file-id]') as HTMLElement | null);
+      const id = idNode?.getAttribute?.('data-file-id')?.trim();
+      if (id) return id;
+    }
+    return null;
+  };
+
+  /** Check the file tree (not editor tabs) for a selected .bib node. */
+  const getTreeSelectedBibFile = (): { name: string; id: string | null } | null => {
+    const treeSelectors = [
+      '[role="treeitem"][aria-selected="true"]',
+      '.file-tree-item.is-selected',
+      '.file-tree-item.selected',
+      '.file-tree .selected .name',
+    ];
+    for (const selector of treeSelectors) {
+      const el = document.querySelector(selector);
+      if (!el || !(el instanceof HTMLElement)) continue;
+      if (el.closest('#ageaf-panel-root')) continue;
+      const text = (
+        el.getAttribute('aria-label') ??
+        el.getAttribute('title') ??
+        el.textContent ??
+        ''
+      ).trim();
+      const name = normalizeFilenameLabel(text);
+      if (!name || !name.toLowerCase().endsWith('.bib')) continue;
+      const idNode = el.matches?.('[data-file-id]')
+        ? el
+        : (el.querySelector?.('[data-file-id]') as HTMLElement | null);
+      const id = idNode?.getAttribute?.('data-file-id')?.trim() ?? null;
+      return { name, id };
+    }
     return null;
   };
 
@@ -7181,6 +7235,165 @@ const Panel = () => {
     void sendMessage('Rewrite selection', [], [], [], 'rewrite');
   };
 
+  // ─── Check References ────────────────────────────────────────────────
+
+  type BibSelection =
+    | { kind: 'found'; entry: OverleafEntry }
+    | { kind: 'none' }
+    | { kind: 'ambiguous'; paths: string[] };
+
+  function selectBibEntry(
+    bibEntries: OverleafEntry[],
+    activeFile: string | null,
+    activeFileId: string | null
+  ): BibSelection {
+    if (activeFile && activeFile.toLowerCase().endsWith('.bib')) {
+      // Prefer stable id match when available (avoids basename ambiguity)
+      if (activeFileId) {
+        const idMatch = bibEntries.filter((e) => e.id === activeFileId);
+        if (idMatch.length === 1) return { kind: 'found', entry: idMatch[0] };
+      }
+
+      const activeNorm = activeFile.toLowerCase();
+      const matches = bibEntries.filter(
+        (e) => e.path.toLowerCase() === activeNorm
+          || e.name.toLowerCase() === activeNorm
+      );
+      if (matches.length === 1) return { kind: 'found', entry: matches[0] };
+      // When the user has an active .bib tab but basename matches multiple
+      // entries and we have no file id to disambiguate, return a synthetic
+      // entry WITHOUT id so the doc-download path is skipped and the bridge
+      // fallback reads from the actual active tab (correct file).
+      if (matches.length > 1) {
+        // Use activeFile (basename) as path so the bridge path-first attempt
+        // does not resolve to a specific duplicate's tree node.
+        return { kind: 'found', entry: { path: activeFile, name: activeFile, ext: '.bib', kind: 'bib' as const } };
+      }
+      const baseName = activeFile.includes('/') ? activeFile.split('/').filter(Boolean).pop()! : activeFile;
+      return { kind: 'found', entry: { path: activeFile, name: baseName, ext: '.bib', kind: 'bib' } };
+    }
+
+    if (bibEntries.length === 0) return { kind: 'none' };
+    if (bibEntries.length === 1) return { kind: 'found', entry: bibEntries[0] };
+    return { kind: 'ambiguous', paths: bibEntries.map((e) => e.path) };
+  }
+
+  const onCheckReferences = async () => {
+    const bridge = window.ageafBridge;
+    if (!bridge) return;
+
+    const conversationId = chatConversationIdRef.current;
+    if (!conversationId) return;
+
+    if (!editorEmpty) {
+      setMessages((prev) => [...prev, createMessage({
+        role: 'system',
+        content: 'Clear the message input before checking references.',
+      })]);
+      return;
+    }
+
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.isSending) {
+      setMessages((prev) => [...prev, createMessage({
+        role: 'system',
+        content: 'Please wait for the current response to finish.',
+      })]);
+      return;
+    }
+
+    // Step 1: Find .bib file using full DOM scan (tabs + file tree)
+    const allEntries = detectProjectFilesFromDom();
+    const bibEntries = allEntries.filter((e) => e.kind === 'bib');
+    let activeFile = getActiveFilename();
+    let activeFileId = getActiveFileId();
+
+    // If the active editor tab is not a .bib, check the file tree selection
+    if (!activeFile || !activeFile.toLowerCase().endsWith('.bib')) {
+      const treeBib = getTreeSelectedBibFile();
+      if (treeBib) {
+        activeFile = treeBib.name;
+        activeFileId = treeBib.id;
+      }
+    }
+
+    const selection = selectBibEntry(bibEntries, activeFile, activeFileId);
+
+    if (selection.kind === 'none') {
+      setMessages((prev) => [...prev, createMessage({
+        role: 'system',
+        content: 'No .bib file found. Open the file tree or a .bib tab, then try again.',
+      })]);
+      return;
+    }
+
+    if (selection.kind === 'ambiguous') {
+      setMessages((prev) => [...prev, createMessage({
+        role: 'system',
+        content: `Multiple .bib files found (${selection.paths.join(', ')}). Open the one you want to check, then click again.`,
+      })]);
+      return;
+    }
+
+    const bibEntry = selection.entry;
+
+    // Step 2: Fetch bib content
+    // Primary: doc-download API using docId (path-independent, no basename ambiguity)
+    const projectId = getOverleafProjectIdFromPathname(window.location.pathname);
+    let bibContent: string | null = null;
+
+    if (projectId && bibEntry.id) {
+      for (const prefix of ['/Project/', '/project/']) {
+        try {
+          const url = `${prefix}${encodeURIComponent(projectId)}/doc/${encodeURIComponent(bibEntry.id)}/download`;
+          const resp = await fetch(url, { credentials: 'include' });
+          if (resp.ok) { bibContent = await resp.text(); break; }
+        } catch { /* try next */ }
+      }
+    }
+
+    // Fallback: bridge tab-switching (try path first, then basename)
+    if (bibContent == null && bridge.requestFileContent) {
+      for (const ref of [bibEntry.path, bibEntry.name]) {
+        if (!ref) continue;
+        try {
+          const result = await bridge.requestFileContent(ref);
+          if (result?.ok && typeof result.content === 'string' && result.content.length > 0) {
+            bibContent = result.content;
+            break;
+          }
+        } catch { /* try next */ }
+      }
+    }
+
+    if (bibContent == null) {
+      setMessages((prev) => [...prev, createMessage({
+        role: 'system',
+        content: `Unable to read ${bibEntry.path}. Try opening the file in Overleaf first.`,
+      })]);
+      return;
+    }
+
+    // Step 3: Send as attachment (compact chip in chat) + skill directive
+    const lineCount = bibContent.split('\n').length;
+    const bibAttachment: FileAttachment = {
+      id: `ref-check-${Date.now()}`,
+      path: bibEntry.path,
+      name: bibEntry.name,
+      ext: '.bib',
+      sizeBytes: new Blob([bibContent]).size,
+      lineCount,
+      content: bibContent,
+    };
+
+    const message = `/citation-management Check all references in ${bibEntry.path} for accuracy. `
+      + 'Detect hallucinated or fabricated citations, verify bibliographic details '
+      + '(DOIs, titles, authors, years, venues), and identify any arXiv preprints '
+      + 'that have since been published. Replace preprint entries with their published versions.';
+
+    void sendMessage(message, [], [bibAttachment], [], 'chat');
+  };
+
   const onInputKeyDown = (event: KeyboardEvent) => {
     if (mentionOpen) {
       if (event.key === 'ArrowDown') {
@@ -9026,6 +9239,15 @@ const Panel = () => {
                   data-tooltip="Rewrite selection"
                 >
                   <RewriteIcon />
+                </button>
+                <button
+                  class="ageaf-toolbar-button"
+                  type="button"
+                  onClick={() => void onCheckReferences()}
+                  aria-label="Check references"
+                  data-tooltip="Check references"
+                >
+                  <CheckReferencesIcon />
                 </button>
                 <button
                   class="ageaf-toolbar-button"

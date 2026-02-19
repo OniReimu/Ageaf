@@ -68,3 +68,7 @@ docs/*
 dist-native/
 .codex/
 .agents/
+
+# Agent Configuration
+CLAUDE.md
+!/CLAUDE.md
