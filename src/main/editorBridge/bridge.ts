@@ -298,209 +298,255 @@ function onSelectionRequest(event: Event) {
 
 async function onApplyRequest(event: Event) {
   const detail = (event as CustomEvent<ApplyRequest>).detail;
-  let view = getCmView();
+  if (!detail?.requestId) return;
   let ok = true;
   let error: string | undefined;
 
-  if (!detail?.requestId) return;
+  try {
+    let view = getCmView();
 
-  const withProtectedEditBypass = (fn: () => void) => {
-    const key = '__ageafAllowProtectedEdits';
-    const prev = (window as any)[key];
-    (window as any)[key] = true;
-    try {
-      fn();
-    } finally {
-      (window as any)[key] = prev;
-    }
-  };
-
-  const findClosestOccurrence = (fullText: string, needle: string, hintFrom: number) => {
-    if (!needle) return null;
-    const windowSize = 8000;
-    const start = Math.max(0, hintFrom - Math.floor(windowSize / 2));
-    const end = Math.min(fullText.length, hintFrom + Math.floor(windowSize / 2));
-    const chunk = fullText.slice(start, end);
-    const hits: number[] = [];
-    let idx = chunk.indexOf(needle);
-    while (idx !== -1) {
-      hits.push(start + idx);
-      idx = chunk.indexOf(needle, idx + Math.max(1, needle.length));
-      if (hits.length > 10) break;
-    }
-    if (hits.length === 0) return null;
-    // Choose the closest hit to the original from position.
-    let best = hits[0];
-    let bestDist = Math.abs(best - hintFrom);
-    for (const pos of hits.slice(1)) {
-      const dist = Math.abs(pos - hintFrom);
-      if (dist < bestDist) {
-        best = pos;
-        bestDist = dist;
+    const withProtectedEditBypass = (fn: () => void) => {
+      const key = '__ageafAllowProtectedEdits';
+      const prev = (window as any)[key];
+      (window as any)[key] = true;
+      try {
+        fn();
+      } finally {
+        (window as any)[key] = prev;
       }
-    }
-    // Only accept if reasonably close (prevents wrong replacements when repeated text exists).
-    if (bestDist > 4000) return null;
-    return { from: best, to: best + needle.length };
-  };
+    };
 
-  if (detail.kind === 'replaceRange') {
-    if (typeof detail.expectedOldText !== 'string' || typeof detail.text !== 'string') return;
-    const current = view.state.sliceDoc(detail.from, detail.to);
-    if (current !== detail.expectedOldText) {
-      // If offsets shifted due to earlier edits (e.g., multiple hunks in same paragraph),
-      // fall back to locating the expected text near the original position.
-      const full = view.state.sliceDoc(0, view.state.doc.length);
-      const closest = findClosestOccurrence(full, detail.expectedOldText, detail.from);
-      if (!closest) {
+    const findClosestOccurrence = (fullText: string, needle: string, hintFrom: number) => {
+      if (!needle) return null;
+      const windowSize = 8000;
+      const start = Math.max(0, hintFrom - Math.floor(windowSize / 2));
+      const end = Math.min(fullText.length, hintFrom + Math.floor(windowSize / 2));
+      const chunk = fullText.slice(start, end);
+      const hits: number[] = [];
+      let idx = chunk.indexOf(needle);
+      while (idx !== -1) {
+        hits.push(start + idx);
+        idx = chunk.indexOf(needle, idx + Math.max(1, needle.length));
+        if (hits.length > 10) break;
+      }
+      if (hits.length === 0) return null;
+      // Choose the closest hit to the original from position.
+      let best = hits[0];
+      let bestDist = Math.abs(best - hintFrom);
+      for (const pos of hits.slice(1)) {
+        const dist = Math.abs(pos - hintFrom);
+        if (dist < bestDist) {
+          best = pos;
+          bestDist = dist;
+        }
+      }
+      // Only accept if reasonably close (prevents wrong replacements when repeated text exists).
+      if (bestDist > 4000) return null;
+      return { from: best, to: best + needle.length };
+    };
+
+    if (detail.kind === 'replaceRange') {
+      const hasValidRange =
+        typeof detail.from === 'number' &&
+        Number.isFinite(detail.from) &&
+        typeof detail.to === 'number' &&
+        Number.isFinite(detail.to) &&
+        detail.to >= detail.from;
+
+      if (
+        typeof detail.expectedOldText !== 'string' ||
+        typeof detail.text !== 'string' ||
+        !hasValidRange
+      ) {
         ok = false;
-        error = 'Selection changed';
+        error = 'Invalid replaceRange patch';
       } else {
-        const verify = view.state.sliceDoc(closest.from, closest.to);
-        if (verify !== detail.expectedOldText) {
-          ok = false;
-          error = 'Selection changed';
+        const current = view.state.sliceDoc(detail.from, detail.to);
+        if (current !== detail.expectedOldText) {
+          // If offsets shifted due to earlier edits (e.g., multiple hunks in same paragraph),
+          // fall back to locating the expected text near the original position.
+          const full = view.state.sliceDoc(0, view.state.doc.length);
+          const closest = findClosestOccurrence(full, detail.expectedOldText, detail.from);
+          if (!closest) {
+            ok = false;
+            error = 'Selection changed';
+          } else {
+            const verify = view.state.sliceDoc(closest.from, closest.to);
+            if (verify !== detail.expectedOldText) {
+              ok = false;
+              error = 'Selection changed';
+            } else {
+              withProtectedEditBypass(() => {
+                applyReplacementAtRange(view, closest.from, closest.to, detail.text);
+              });
+            }
+          }
         } else {
           withProtectedEditBypass(() => {
-            applyReplacementAtRange(view, closest.from, closest.to, detail.text);
+            applyReplacementAtRange(view, detail.from, detail.to, detail.text);
           });
+        }
+      }
+    } else if (detail.kind === 'replaceInFile') {
+      if (
+        typeof detail.filePath !== 'string' ||
+        typeof detail.expectedOldText !== 'string' ||
+        typeof detail.text !== 'string'
+      ) {
+        ok = false;
+        error = 'Invalid replaceInFile patch';
+      } else {
+        const originalName = getActiveTabName();
+
+        const activateTargetFile = async () => {
+          const beforeText = view.state.sliceDoc(0, view.state.doc.length);
+          const beforeHash = `${beforeText.length}:${beforeText.slice(0, 64)}:${beforeText.slice(-64)}`;
+          const candidates = Array.from(
+            new Set([detail.filePath.trim(), normalizeFileName(detail.filePath)])
+          ).filter(Boolean);
+
+          for (const candidate of candidates) {
+            // eslint-disable-next-line no-await-in-loop
+            const activated = await tryActivateFileByName(candidate);
+            if (activated) {
+              // eslint-disable-next-line no-await-in-loop
+              await waitForDocChange(beforeHash, 2500);
+              view = getCmView();
+              break;
+            }
+          }
+        };
+
+        const resolveReplacementRange = () => {
+          const rangeFrom =
+            typeof detail.from === 'number' && Number.isFinite(detail.from) ? detail.from : null;
+          const rangeTo =
+            typeof detail.to === 'number' && Number.isFinite(detail.to) ? detail.to : null;
+
+          // Try explicit from/to with content verification
+          if (
+            typeof rangeFrom === 'number' &&
+            typeof rangeTo === 'number' &&
+            rangeTo >= rangeFrom
+          ) {
+            const current = view.state.sliceDoc(rangeFrom, rangeTo);
+            if (current === detail.expectedOldText) {
+              return { ok: true as const, from: rangeFrom, to: rangeTo };
+            }
+            // Offsets don't match content — fall through to indexOf search
+          }
+
+          const full = view.state.sliceDoc(0, view.state.doc.length);
+          const first = full.indexOf(detail.expectedOldText);
+          if (first === -1) {
+            return {
+              ok: false as const,
+              error: 'Expected text not found',
+              retryable: true as const,
+            };
+          }
+          const second = full.indexOf(
+            detail.expectedOldText,
+            first + detail.expectedOldText.length
+          );
+          if (second !== -1) {
+            return {
+              ok: false as const,
+              error: 'Expected text appears multiple times',
+              retryable: false as const,
+            };
+          }
+          return { ok: true as const, from: first, to: first + detail.expectedOldText.length };
+        };
+
+        try {
+          const hasExplicitRange =
+            typeof detail.from === 'number' &&
+            Number.isFinite(detail.from) &&
+            typeof detail.to === 'number' &&
+            Number.isFinite(detail.to) &&
+            detail.to >= detail.from;
+
+          if (!detail.expectedOldText && !hasExplicitRange) {
+            ok = false;
+            error = 'Expected text missing';
+          } else {
+            let activated = false;
+            let resolved = resolveReplacementRange();
+
+            if (!resolved.ok && resolved.retryable) {
+              try {
+                await activateTargetFile();
+                activated = true;
+                resolved = resolveReplacementRange();
+              } catch (err) {
+                ok = false;
+                error = err instanceof Error ? err.message : String(err);
+              }
+            }
+
+            if (ok && resolved.ok) {
+              const current = view.state.sliceDoc(resolved.from, resolved.to);
+              if (current !== detail.expectedOldText) {
+                if (!activated) {
+                  try {
+                    await activateTargetFile();
+                    activated = true;
+                  } catch (err) {
+                    ok = false;
+                    error = err instanceof Error ? err.message : String(err);
+                  }
+                }
+
+                if (ok) {
+                  const refreshed = resolveReplacementRange();
+                  if (refreshed.ok) {
+                    const refreshedCurrent = view.state.sliceDoc(refreshed.from, refreshed.to);
+                    if (refreshedCurrent !== detail.expectedOldText) {
+                      ok = false;
+                      error = 'Selection changed';
+                    } else {
+                      withProtectedEditBypass(() => {
+                        applyReplacementAtRange(view, refreshed.from, refreshed.to, detail.text);
+                      });
+                    }
+                  } else if (refreshed.error === 'Expected text not found') {
+                    ok = false;
+                    error = `Open ${normalizeFileName(detail.filePath)} in Overleaf and retry.`;
+                  } else {
+                    ok = false;
+                    error = refreshed.error;
+                  }
+                }
+              } else {
+                withProtectedEditBypass(() => {
+                  applyReplacementAtRange(
+                    view,
+                    resolved.from as number,
+                    resolved.to as number,
+                    detail.text
+                  );
+                });
+              }
+            } else if (ok && !resolved.ok) {
+              ok = false;
+              error =
+                resolved.error === 'Expected text not found'
+                  ? `Open ${normalizeFileName(detail.filePath)} in Overleaf and retry.`
+                  : resolved.error;
+            }
+          }
+        } finally {
+          restoreActiveFile(originalName, getActiveTabName());
         }
       }
     } else {
-      withProtectedEditBypass(() => {
-        applyReplacementAtRange(view, detail.from, detail.to, detail.text);
-      });
+      ok = false;
+      error = 'Unsupported apply request kind';
     }
-  } else if (detail.kind === 'replaceInFile') {
-    if (
-      typeof detail.filePath !== 'string' ||
-      typeof detail.expectedOldText !== 'string' ||
-      typeof detail.text !== 'string'
-    ) {
-      return;
-    }
-
-    const originalName = getActiveTabName();
-
-    const activateTargetFile = async () => {
-      const beforeText = view.state.sliceDoc(0, view.state.doc.length);
-      const beforeHash = `${beforeText.length}:${beforeText.slice(0, 64)}:${beforeText.slice(-64)}`;
-      const candidates = Array.from(
-        new Set([detail.filePath.trim(), normalizeFileName(detail.filePath)])
-      ).filter(Boolean);
-
-      for (const candidate of candidates) {
-        // eslint-disable-next-line no-await-in-loop
-        const activated = await tryActivateFileByName(candidate);
-        if (activated) {
-          // eslint-disable-next-line no-await-in-loop
-          await waitForDocChange(beforeHash, 2500);
-          view = getCmView();
-          break;
-        }
-      }
-    };
-
-    const resolveReplacementRange = () => {
-      const rangeFrom =
-        typeof detail.from === 'number' && Number.isFinite(detail.from) ? detail.from : null;
-      const rangeTo =
-        typeof detail.to === 'number' && Number.isFinite(detail.to) ? detail.to : null;
-
-      // Try explicit from/to with content verification
-      if (typeof rangeFrom === 'number' && typeof rangeTo === 'number' && rangeTo >= rangeFrom) {
-        const current = view.state.sliceDoc(rangeFrom, rangeTo);
-        if (current === detail.expectedOldText) {
-          return { ok: true as const, from: rangeFrom, to: rangeTo };
-        }
-        // Offsets don't match content — fall through to indexOf search
-      }
-
-      const full = view.state.sliceDoc(0, view.state.doc.length);
-      const first = full.indexOf(detail.expectedOldText);
-      if (first === -1) {
-        return { ok: false as const, error: 'Expected text not found', retryable: true as const };
-      }
-      const second = full.indexOf(detail.expectedOldText, first + detail.expectedOldText.length);
-      if (second !== -1) {
-        return { ok: false as const, error: 'Expected text appears multiple times', retryable: false as const };
-      }
-      return { ok: true as const, from: first, to: first + detail.expectedOldText.length };
-    };
-
-    const hasExplicitRange =
-      typeof detail.from === 'number' &&
-      Number.isFinite(detail.from) &&
-      typeof detail.to === 'number' &&
-      Number.isFinite(detail.to) &&
-      detail.to >= detail.from;
-
-      if (!detail.expectedOldText && !hasExplicitRange) {
-        ok = false;
-        error = 'Expected text missing';
-      } else {
-        let activated = false;
-        let resolved = resolveReplacementRange();
-
-      if (!resolved.ok && resolved.retryable) {
-        try {
-          await activateTargetFile();
-          activated = true;
-          resolved = resolveReplacementRange();
-        } catch (err) {
-          ok = false;
-          error = err instanceof Error ? err.message : String(err);
-        }
-      }
-
-      if (ok && resolved.ok) {
-        const current = view.state.sliceDoc(resolved.from, resolved.to);
-        if (current !== detail.expectedOldText) {
-          if (!activated) {
-            try {
-              await activateTargetFile();
-              activated = true;
-            } catch (err) {
-              ok = false;
-              error = err instanceof Error ? err.message : String(err);
-            }
-          }
-
-          if (ok) {
-            const refreshed = resolveReplacementRange();
-            if (refreshed.ok) {
-              const refreshedCurrent = view.state.sliceDoc(refreshed.from, refreshed.to);
-              if (refreshedCurrent !== detail.expectedOldText) {
-                ok = false;
-                error = 'Selection changed';
-              } else {
-                withProtectedEditBypass(() => {
-                  applyReplacementAtRange(view, refreshed.from, refreshed.to, detail.text);
-                });
-              }
-            } else if (refreshed.error === 'Expected text not found') {
-              ok = false;
-              error = `Open ${normalizeFileName(detail.filePath)} in Overleaf and retry.`;
-            } else {
-              ok = false;
-              error = refreshed.error;
-            }
-          }
-        } else {
-          withProtectedEditBypass(() => {
-            applyReplacementAtRange(view, resolved.from as number, resolved.to as number, detail.text);
-          });
-        }
-      } else if (ok && !resolved.ok) {
-        ok = false;
-        error =
-          resolved.error === 'Expected text not found'
-            ? `Open ${normalizeFileName(detail.filePath)} in Overleaf and retry.`
-            : resolved.error;
-      }
-    }
-
-    restoreActiveFile(originalName, getActiveTabName());
+  } catch (err) {
+    ok = false;
+    error = err instanceof Error ? err.message : String(err);
   }
 
   const response: ApplyResponse = {

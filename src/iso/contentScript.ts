@@ -15,6 +15,7 @@ const EDITOR_FILE_RESPONSE_EVENT = 'ageaf:editor:file-content:response';
 const EDITOR_FILE_NAVIGATE_REQUEST_EVENT = 'ageaf:editor:file-navigate:request';
 const EDITOR_FILE_NAVIGATE_RESPONSE_EVENT = 'ageaf:editor:file-navigate:response';
 const PANEL_INSERT_SELECTION_EVENT = 'ageaf:panel:insert-selection';
+const APPLY_REQUEST_TIMEOUT_MS = 12000;
 const selectionRequests = new Map<string, (payload: any) => void>();
 const fileRequests = new Map<string, (payload: any) => void>();
 const applyRequests = new Map<string, (payload: { ok: boolean; error?: string }) => void>();
@@ -129,42 +130,79 @@ function insertAtCursor(text: string) {
   window.dispatchEvent(new CustomEvent(EDITOR_INSERT_EVENT, { detail: { text } }));
 }
 
+function createApplyRequest(
+  requestId: string,
+  payload:
+    | {
+      requestId: string;
+      kind: 'replaceRange';
+      from: number;
+      to: number;
+      expectedOldText: string;
+      text: string;
+    }
+    | {
+      requestId: string;
+      kind: 'replaceInFile';
+      filePath: string;
+      expectedOldText: string;
+      text: string;
+      from?: number;
+      to?: number;
+    }
+) {
+  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    const timeoutId = window.setTimeout(() => {
+      const handler = applyRequests.get(requestId);
+      if (!handler) return;
+      applyRequests.delete(requestId);
+      handler({ ok: false, error: 'Timed out waiting for editor apply response' });
+    }, APPLY_REQUEST_TIMEOUT_MS);
+
+    applyRequests.set(requestId, (result) => {
+      clearTimeout(timeoutId);
+      resolve(result);
+    });
+
+    try {
+      window.dispatchEvent(
+        new CustomEvent(EDITOR_APPLY_REQUEST_EVENT, {
+          detail: payload,
+        })
+      );
+    } catch (error) {
+      clearTimeout(timeoutId);
+      applyRequests.delete(requestId);
+      resolve({
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed to dispatch apply request',
+      });
+    }
+  });
+}
+
 function applyReplaceRange({ from, to, expectedOldText, text }: ApplyReplaceRangeArgs) {
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
-    applyRequests.set(requestId, resolve);
-    window.dispatchEvent(
-      new CustomEvent(EDITOR_APPLY_REQUEST_EVENT, {
-        detail: {
-          requestId,
-          kind: 'replaceRange',
-          from,
-          to,
-          expectedOldText,
-          text,
-        },
-      })
-    );
+  return createApplyRequest(requestId, {
+    requestId,
+    kind: 'replaceRange',
+    from,
+    to,
+    expectedOldText,
+    text,
   });
 }
 
 function applyReplaceInFile({ filePath, expectedOldText, text, from, to }: ApplyReplaceInFileArgs) {
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
-    applyRequests.set(requestId, resolve);
-    window.dispatchEvent(
-      new CustomEvent(EDITOR_APPLY_REQUEST_EVENT, {
-        detail: {
-          requestId,
-          kind: 'replaceInFile',
-          filePath,
-          expectedOldText,
-          text,
-          ...(typeof from === 'number' ? { from } : {}),
-          ...(typeof to === 'number' ? { to } : {}),
-        },
-      })
-    );
+  return createApplyRequest(requestId, {
+    requestId,
+    kind: 'replaceInFile',
+    filePath,
+    expectedOldText,
+    text,
+    ...(typeof from === 'number' ? { from } : {}),
+    ...(typeof to === 'number' ? { to } : {}),
   });
 }
 
