@@ -93,6 +93,7 @@ let reviewBarItems: Array<{ messageId: string; from: number }> = [];
 let reviewBarFileKey: string | null = null;
 let reviewBarFocusedByFile: Map<string, string> = new Map();
 let bulkActionInProgress = false;
+let lastSelectionClearVersion = -1;
 
 function isDebugEnabled() {
   try {
@@ -130,10 +131,15 @@ function getCurrentProjectId() {
   return getProjectIdFromPathname(window.location.pathname);
 }
 
+const STYLE_VERSION = '2';
+
 function ensureInlineDiffStyles() {
-  if (document.getElementById(STYLE_ID)) return;
+  const existing = document.getElementById(STYLE_ID);
+  if (existing?.getAttribute('data-v') === STYLE_VERSION) return;
+  existing?.remove();
   const style = document.createElement('style');
   style.id = STYLE_ID;
+  style.setAttribute('data-v', STYLE_VERSION);
   style.textContent = `
     .ageaf-inline-diff-overlay {
       position: absolute;
@@ -176,16 +182,17 @@ function ensureInlineDiffStyles() {
       all: unset;
       cursor: pointer;
       font-family: 'Work Sans', -apple-system, sans-serif;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
-      padding: 5px 10px;
-      min-height: 28px;
-      border-radius: 6px;
+      padding: 2px 8px;
+      min-height: 20px;
+      border-radius: 4px;
       background: rgba(57, 185, 138, 0.2);
       color: #0a2318;
       border: 1px solid rgba(57, 185, 138, 0.4);
       transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
       box-sizing: border-box;
+      white-space: nowrap;
     }
 
     .ageaf-inline-diff-btn:hover {
@@ -236,10 +243,11 @@ function ensureInlineDiffStyles() {
       border-radius: 0;
       pointer-events: auto;
       box-sizing: border-box;
+      overflow: visible;
     }
 
     .ageaf-inline-diff-addition__text {
-      padding: 6px 8px 48px 8px; /* bottom space for buttons, overridden inline */
+      padding: 6px 8px;
       font-family: inherit;
       font-size: inherit;
       line-height: inherit;
@@ -255,11 +263,20 @@ function ensureInlineDiffStyles() {
 
     .ageaf-inline-diff-addition__actions {
       position: absolute;
-      right: 10px;
-      bottom: 10px;
+      right: 4px;
+      bottom: 0;
+      transform: translateY(100%);
       display: inline-flex;
-      gap: 8px;
+      gap: 4px;
       flex: 0 0 auto;
+      z-index: 2147483647;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border-radius: 6px;
+      padding: 3px 4px;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
+      pointer-events: auto;
     }
 
     .ageaf-inline-diff-widget {
@@ -272,6 +289,7 @@ function ensureInlineDiffStyles() {
       pointer-events: auto;
       box-sizing: border-box;
       position: relative;
+      overflow: visible;
     }
 
     .ageaf-inline-diff-widget__old {
@@ -289,7 +307,7 @@ function ensureInlineDiffStyles() {
     }
 
     .ageaf-inline-diff-widget__text {
-      padding: 6px 8px 48px 8px;
+      padding: 6px 8px;
       font-family: inherit;
       font-size: inherit;
       line-height: inherit;
@@ -309,7 +327,7 @@ function ensureInlineDiffStyles() {
       border-radius: 4px;
       outline: none;
       resize: none;
-      min-height: 64px;
+      min-height: 32px;
       display: block;
       overflow: hidden; /* auto-sized via JS; avoid internal scrolling */
       height: auto;
@@ -328,11 +346,20 @@ function ensureInlineDiffStyles() {
 
     .ageaf-inline-diff-widget__actions {
       position: absolute;
-      right: 10px;
-      bottom: 10px;
+      right: 4px;
+      bottom: 0;
+      transform: translateY(100%);
       display: inline-flex;
-      gap: 8px;
+      gap: 4px;
       flex: 0 0 auto;
+      z-index: 2147483647;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border-radius: 6px;
+      padding: 3px 4px;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
+      pointer-events: auto;
     }
 
     .ageaf-review-bar {
@@ -1357,6 +1384,20 @@ function renderOverlay() {
     .sort((a, b) => a.from - b.from);
   updateReviewBar(activeNameForBar, barItems);
 
+  // Clear the editor selection highlight once when new overlays appear,
+  // so the blue "rewrite selection" shadow doesn't linger behind the diff.
+  if (resolved.length > 0 && overlaySetVersion !== lastSelectionClearVersion) {
+    lastSelectionClearVersion = overlaySetVersion;
+    try {
+      const sel = view.state.selection;
+      if (sel && sel.main && sel.main.from !== sel.main.to) {
+        view.dispatch({ selection: { anchor: sel.main.to } });
+      }
+    } catch {
+      // ignore — selection clearing is best-effort
+    }
+  }
+
   // If there are no overlays at all, ensure we clear any rendered overlay artifacts and stop.
   if (overlayById.size === 0) {
     // Clear CM6 widget set if previously rendered.
@@ -1578,16 +1619,6 @@ function renderOverlay() {
     text.style.fontFamily = contentStyle.fontFamily;
     text.style.fontSize = contentStyle.fontSize;
     text.style.lineHeight = contentStyle.lineHeight;
-
-    const fontSize = Number.parseFloat(contentStyle.fontSize);
-    const lineHeightValue = Number.parseFloat(contentStyle.lineHeight);
-    const resolvedLineHeight = Number.isFinite(lineHeightValue)
-      ? lineHeightValue
-      : Number.isFinite(fontSize)
-        ? fontSize * 1.3
-        : 16;
-    // 2-3 empty lines for the buttons, inside the green paragraph.
-    text.style.paddingBottom = `${Math.round(resolvedLineHeight * 2.6 + 10)}px`;
 
     added.appendChild(text);
     added.appendChild(actions);
