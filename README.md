@@ -106,6 +106,19 @@ BYOK supports **1,000+ models** across 20+ providers. Here is a highlight of sup
    - Select the `build/` directory from this repository
    - After making changes, click the reload icon on the extension card in `chrome://extensions`, then refresh your Overleaf tab
 
+## Native Messaging on macOS (Homebrew)
+
+For production-style local usage, install the native companion host with Homebrew:
+
+```bash
+brew install --cask ageaf-host
+```
+
+If Gatekeeper blocks launch because the app is **unsigned**, open:
+**System Settings → Privacy & Security** and allow Ageaf Host to run.
+
+More details are in [`docs/native-messaging.md`](docs/native-messaging.md).
+
 
 ## License
 

@@ -1,74 +1,68 @@
-# Notation & Terminology Consistency Pass
+# Claude Compaction Parity vs CodePilot
 
-**Goal:** Implement a full-project, button-triggered notation/terminology consistency pass that reports issues and can generate reviewable draft fixes.
+**Goal:** Produce an evidence-based comparison of CodePilot vs Ageaf Claude compaction logic and define a prioritized plan to close the highest-impact gaps.
 
 **Current Phase:** 5 - Delivery
 
 ## Phases
 
 ### Phase 1: Requirements & Discovery
-- [x] Understand user requirements
-- [x] Capture confirmed product decisions from brainstorming
-- [x] Explore relevant extension + host code paths
-- [x] Document findings
+- [x] Confirm CodePilot compaction ingress, session handling, and status signaling
+- [x] Confirm current Ageaf Claude compaction ingress, runtime behavior, and retry/error handling
+- [x] Record parity gaps and severity
 
 **Status:** complete
 
 ### Phase 2: Planning & Structure
-- [x] Decide technical approach and boundaries
-- [x] Define extension/host contract for analyze + draft-fix actions
-- [x] Break into actionable implementation steps
+- [x] Convert gaps into a concrete implementation roadmap
+- [x] Define rollout order and compatibility constraints
+- [x] Document decisions and open questions
 
 **Status:** complete
 
 ### Phase 3: Implementation
-- [x] Add panel trigger and analyze flow wiring
-- [x] Add host workflow for deterministic extraction + hybrid adjudication
-- [x] Add findings card UI and draft-fix action
-- [x] Reuse patch review pipeline for suggested fixes
+- [ ] Wire Claude compaction command path in host/runtime
+- [ ] Add compaction lifecycle status events for panel consumption
+- [ ] Add overflow-triggered compact-and-retry behavior for Claude runtime
+- [ ] Add/adjust tests for Claude compaction lifecycle and retry behavior
 
-**Status:** complete
+**Status:** pending
 
 ### Phase 4: Testing & Verification
-- [x] Add/extend extension unit tests
-- [x] Add/extend host unit tests
-- [x] Run targeted and relevant test suites
-- [x] Validate graceful degradation paths
+- [ ] Run host tests (Claude runtime + compaction paths)
+- [ ] Validate panel SSE behavior under compact/retry scenarios
+- [ ] Verify no regression in existing Codex compaction logic
 
-**Status:** complete
+**Status:** pending
 
 ### Phase 5: Delivery
-- [x] Final review of behavior vs approved design
-- [x] Summarize changes, risks, and verification evidence
-- [x] Prepare handoff
+- [x] Summarize findings and final plan
+- [ ] Capture residual risks and follow-up tasks
+- [ ] Prepare handoff notes
 
-**Status:** complete
+**Status:** in_progress
 
 ## Key Questions
-- Which glossary/acronym macro variants should be supported in v1 beyond `\\newacronym` and `\\acro`?
-- What file/byte caps should gate full-project scans to keep UX responsive?
-- How should findings map to confidence thresholds for auto-draft eligibility?
+- Should Claude compaction be explicit user command only, automatic overflow fallback, or both?
+- Should we persist Claude SDK session IDs separately from job IDs for exact continuation semantics?
+- Do we standardize compaction status events across Codex and Claude runtimes at the protocol layer?
 
 ## Decisions Made
 
 | Decision | Rationale | Date |
 |----------|-----------|------|
-| Button-only trigger (no slash skill) | Feature depends on Overleaf project context and should be explicit UX action | 2026-02-24 |
-| Full-project scope | User explicitly chose entire project consistency checks | 2026-02-24 |
-| Report + draft fixes | Keeps user control by reusing patch review accept/reject flow | 2026-02-24 |
-| Acronym rule: first-use expansion only | Clear, predictable default for academic manuscripts | 2026-02-24 |
-| Glossary macros authoritative + prose contradiction flagging | Preserve explicit project definitions while still catching real drift | 2026-02-24 |
-| Hybrid approach (deterministic + LLM adjudication) | Balances deterministic precision with semantic drift detection | 2026-02-24 |
-| Track `docs/manus/**` in git | User chose manus files to be versioned rather than local-only | 2026-02-24 |
-| Action contract uses `notation_check` + `notation_draft_fixes` | Keeps report and fix-generation explicit while staying button-driven | 2026-02-24 |
+| Start a new manus task and archive previous completed task | Required by manus workflow when `.active` is missing | 2026-02-23 |
+| Treat Claude compaction gap as high-priority parity work | Missing end-to-end compaction behavior causes hard failures on context pressure | 2026-02-23 |
+| Reuse existing panel plan-phase protocol for Claude compaction lifecycle | Minimizes UI churn and leverages existing compaction status rendering | 2026-02-23 |
+| Sequence fix as ingress -> lifecycle -> retry -> session persistence -> tests | Reduces risk by unlocking behavior first, then improving continuity and reliability | 2026-02-23 |
 
 ## Errors Encountered
 
 | Error | Attempts | Resolution |
 |-------|----------|------------|
-| Root test suite has 6 existing failures unrelated to notation feature | Ran focused tests + full root suite to isolate failures | Logged failing tests explicitly; feature-specific tests pass |
-| `cd host && npm run build` fails with pre-existing TypeScript errors outside touched files | Executed host build after implementation | Logged as pre-existing repository issue; host test suite passes |
+| `rg` included non-existent `host/src/index.ts` path during scan | 1 | Re-ran search against existing `host/src` paths only |
+| Tried to read non-existent `src/iso/panel/skillDirectives.ts` and `skillManifest.ts` | 1 | Located actual skill registry implementation in `src/iso/panel/skills/skillsRegistry.ts` and corresponding `Panel.tsx` call sites |
 
 ## Notes
-- Re-read this file before major design or implementation decisions.
-- Keep findings/progress logs updated as exploration and coding proceed.
+- Re-read this plan before major edits.
+- Keep findings source-grounded with file references.
