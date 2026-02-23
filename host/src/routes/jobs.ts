@@ -14,6 +14,10 @@ import type { JobEvent } from '../types.js';
 import { validatePatch } from '../validate.js';
 import { runRewriteSelection } from '../workflows/rewriteSelection.js';
 import { runFixCompileError } from '../workflows/fixCompileError.js';
+import {
+  runNotationConsistencyCheck,
+  runNotationDraftFixes,
+} from '../workflows/notationConsistency.js';
 import { setLastClaudeRuntimeConfig } from '../runtimes/claude/state.js';
 import type { ClaudeRuntimeConfig } from '../runtimes/claude/agent.js';
 import { runWithJobContext, registerJobEmitter, unregisterJobEmitter, resolveAskUserRequest, resolveCodexJobByPid, getActiveCodexJobId, executeAskUser, type AskUserQuestion } from '../interactive/askUserCore.js';
@@ -150,7 +154,13 @@ export function registerJobs(server: FastifyInstance) {
 
           if (provider === 'codex') {
             const action = payload.action ?? 'chat';
-            if (action !== 'chat' && action !== 'rewrite' && action !== 'fix_error') {
+            if (
+              action !== 'chat' &&
+              action !== 'rewrite' &&
+              action !== 'fix_error' &&
+              action !== 'notation_check' &&
+              action !== 'notation_draft_fixes'
+            ) {
               emitEvent({
                 event: 'done',
                 data: {
@@ -170,6 +180,14 @@ export function registerJobs(server: FastifyInstance) {
           }
           if (payload.action === 'fix_error') {
             await runFixCompileError(payload, emitEvent);
+            return;
+          }
+          if (payload.action === 'notation_check') {
+            await runNotationConsistencyCheck(payload, emitEvent);
+            return;
+          }
+          if (payload.action === 'notation_draft_fixes') {
+            await runNotationDraftFixes(payload, emitEvent);
             return;
           }
 

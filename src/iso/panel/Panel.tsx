@@ -84,6 +84,8 @@ import {
   SettingsIcon,
   RewriteIcon,
   CheckReferencesIcon,
+  NotationCheckIcon,
+  NotationDraftIcon,
   AttachFilesIcon,
   NewChatIconAlt,
   CloseSessionIcon,
@@ -230,6 +232,14 @@ const FILE_ATTACHMENT_EXTENSIONS = [
   '.tex',
   '.bib',
 ];
+const NOTATION_SCAN_EXTENSIONS = new Set([
+  '.tex',
+  '.sty',
+  '.cls',
+  '.md',
+]);
+const MAX_NOTATION_SCAN_FILES = 48;
+const MAX_NOTATION_SCAN_BYTES = 2 * 1024 * 1024;
 const MAX_FILE_ATTACHMENTS = 10;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 100 * 1024 * 1024;
@@ -498,7 +508,12 @@ type QueuedMessage = {
   patchFeedbackTarget?: PatchFeedbackTarget;
 };
 
-type JobAction = 'chat' | 'rewrite' | 'fix_error';
+type JobAction =
+  | 'chat'
+  | 'rewrite'
+  | 'fix_error'
+  | 'notation_check'
+  | 'notation_draft_fixes';
 
 type Patch =
   | { kind: 'replaceSelection'; text: string }
@@ -3760,6 +3775,13 @@ const Panel = () => {
     let candidate = matches[matches.length - 1]![0];
     if (candidate.toLowerCase().startsWith('description')) {
       const stripped = candidate.slice('description'.length);
+      if (/^[A-Za-z0-9]/.test(stripped)) {
+        candidate = stripped;
+      }
+    }
+    const bookPrefix = candidate.match(/^book[_-]?\d+/i);
+    if (bookPrefix) {
+      const stripped = candidate.slice(bookPrefix[0].length);
       if (/^[A-Za-z0-9]/.test(stripped)) {
         candidate = stripped;
       }
@@ -7425,6 +7447,334 @@ const Panel = () => {
     void sendMessage(message, [], [bibAttachment], [], 'chat');
   };
 
+  const collectNotationAttachments = async (
+    bridge: NonNullable<typeof window.ageafBridge>
+  ) => {
+    const allEntries = detectProjectFilesFromDom().filter(
+      (entry) => entry.kind !== 'folder'
+    );
+    const projectId = getOverleafProjectIdFromPathname(window.location.pathname);
+    const projectFiles: ProjectFile[] = allEntries.map((entry) => ({
+      path: entry.path,
+      name: entry.name,
+    }));
+    const projectEntryByPath = new Map<string, OverleafEntry>();
+    const projectEntriesByBasename = new Map<string, OverleafEntry[]>();
+    for (const entry of allEntries) {
+      const key = entry.path.toLowerCase();
+      const prev = projectEntryByPath.get(key);
+      if (!prev || (!prev.id && !!entry.id)) {
+        projectEntryByPath.set(key, entry);
+      }
+      const basenameKey = entry.name.trim().toLowerCase();
+      if (!basenameKey) continue;
+      const list = projectEntriesByBasename.get(basenameKey) ?? [];
+      list.push(entry);
+      projectEntriesByBasename.set(basenameKey, list);
+    }
+
+    const normalizeExt = (ext: string) =>
+      ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
+    const basename = (filePath: string) => {
+      const parts = filePath.split('/').filter(Boolean);
+      return parts.length > 0 ? parts[parts.length - 1]! : filePath;
+    };
+    const resolveProjectEntryForInputPath = (inputPath: string) => {
+      const normalized = inputPath.trim().toLowerCase();
+      if (!normalized) return null;
+      const exact = projectEntryByPath.get(normalized);
+      if (exact) return exact;
+
+      const basenameKey = basename(inputPath).trim().toLowerCase();
+      if (!basenameKey) return null;
+      const basenameMatches = projectEntriesByBasename.get(basenameKey) ?? [];
+      if (basenameMatches.length === 1) return basenameMatches[0]!;
+      if (basenameMatches.length <= 1) return null;
+
+      const suffixMatches = basenameMatches.filter((entry) => {
+        const pathLower = entry.path.toLowerCase();
+        return (
+          normalized.endsWith(`/${pathLower}`) ||
+          normalized.endsWith(pathLower) ||
+          pathLower.endsWith(`/${basenameKey}`) ||
+          pathLower === basenameKey
+        );
+      });
+      if (suffixMatches.length === 1) return suffixMatches[0]!;
+
+      const withId = suffixMatches.filter((entry) => !!entry.id);
+      if (withId.length === 1) return withId[0]!;
+      return null;
+    };
+
+    type NotationEntryOrigin = 'dom' | 'latex-input';
+    const queue: OverleafEntry[] = [];
+    const queued = new Set<string>();
+    const processed = new Set<string>();
+    const origins = new Map<string, NotationEntryOrigin>();
+
+    const enqueueEntry = (entry: OverleafEntry, origin: NotationEntryOrigin) => {
+      const normalizedPath = entry.path.trim();
+      if (!normalizedPath) return;
+      const normalizedExt = normalizeExt(
+        entry.ext || getFileExtension(normalizedPath) || '.tex'
+      );
+      if (!NOTATION_SCAN_EXTENSIONS.has(normalizedExt)) return;
+      const key = `${normalizedPath}:${normalizedExt}`.toLowerCase();
+      if (queued.has(key)) {
+        const existingOrigin = origins.get(key);
+        if (existingOrigin === 'latex-input' && origin === 'dom') {
+          origins.set(key, 'dom');
+        }
+        return;
+      }
+      queued.add(key);
+      origins.set(key, origin);
+      queue.push({
+        ...entry,
+        path: normalizedPath,
+        name: entry.name || basename(normalizedPath),
+        ext: normalizedExt,
+      });
+    };
+
+    const domEntries = [...allEntries].sort((a, b) =>
+      a.path.localeCompare(b.path)
+    );
+    for (const entry of domEntries) enqueueEntry(entry, 'dom');
+
+    const warnings: string[] = [];
+    const attachments: FileAttachment[] = [];
+    let totalBytes = 0;
+    let failedLatexInputReads = 0;
+
+    while (queue.length > 0) {
+      if (attachments.length >= MAX_NOTATION_SCAN_FILES) {
+        warnings.push(
+          `Reached file cap (${MAX_NOTATION_SCAN_FILES}); skipped remaining files.`
+        );
+        break;
+      }
+      const entry = queue.shift()!;
+      const normalizedExt = normalizeExt(entry.ext);
+      const key = `${entry.path}:${normalizedExt}`.toLowerCase();
+      if (processed.has(key)) continue;
+      processed.add(key);
+
+      let content: string | null = null;
+      if (projectId && entry.id) {
+        for (const prefix of ['/Project/', '/project/']) {
+          try {
+            const url = `${prefix}${encodeURIComponent(projectId)}/doc/${encodeURIComponent(entry.id)}/download`;
+            const response = await fetch(url, { credentials: 'include' });
+            if (response.ok) {
+              content = await response.text();
+              break;
+            }
+          } catch {
+            // fallback below
+          }
+        }
+      }
+
+      if (content == null && bridge.requestFileContent) {
+        for (const ref of [entry.path, entry.name]) {
+          if (!ref) continue;
+          try {
+            const result = await bridge.requestFileContent(ref);
+            if (result?.ok && typeof result.content === 'string') {
+              content = result.content;
+              break;
+            }
+          } catch {
+            // try next ref
+          }
+        }
+      }
+
+      if (content == null) {
+        if (origins.get(key) === 'dom') {
+          warnings.push(`Could not read ${entry.path}`);
+        } else {
+          failedLatexInputReads += 1;
+        }
+        continue;
+      }
+
+      const lineCount = content.split('\n').length;
+      const sizeBytes = new Blob([content]).size;
+      if (totalBytes + sizeBytes > MAX_NOTATION_SCAN_BYTES) {
+        warnings.push(
+          `Skipped ${entry.path} due to total scan cap (${Math.round(MAX_NOTATION_SCAN_BYTES / 1024)} KB).`
+        );
+        continue;
+      }
+
+      totalBytes += sizeBytes;
+      attachments.push({
+        id: `notation-${attachments.length + 1}-${Date.now()}`,
+        path: entry.path,
+        name: entry.name,
+        ext: normalizedExt,
+        sizeBytes,
+        lineCount,
+        content,
+      });
+
+      if (normalizedExt === '.tex') {
+        const inputPaths = collectLatexInputPaths(
+          content,
+          projectFiles,
+          entry.path,
+          { includeUnresolvedCandidates: true }
+        ).slice(0, MAX_INPUT_REFERENCES);
+        for (const inputPath of inputPaths) {
+          const normalizedInputPath = inputPath.trim();
+          if (!normalizedInputPath) continue;
+          const existingEntry = resolveProjectEntryForInputPath(
+            normalizedInputPath
+          );
+          if (existingEntry) {
+            enqueueEntry(existingEntry, 'latex-input');
+            continue;
+          }
+          const name = basename(normalizedInputPath);
+          enqueueEntry(
+            {
+              path: normalizedInputPath,
+              name,
+              ext: getFileExtension(name) || '.tex',
+              kind: classifyOverleafFile(name),
+            },
+            'latex-input'
+          );
+        }
+      }
+    }
+
+    if (failedLatexInputReads > 0) {
+      warnings.push(
+        `Could not read ${failedLatexInputReads} input-referenced file(s); open the Overleaf file tree and rerun to improve coverage.`
+      );
+    }
+
+    return { attachments, warnings };
+  };
+
+  const onNotationConsistencyPass = async () => {
+    const bridge = window.ageafBridge;
+    if (!bridge) return;
+
+    const conversationId = chatConversationIdRef.current;
+    if (!conversationId) return;
+
+    if (!editorEmpty) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Clear the message input before running notation check.',
+        }),
+      ]);
+      return;
+    }
+
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.isSending) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Please wait for the current response to finish.',
+        }),
+      ]);
+      return;
+    }
+
+    const { attachments, warnings } = await collectNotationAttachments(bridge);
+    if (attachments.length === 0) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content:
+            'No readable project text files found for notation check. Open the file tree and retry.',
+        }),
+      ]);
+      return;
+    }
+
+    const warningBlock =
+      warnings.length > 0
+        ? `\n\n[Notation scan warnings]\n- ${warnings.join('\n- ')}`
+        : '';
+
+    void sendMessage(
+      'Notation consistency pass' + warningBlock,
+      [],
+      attachments,
+      [],
+      'notation_check'
+    );
+  };
+
+  const onDraftNotationFixes = async () => {
+    const bridge = window.ageafBridge;
+    if (!bridge) return;
+
+    const conversationId = chatConversationIdRef.current;
+    if (!conversationId) return;
+
+    if (!editorEmpty) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Clear the message input before drafting notation fixes.',
+        }),
+      ]);
+      return;
+    }
+
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.isSending) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Please wait for the current response to finish.',
+        }),
+      ]);
+      return;
+    }
+
+    const { attachments, warnings } = await collectNotationAttachments(bridge);
+    if (attachments.length === 0) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content:
+            'No readable project text files found for notation draft fixes. Open the file tree and retry.',
+        }),
+      ]);
+      return;
+    }
+
+    const warningBlock =
+      warnings.length > 0
+        ? `\n\n[Notation scan warnings]\n- ${warnings.join('\n- ')}`
+        : '';
+
+    void sendMessage(
+      'Draft notation fixes' + warningBlock,
+      [],
+      attachments,
+      [],
+      'notation_draft_fixes'
+    );
+  };
+
   const onInputKeyDown = (event: KeyboardEvent) => {
     if (mentionOpen) {
       if (event.key === 'ArrowDown') {
@@ -9283,6 +9633,24 @@ const Panel = () => {
                 <button
                   class="ageaf-toolbar-button"
                   type="button"
+                  onClick={() => void onNotationConsistencyPass()}
+                  aria-label="Notation consistency pass"
+                  data-tooltip="Notation consistency pass"
+                >
+                  <NotationCheckIcon />
+                </button>
+                <button
+                  class="ageaf-toolbar-button"
+                  type="button"
+                  onClick={() => void onDraftNotationFixes()}
+                  aria-label="Draft notation fixes"
+                  data-tooltip="Draft notation fixes"
+                >
+                  <NotationDraftIcon />
+                </button>
+                <button
+                  class="ageaf-toolbar-button"
+                  type="button"
                   onClick={() => void onOpenFilePicker()}
                   aria-label="Attach files"
                   data-tooltip="Attach files"
@@ -10010,7 +10378,22 @@ export const detectProjectFilesFromDom = (): OverleafEntry[] => {
       /[A-Za-z0-9_./-]+\.(?:tex|bib|sty|cls|md|json|ya?ml|csv|xml|png|jpe?g|gif|svg|pdf|toml|ini|log|txt)\b/gi
     );
     if (!matches || matches.length === 0) return null;
-    return matches[matches.length - 1] ?? null;
+    let candidate = matches[matches.length - 1] ?? null;
+    if (!candidate) return null;
+    if (candidate.toLowerCase().startsWith('description')) {
+      const stripped = candidate.slice('description'.length);
+      if (/^[A-Za-z0-9]/.test(stripped)) {
+        candidate = stripped;
+      }
+    }
+    const bookPrefix = candidate.match(/^book[_-]?\d+/i);
+    if (bookPrefix) {
+      const stripped = candidate.slice(bookPrefix[0].length);
+      if (/^[A-Za-z0-9]/.test(stripped)) {
+        candidate = stripped;
+      }
+    }
+    return candidate;
   };
 
   const normalizeLabel = (raw: string): string => {
