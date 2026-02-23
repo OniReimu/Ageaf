@@ -284,7 +284,8 @@ const ATTACHMENT_LABEL_INLINE_REGEX =
   /\[Attachment:\s+(.+?)\s+·\s+(\d+)\s+lines(?:\s+·\s+lines?\s+(\d+)(?:-(\d+))?)?\]/g;
 const MENTION_INLINE_REGEX = /@\[(file|folder):([^\]]+)\]/g;
 
-const RING_CIRCUMFERENCE = 2 * Math.PI * 10;
+const ringCircumference = 2 * Math.PI * 10;
+const RING_CIRCUMFERENCE = ringCircumference;
 
 /* ── Shared tool display helpers (used by renderCoTBlock & renderToolIndicators) ─ */
 
@@ -771,6 +772,8 @@ const Panel = () => {
       byId.set(message.id, message);
       const patchReview = message.patchReview;
       if (!patchReview || patchReview.kind !== 'replaceRangeInFile') continue;
+      const status = (patchReview as any).status ?? 'pending';
+      if (status !== 'pending') continue;
       const fileKey = patchReview.filePath.toLowerCase();
       const existing = groupMap.get(fileKey);
       if (existing) {
@@ -4706,7 +4709,13 @@ const Panel = () => {
                         })();
                       }}
                     >
-                      {isCopied ? <CheckIcon /> : <CopyIcon />}
+                      {isCopied ? (
+                        <span class="ageaf-message__copy-check">
+                          <CheckIcon />
+                        </span>
+                      ) : (
+                        <CopyIcon />
+                      )}
                     </button>
                     <div
                       class="ageaf-message__quote-content"
@@ -6651,68 +6660,149 @@ const Panel = () => {
             const toolId = (event.data as any)?.toolId;
             const toolName = (event.data as any)?.toolName;
 
-            // Track tool execution states for visibility
-            if (phase === 'tool_start' && toolId) {
+            // Track tool execution states for visibility.
+            const isToolStartPhase = phase === 'tool_start';
+            const isToolCompletePhase =
+              phase === 'tool_complete' || phase === 'compaction_complete';
+            const isToolErrorPhase = phase === 'tool_error';
+            if (
+              toolId &&
+              (isToolStartPhase || isToolCompletePhase || isToolErrorPhase)
+            ) {
               const toolInput = (event.data as any)?.input;
-
-              // CoT Logic
               const currentCoT = streamingCoTRef.current;
-              completeLastTool(currentCoT); // Complete previous tool if any
 
-              if (
-                !currentCoT.some(
-                  (i) => i.type === 'tool' && i.toolId === toolId
-                )
-              ) {
-                currentCoT.push({
-                  type: 'tool',
-                  toolId,
-                  toolName: toolName ?? 'Tool',
-                  input: toolInput,
-                  phase: 'started',
-                  message: `Running ${toolName ?? 'tool'}...`,
-                });
+              if (isToolStartPhase) {
+                completeLastTool(currentCoT); // Complete previous tool if any.
+
+                const existingCoTTool = currentCoT.find(
+                  (item): item is CoTToolItem =>
+                    item.type === 'tool' && item.toolId === toolId
+                );
+                if (existingCoTTool) {
+                  existingCoTTool.toolName = toolName ?? existingCoTTool.toolName;
+                  existingCoTTool.phase = 'started';
+                  if (toolInput && !existingCoTTool.input) {
+                    existingCoTTool.input = toolInput;
+                  }
+                  existingCoTTool.message =
+                    message ??
+                    `Running ${toolName ?? existingCoTTool.toolName ?? 'tool'}...`;
+                } else {
+                  currentCoT.push({
+                    type: 'tool',
+                    toolId,
+                    toolName: toolName ?? 'Tool',
+                    input: toolInput,
+                    phase: 'started',
+                    message: `Running ${toolName ?? 'tool'}...`,
+                  });
+                }
+
                 if (sessionConversationId === chatConversationIdRef.current) {
                   setStreamingCoT([...currentCoT]);
                 }
-              }
-              setActiveTools((prev) => {
-                const next = new Map(prev);
-                next.set(toolId, {
-                  toolId,
-                  toolName: toolName ?? 'Tool',
-                  phase: 'started',
-                  message: message ?? `Running ${toolName ?? 'tool'}`,
-                  input: toolInput,
-                  timestamp: Date.now(),
-                });
-                return next;
-              });
 
-              // Auto-timeout after 60s - mark as failed and schedule removal
-              setTimeout(() => {
-                setActiveTools((curr) => {
-                  const tool = curr.get(toolId);
-                  if (tool?.phase === 'started') {
-                    const next = new Map(curr);
-                    next.set(toolId, {
-                      ...tool,
-                      phase: 'failed',
-                      message: 'Timed out',
-                    });
-                    // Remove after 3 seconds
-                    setTimeout(() => {
-                      setActiveTools((c) => {
-                        const n = new Map(c);
-                        n.delete(toolId);
-                        return n;
-                      });
-                    }, 3000);
-                    return next;
-                  }
-                  return curr;
+                setActiveTools((prev) => {
+                  const next = new Map(prev);
+                  next.set(toolId, {
+                    toolId,
+                    toolName: toolName ?? 'Tool',
+                    phase: 'started',
+                    message: message ?? `Running ${toolName ?? 'tool'}`,
+                    input: toolInput,
+                    timestamp: Date.now(),
+                  });
+                  return next;
                 });
-              }, 60000);
+
+                // Auto-timeout after 60s - mark as failed and schedule removal.
+                setTimeout(() => {
+                  setActiveTools((curr) => {
+                    const tool = curr.get(toolId);
+                    if (tool?.phase === 'started') {
+                      const next = new Map(curr);
+                      next.set(toolId, {
+                        ...tool,
+                        phase: 'failed',
+                        message: 'Timed out',
+                      });
+                      // Remove after 3 seconds.
+                      setTimeout(() => {
+                        setActiveTools((c) => {
+                          const n = new Map(c);
+                          n.delete(toolId);
+                          return n;
+                        });
+                      }, 3000);
+                      return next;
+                    }
+                    return curr;
+                  });
+                }, 60000);
+              } else {
+                const resolvedPhase: 'completed' | 'failed' =
+                  isToolCompletePhase ? 'completed' : 'failed';
+                const defaultMessage =
+                  resolvedPhase === 'completed'
+                    ? `Completed ${toolName ?? 'tool'}`
+                    : `Failed ${toolName ?? 'tool'}`;
+
+                const existingCoTTool = currentCoT.find(
+                  (item): item is CoTToolItem =>
+                    item.type === 'tool' && item.toolId === toolId
+                );
+                if (existingCoTTool) {
+                  existingCoTTool.toolName = toolName ?? existingCoTTool.toolName;
+                  existingCoTTool.phase = resolvedPhase;
+                  if (toolInput && !existingCoTTool.input) {
+                    existingCoTTool.input = toolInput;
+                  }
+                  existingCoTTool.message = message ?? defaultMessage;
+                } else {
+                  currentCoT.push({
+                    type: 'tool',
+                    toolId,
+                    toolName: toolName ?? 'Tool',
+                    input: toolInput,
+                    phase: resolvedPhase,
+                    message: message ?? defaultMessage,
+                  });
+                }
+                if (sessionConversationId === chatConversationIdRef.current) {
+                  setStreamingCoT([...currentCoT]);
+                }
+
+                setActiveTools((prev) => {
+                  const next = new Map(prev);
+                  const existing = next.get(toolId);
+                  const resolvedToolName =
+                    toolName ?? existing?.toolName ?? 'Tool';
+                  next.set(toolId, {
+                    toolId,
+                    toolName: resolvedToolName,
+                    phase: resolvedPhase,
+                    message:
+                      message ??
+                      (resolvedPhase === 'completed'
+                        ? `Completed ${resolvedToolName}`
+                        : `Failed ${resolvedToolName}`),
+                    input: toolInput ?? existing?.input,
+                    timestamp: Date.now(),
+                  });
+                  return next;
+                });
+
+                const removeDelayMs = resolvedPhase === 'completed' ? 1200 : 3000;
+                setTimeout(() => {
+                  setActiveTools((curr) => {
+                    if (!curr.has(toolId)) return curr;
+                    const next = new Map(curr);
+                    next.delete(toolId);
+                    return next;
+                  });
+                }, removeDelayMs);
+              }
             }
 
             // Always reflect plan/status updates in the live status line while streaming.
@@ -8622,11 +8712,11 @@ const Panel = () => {
     const circle = contextRingRef.current;
     if (!circle) return;
     const pct = Math.min(100, Math.max(0, usagePercent));
-    const progress = (RING_CIRCUMFERENCE * pct) / 100;
-    const offset = RING_CIRCUMFERENCE - progress;
-    circle.setAttribute('stroke-dasharray', String(RING_CIRCUMFERENCE));
+    const progress = (ringCircumference * pct) / 100;
+    const offset = ringCircumference - progress;
+    circle.setAttribute('stroke-dasharray', String(ringCircumference));
     circle.setAttribute('stroke-dashoffset', String(offset));
-  }, [usagePercent, RING_CIRCUMFERENCE]);
+  }, [usagePercent, ringCircumference]);
 
   const onTogglePanel = () => {
     setCollapsed((prev) => !prev);
@@ -9157,7 +9247,9 @@ const Panel = () => {
                               }}
                             >
                               {copiedItems[`${message.id}-response`] ? (
-                                <CheckIcon />
+                                <span class="ageaf-message__copy-check">
+                                  <CheckIcon />
+                                </span>
                               ) : (
                                 <CopyIcon />
                               )}
@@ -9235,7 +9327,10 @@ const Panel = () => {
                   );
                 })()}
                 {DEBUG_DIFF ? (
-                  <div class="ageaf-message ageaf-message--system">
+                  <div
+                    class="ageaf-message ageaf-message--system"
+                    aria-label="Review changes"
+                  >
                     <DiffReview
                       oldText={'\\section{Intro}\\nWe write the paper here.'}
                       newText={'\\section{Introduction}\\nWe write the paper here.'}

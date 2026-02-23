@@ -255,6 +255,33 @@ function extractEventThreadId(params: any): string | null {
   return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
 }
 
+function extractLifecycleToolId(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const nestedItem =
+    record.item && typeof record.item === 'object'
+      ? (record.item as Record<string, unknown>)
+      : null;
+  const nestedData =
+    record.data && typeof record.data === 'object'
+      ? (record.data as Record<string, unknown>)
+      : null;
+  const candidate =
+    record.toolId ??
+    record.tool_id ??
+    record.itemId ??
+    record.item_id ??
+    record.id ??
+    record.compactionId ??
+    record.compaction_id ??
+    nestedItem?.id ??
+    nestedItem?.itemId ??
+    nestedData?.toolId ??
+    nestedData?.itemId ??
+    nestedData?.id;
+  return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
+}
+
 function findDeepThreadId(value: unknown) {
   const queue: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
   const visited = new Set<unknown>();
@@ -537,6 +564,53 @@ function normalizeApprovalPolicy(value: unknown): CodexApprovalPolicy {
     return value;
   }
   return 'on-request';
+}
+
+function normalizeErrorMessage(value: unknown) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) return value.message;
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (typeof record.message === 'string') return record.message;
+    if (record.error) return normalizeErrorMessage(record.error);
+  }
+  return String(value);
+}
+
+function isContextOverflowMessage(message: string) {
+  const normalized = message.toLowerCase();
+  if (!normalized) return false;
+  return (
+    (normalized.includes('context window') && normalized.includes('ran out of room')) ||
+    (normalized.includes('context window') && normalized.includes('clear earlier history')) ||
+    normalized.includes('context length') ||
+    normalized.includes('context limit')
+  );
+}
+
+function hasRetryFlag(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.willRetry === true ||
+    record.will_retry === true ||
+    record.retry === true ||
+    record.retryable === true ||
+    record.shouldRetry === true
+  );
+}
+
+function shouldAwaitRetryableError(params: unknown, message: string) {
+  void message;
+  if (hasRetryFlag(params)) return true;
+  if (params && typeof params === 'object') {
+    const record = params as Record<string, unknown>;
+    if (hasRetryFlag(record.error) || hasRetryFlag(record.data) || hasRetryFlag(record.errorData)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function getCodexTurnTimeoutMs() {
@@ -1169,6 +1243,44 @@ export async function runCodexJob(
   const ITEM_SHAPE_LIMIT = 8;
   let stderrEmitted = 0;
   const STDERR_TRACE_LIMIT = 20;
+  let compactionNoticeEmitted = false;
+  let activeCompactionToolId: string | null = null;
+
+  const emitCompactionLifecycle = (
+    phase: 'tool_start' | 'compaction_complete' | 'tool_error',
+    source?: unknown
+  ) => {
+    const sourceToolId = extractLifecycleToolId(source);
+    const fallbackToolId =
+      activeCompactionToolId ??
+      `compaction-${Date.now()}`;
+    const toolId =
+      phase === 'tool_start'
+        ? sourceToolId ?? fallbackToolId
+        : sourceToolId ?? activeCompactionToolId ?? fallbackToolId;
+    const message =
+      phase === 'compaction_complete'
+        ? 'Context compaction complete'
+        : phase === 'tool_error'
+          ? 'Context compaction failed'
+          : 'Compacting context... (reducing context window usage)';
+    emitEvent({
+      event: 'plan',
+      data: {
+        phase,
+        toolId,
+        toolName: 'Compacting',
+        message,
+      },
+    });
+    if (phase === 'tool_start') {
+      activeCompactionToolId = toolId;
+      return;
+    }
+    if (!sourceToolId || sourceToolId === activeCompactionToolId) {
+      activeCompactionToolId = null;
+    }
+  };
 
   const donePromise = new Promise<void>((resolve) => {
     resolveDone = () => resolve();
@@ -1374,22 +1486,19 @@ export async function runCodexJob(
         emitEvent({ event: 'trace', data: { message: `[Codex Event] ${method}`, ...eventSummary } });
       }
 
-      // Handle thread/compacted events - ALWAYS show (critical operation)
-      if (method === 'thread/compacted' || method === 'compaction/started' || method === 'compaction/completed') {
-        const phase = method.includes('completed') ? 'compaction_complete' : 'tool_start';
-        const message = method.includes('completed')
-          ? 'Context compaction complete'
-          : 'Compacting context... (reducing context window usage)';
-
-        emitEvent({
-          event: 'plan',
-          data: {
-            phase,
-            toolId: 'compaction-' + Date.now(),
-            toolName: 'Compacting',
-            message,
-          },
-        });
+      // Handle compaction lifecycle signals (including legacy thread/compacted).
+      if (method === 'compaction/started') {
+        emitCompactionLifecycle('tool_start', params);
+        return;
+      }
+      if (method === 'compaction/completed') {
+        emitCompactionLifecycle('compaction_complete', params);
+        return;
+      }
+      if (method === 'thread/compacted') {
+        // Legacy one-shot signal may arrive without a matching start.
+        if (!activeCompactionToolId) emitCompactionLifecycle('tool_start', params);
+        emitCompactionLifecycle('compaction_complete', params);
         return;
       }
 
@@ -1573,15 +1682,7 @@ export async function runCodexJob(
 
         // Context compaction (ALWAYS show - critical operation)
         if (itemType === 'contextCompaction' || itemType === 'context_compaction' || itemType === 'compaction') {
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName: 'Compacting',
-              message: 'Compacting context... (reducing context window usage)',
-            },
-          });
+          emitCompactionLifecycle('tool_start', { itemId });
           // Also emit as trace for visibility
           emitEvent({ event: 'trace', data: { message: 'Context compaction in progress' } });
           return true;
@@ -1783,6 +1884,11 @@ export async function runCodexJob(
 
       if (method === 'turn/completed') {
         if (!done) {
+          if (activeCompactionToolId) {
+            emitCompactionLifecycle('compaction_complete', {
+              toolId: activeCompactionToolId,
+            });
+          }
           done = true;
           if (shouldHidePatchPayload && !patchPayloadStarted) {
             flushVisibleBuffer();
@@ -1840,6 +1946,11 @@ export async function runCodexJob(
       // Codex CLI variants may signal completion via codex/event/task_completed.
       if (method === 'codex/event/task_completed') {
         if (!done) {
+          if (activeCompactionToolId) {
+            emitCompactionLifecycle('compaction_complete', {
+              toolId: activeCompactionToolId,
+            });
+          }
           done = true;
           if (shouldHidePatchPayload && !patchPayloadStarted) {
             flushVisibleBuffer();
@@ -1858,6 +1969,14 @@ export async function runCodexJob(
           params?.data?.item ??
           params?.result?.item ??
           (params?.output ? { role: 'assistant', output: params.output } : null);
+        const itemType = String(item?.type ?? '').trim();
+        if (
+          itemType === 'contextCompaction' ||
+          itemType === 'context_compaction' ||
+          itemType === 'compaction'
+        ) {
+          emitCompactionLifecycle('compaction_complete', item ?? params);
+        }
         const extractedText = extractAssistantTextFromItem(item);
         if ((!extractedText || !extractedText.trim()) && debugToConsole && itemShapeEmitted < ITEM_SHAPE_LIMIT) {
           itemShapeEmitted += 1;
@@ -1892,9 +2011,22 @@ export async function runCodexJob(
       }
 
       if (method === 'error' || method === 'turn/error') {
+        const errorMessage = normalizeErrorMessage(params?.error ?? params ?? 'Turn failed');
+        if (shouldAwaitRetryableError(params, errorMessage)) {
+          if (isContextOverflowMessage(errorMessage) && !compactionNoticeEmitted) {
+            compactionNoticeEmitted = true;
+            emitCompactionLifecycle('tool_start', params);
+          }
+          emitTrace('Codex: retryable error, awaiting retry', { message: errorMessage });
+          return;
+        }
         if (!done) {
+          if (activeCompactionToolId) {
+            emitCompactionLifecycle('tool_error', {
+              toolId: activeCompactionToolId,
+            });
+          }
           done = true;
-          const errorMessage = String(params?.error?.message ?? params?.error ?? 'Turn failed');
           emitEvent({
             event: 'done',
             data: { status: 'error', message: errorMessage, threadId },
@@ -1995,14 +2127,33 @@ export async function runCodexJob(
     }
 
     if (!done && turnResponse && Object.prototype.hasOwnProperty.call(turnResponse, 'error')) {
-      done = true;
-      const errorMessage = String((turnResponse as any).error?.message ?? (turnResponse as any).error ?? 'Turn failed');
-      emitEvent({
-        event: 'done',
-        data: { status: 'error', message: errorMessage, threadId },
-      });
-      unsubscribe();
-      resolveDone();
+      const errorMessage = normalizeErrorMessage((turnResponse as any).error ?? 'Turn failed');
+      const retryable =
+        shouldAwaitRetryableError((turnResponse as any).error, errorMessage) ||
+        shouldAwaitRetryableError(turnResponse, errorMessage);
+
+      if (retryable) {
+        if (isContextOverflowMessage(errorMessage) && !compactionNoticeEmitted) {
+          compactionNoticeEmitted = true;
+          emitCompactionLifecycle('tool_start', (turnResponse as any).error ?? turnResponse);
+        }
+        emitTrace('Codex: turn/start returned retryable error, waiting', {
+          message: errorMessage,
+        });
+      } else {
+        if (activeCompactionToolId) {
+          emitCompactionLifecycle('tool_error', {
+            toolId: activeCompactionToolId,
+          });
+        }
+        done = true;
+        emitEvent({
+          event: 'done',
+          data: { status: 'error', message: errorMessage, threadId },
+        });
+        unsubscribe();
+        resolveDone();
+      }
     }
 
     // Ensure the job never hangs forever if the Codex CLI stalls (common near 100% context).
