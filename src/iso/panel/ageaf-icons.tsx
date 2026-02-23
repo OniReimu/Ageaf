@@ -530,6 +530,65 @@ export const CheckReferencesIcon = ({ class: className, style }: IconProps) => (
   </svg>
 );
 
+export const NotationCheckIcon = ({ class: className, style }: IconProps) => (
+  <svg
+    class={className}
+    style={style}
+    viewBox="0 0 20 20"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    stroke="currentColor"
+  >
+    <path
+      d="M8.5 5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 0 0 0-7z"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M11.2 11.2L15.5 15.5"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M7.2 6.6h3.1L8.2 8.5l2.1 1.9H7.2"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </svg>
+);
+
+export const NotationDraftIcon = ({ class: className, style }: IconProps) => (
+  <svg
+    class={className}
+    style={style}
+    viewBox="0 0 20 20"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    stroke="currentColor"
+  >
+    <path
+      d="M4 3.5h7.5a2 2 0 012 2V14a2 2 0 01-2 2H4.5a.5.5 0 01-.5-.5V4a.5.5 0 01.5-.5z"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M6.5 7.5h4.5M6.5 10h3"
+      stroke-width="1.5"
+      stroke-linecap="round"
+    />
+    <path
+      d="M12.5 13.5l3-3 1.5 1.5-3 3H12.5v-1.5z"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </svg>
+);
+
 /* ═══════════════════════════════════════════════════════════════════════════
    EXPORT ALL
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -555,6 +614,8 @@ export const Icons = {
   // Toolbar actions
   RewriteIcon,
   CheckReferencesIcon,
+  NotationCheckIcon,
+  NotationDraftIcon,
   AttachFilesIcon,
   NewChatIconAlt,
   CloseSessionIcon,

@@ -62,6 +62,8 @@ STATE_SUMMARY.md
 MAINTAINER.md
 README-DISTRIBUTION.md
 docs/*
+!docs/manus/
+!docs/manus/**
 
 *.rb
 

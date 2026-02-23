@@ -587,6 +587,24 @@ function buildPrompt(
     '- Do NOT wrap the markers in Markdown code fences.',
   ].join('\n');
 
+  const notationCheckInstructions = [
+    'You are running a notation and terminology consistency pass across attached Overleaf files.',
+    'Detect only high-confidence issues:',
+    '- symbol reuse conflicts (same symbol used for different definitions),',
+    '- term drift (canonical term formatting or spelling drifts),',
+    '- inconsistent acronym expansion (same acronym expanded differently).',
+    'Return concise findings with file and line references.',
+    'Do not emit patches in this mode unless explicitly requested.',
+  ].join('\n');
+
+  const notationDraftInstructions = [
+    'You are generating conservative draft fixes for notation consistency findings.',
+    'Emit ONLY reviewable patches for high-confidence mechanical replacements.',
+    'Prefer `replaceRangeInFile` with exact `expectedOldText`, `from`, and `to` offsets when possible.',
+    'Do NOT auto-apply; all edits must remain review cards.',
+    'Skip ambiguous edits and explain skipped items briefly.',
+  ].join('\n');
+
   const patchGuidanceNoFiles = [
     'Patch proposals (Review Change Cards):',
     '- Use an `ageaf-patch` block when the user wants to modify existing Overleaf content (rewrite/edit selection, fix LaTeX errors, etc).',
@@ -672,11 +690,15 @@ function buildPrompt(
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     'Respond in Markdown, keep it concise.',
-    action === 'chat' ? patchGuidance : '',
+    action === 'chat' || action === 'notation_draft_fixes'
+      ? patchGuidance
+      : '',
     action === 'chat' ? selectionPatchGuidance : '',
     `Action: ${action}`,
     contextForPrompt ? `Context:\n${JSON.stringify(contextForPrompt, null, 2)}` : '',
     action === 'rewrite' ? rewriteInstructions : '',
+    action === 'notation_check' ? notationCheckInstructions : '',
+    action === 'notation_draft_fixes' ? notationDraftInstructions : '',
     hasOverleafFileBlocks ? fileUpdateInstructions : '',
     skillsGuidance,
   ].filter(Boolean);

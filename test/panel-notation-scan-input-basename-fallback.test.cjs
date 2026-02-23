@@ -1,0 +1,26 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+
+test('notation scan maps input paths to project entries by basename fallback', () => {
+  const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
+  const contents = fs.readFileSync(panelPath, 'utf8');
+
+  const start = contents.indexOf('const collectNotationAttachments = async');
+  assert.ok(start >= 0, 'expected collectNotationAttachments');
+  const end = contents.indexOf('const onNotationConsistencyPass', start);
+  assert.ok(end >= 0, 'expected onNotationConsistencyPass after collector');
+  const block = contents.slice(start, end);
+
+  assert.match(
+    block,
+    /projectEntriesByBasename/,
+    'notation scan should index project entries by basename'
+  );
+  assert.match(
+    block,
+    /resolveProjectEntryForInputPath/,
+    'notation scan should resolve input paths via helper fallback'
+  );
+});
