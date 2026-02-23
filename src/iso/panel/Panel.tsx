@@ -213,7 +213,8 @@ function computeFileSummary(messages: Message[]): FileSummaryEntry[] {
 
 /* ── Module-level constants (hoisted from inside Panel) ────────────────── */
 
-const ATTACHMENT_LABEL_REGEX = /^\[Attachment: .+ · \d+ lines\]$/;
+const ATTACHMENT_LABEL_REGEX =
+  /^\[Attachment: .+ · \d+ lines(?: · lines? \d+(?:-\d+)?)?\]$/;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const FILE_ATTACHMENT_EXTENSIONS = [
   '.txt',
@@ -270,7 +271,7 @@ const FILE_ATTACHMENT_EXTENSIONS_REGEX = new RegExp(
 );
 
 const ATTACHMENT_LABEL_INLINE_REGEX =
-  /\[Attachment:\s+(.+?)\s+·\s+(\d+)\s+lines\]/g;
+  /\[Attachment:\s+(.+?)\s+·\s+(\d+)\s+lines(?:\s+·\s+lines?\s+(\d+)(?:-(\d+))?)?\]/g;
 const MENTION_INLINE_REGEX = /@\[(file|folder):([^\]]+)\]/g;
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 10;
@@ -3376,7 +3377,7 @@ const Panel = () => {
 
   const createAttachmentChip = (
     filename: string,
-    lineCount: string,
+    lineLabel: string,
     preview?: string
   ) => {
     const iconMetaForFilename = (name: string) => {
@@ -3413,7 +3414,7 @@ const Panel = () => {
     const chip = document.createElement('span');
     chip.className = 'ageaf-panel__chip ageaf-message__attachment-chip';
     chip.setAttribute('contenteditable', 'false');
-    chip.setAttribute('aria-label', `${filename} ${lineCount || ''}`.trim());
+    chip.setAttribute('aria-label', `${filename} ${lineLabel || ''}`.trim());
     if (preview) chip.title = preview;
 
     const icon = document.createElement('span');
@@ -3426,7 +3427,7 @@ const Panel = () => {
 
     const rangeSpan = document.createElement('span');
     rangeSpan.className = 'ageaf-panel__chip-range';
-    rangeSpan.textContent = lineCount || '';
+    rangeSpan.textContent = lineLabel || '';
 
     chip.append(icon, nameSpan, rangeSpan);
     return chip;
@@ -3474,10 +3475,17 @@ const Panel = () => {
         if (before) frag.appendChild(document.createTextNode(before));
         const filename = String(m[1] ?? '').trim() || 'snippet.tex';
         const lineCount = String(m[2] ?? '').trim();
+        const lineFrom = String(m[3] ?? '').trim();
+        const lineTo = String(m[4] ?? '').trim();
+        const lineLabel = lineFrom
+          ? lineTo
+            ? `${lineFrom}-${lineTo}`
+            : lineFrom
+          : lineCount;
         const preview =
           node.parentElement?.getAttribute('data-attachment-preview') ?? '';
         frag.appendChild(
-          createAttachmentChip(filename, lineCount, preview || undefined)
+          createAttachmentChip(filename, lineLabel, preview || undefined)
         );
         lastIndex = idx + m[0].length;
       }
@@ -3589,10 +3597,7 @@ const Panel = () => {
             interrupted = true;
             continue;
           }
-          if (
-            text.includes('[Attachment:') &&
-            /\[Attachment:\s+.+?\s+·\s+\d+\s+lines\]/.test(text)
-          ) {
+          if (ATTACHMENT_LABEL_REGEX.test(text)) {
             const nextIndex = findNextElementIndex(i + 1);
             if (nextIndex !== -1) {
               const nextNode = nodes[nextIndex] as HTMLElement;
@@ -3849,6 +3854,22 @@ const Panel = () => {
     return text.split(/\r\n|\r|\n/).length;
   };
 
+  const getAttachmentLineMetadata = (payload: ChipPayload): string | null => {
+    const { lineFrom, lineTo } = payload;
+    if (
+      typeof lineFrom !== 'number' ||
+      !Number.isFinite(lineFrom) ||
+      typeof lineTo !== 'number' ||
+      !Number.isFinite(lineTo)
+    ) {
+      return null;
+    }
+    const start = Math.floor(Math.min(lineFrom, lineTo));
+    const end = Math.floor(Math.max(lineFrom, lineTo));
+    if (start <= 0 || end <= 0) return null;
+    return start === end ? `line ${start}` : `lines ${start}-${end}`;
+  };
+
   const getFenceLanguage = (filename: string) => {
     const match = filename.match(/\.([a-z0-9]+)$/i);
     if (!match) return '';
@@ -3875,7 +3896,8 @@ const Panel = () => {
   };
 
   const serializeChipPayload = (payload: ChipPayload) => {
-    const label = `[Attachment: ${payload.filename} · ${payload.lineCount} lines]`;
+    const lineMetadata = getAttachmentLineMetadata(payload);
+    const label = `[Attachment: ${payload.filename} · ${payload.lineCount} lines${lineMetadata ? ` · ${lineMetadata}` : ''}]`;
     const language = getFenceLanguage(payload.filename);
     const fence = getSafeMarkdownFence(payload.text);
     const fenceStart = language ? `${fence}${language}` : fence;
