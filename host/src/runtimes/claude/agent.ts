@@ -1,4 +1,4 @@
-import { query, type OutputFormat, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query as sdkQuery, type OutputFormat, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { mermaidMcpServer } from '../../mcp/mermaidServer.js';
 import { askUserMcpServer } from '../../mcp/askUserServer.js';
@@ -6,6 +6,11 @@ import { askUserMcpServer } from '../../mcp/askUserServer.js';
 import type { JobEvent, Patch } from '../../types.js';
 import { getClaudeSessionCwd } from './cwd.js';
 import { getEnhancedPath, parseEnvironmentVariables, resolveClaudeCliPath } from './cli.js';
+import {
+  clearClaudeSessionResumeCacheForTests as clearClaudeSessionResumeCache,
+  getClaudeSdkSessionId,
+  setClaudeSdkSessionId,
+} from './state.js';
 import {
   CommandBlocklistConfig,
   compileBlockedCommandPatterns,
@@ -17,6 +22,9 @@ import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
 import { computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
 
 type EmitEvent = (event: JobEvent) => void;
+type ClaudeQueryRunner = (input: Parameters<typeof sdkQuery>[0]) => ReturnType<typeof sdkQuery>;
+
+let claudeQueryRunner: ClaudeQueryRunner = sdkQuery as ClaudeQueryRunner;
 
 type StructuredPatchInput = {
   prompt: string;
@@ -45,6 +53,7 @@ export type ClaudeRuntimeConfig = {
   yoloMode?: boolean;
   sessionScope?: 'project' | 'home';
   conversationId?: string;
+  sdkSessionId?: string;
 };
 
 const PatchSchema = z.union([
@@ -146,6 +155,33 @@ function extractJsonObject(value: string): unknown {
 
 type RunQueryResult = { resultText: string | null; emittedPatchFiles: Set<string> };
 
+function normalizeSessionId(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function extractSessionIdFromMessage(message: unknown): string | null {
+  if (!message || typeof message !== 'object') return null;
+  const record = message as Record<string, unknown>;
+  return (
+    normalizeSessionId(record.session_id) ??
+    normalizeSessionId(record.sessionId) ??
+    normalizeSessionId((record.result as Record<string, unknown> | undefined)?.session_id) ??
+    normalizeSessionId((record.result as Record<string, unknown> | undefined)?.sessionId)
+  );
+}
+
+export function setClaudeQueryForTests(runner: ClaudeQueryRunner) {
+  claudeQueryRunner = runner;
+}
+
+export function resetClaudeQueryForTests() {
+  claudeQueryRunner = sdkQuery as ClaudeQueryRunner;
+}
+
+export function clearClaudeSessionResumeCacheForTests() {
+  clearClaudeSessionResumeCache();
+}
+
 async function runQuery(
   prompt: string | AsyncIterable<SDKUserMessage>,
   emitEvent: EmitEvent,
@@ -206,7 +242,14 @@ async function runQuery(
   const outputFormat = structuredOutput
     ? getStructuredOutputFormat(structuredOutput.name)
     : null;
-  const response = query({
+  const resumeSessionId =
+    (typeof runtime.sdkSessionId === 'string' && runtime.sdkSessionId.trim()
+      ? runtime.sdkSessionId.trim()
+      : null) ??
+    getClaudeSdkSessionId(runtime.conversationId) ??
+    undefined;
+
+  const response = claudeQueryRunner({
     prompt,
     options: {
       ...(configuredModel ? { model: configuredModel } : {}),
@@ -249,6 +292,7 @@ async function runQuery(
         'mcp__ageaf-mermaid__list_mermaid_themes',
         'mcp__ageaf-interactive__ask_user',
       ],
+      ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(outputFormat ? { outputFormat } : {}),
     },
   });
@@ -442,6 +486,10 @@ async function runQuery(
   };
 
   for await (const message of response) {
+    const sessionId = extractSessionIdFromMessage(message);
+    if (sessionId) {
+      setClaudeSdkSessionId(runtime.conversationId, sessionId);
+    }
 
     switch (message.type) {
       case 'assistant': {

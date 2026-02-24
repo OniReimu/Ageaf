@@ -11,6 +11,7 @@ import { getClaudeRuntimeStatus } from './client.js';
 import type { CommandBlocklistConfig } from './safety.js';
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { buildReplaceRangePatchesFromFileUpdates } from '../../patch/fileUpdate.js';
+import { sendCompactCommand } from '../../compaction/sendCompact.js';
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -207,6 +208,25 @@ function isShortGreeting(message?: string): boolean {
   );
 }
 
+function normalizeDoneStatus(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim().toLowerCase() : 'ok';
+  if (raw === 'success' || raw === 'complete') return 'ok';
+  return raw || 'ok';
+}
+
+function isContextOverflowStatusMessage(value: unknown): boolean {
+  if (typeof value !== 'string' || !value.trim()) return false;
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized.includes('context') &&
+    (normalized.includes('limit') ||
+      normalized.includes('window') ||
+      normalized.includes('length') ||
+      normalized.includes('exceed') ||
+      normalized.includes('too long'))
+  );
+}
+
 export async function runClaudeJob(
   payload: ClaudeJobPayload,
   emitEvent: EmitEvent
@@ -214,6 +234,25 @@ export async function runClaudeJob(
   const action = payload.action ?? 'chat';
   const runtimeStatus = getClaudeRuntimeStatus(payload.runtime?.claude);
   const message = getUserMessage(payload.context);
+
+  const isDirectCompactRequest =
+    action === 'chat' && typeof message === 'string' && message.trim() === '/compact';
+  if (isDirectCompactRequest) {
+    try {
+      await sendCompactCommand('claude', payload, emitEvent);
+      emitEvent({ event: 'done', data: { status: 'ok' } });
+    } catch (error) {
+      emitEvent({
+        event: 'done',
+        data: {
+          status: 'error',
+          message: error instanceof Error ? error.message : 'Compaction failed',
+        },
+      });
+    }
+    return;
+  }
+
   const attachments = getContextAttachments(payload.context);
   const images = getContextImages(payload.context);
   const documentEntries = getContextDocuments(payload.context);
@@ -391,51 +430,74 @@ If asked about the model/runtime, use this note and do not guess.`;
     emitEvent({ event: 'trace', data: { message, ...(data ?? {}) } });
   };
 
-  let doneEvent: JobEvent = { event: 'done', data: { status: 'ok' } };
-  let patchEmitted = false;
-  const wrappedEmit: EmitEvent = (event) => {
-    if (event.event === 'done') {
-      doneEvent = event;
-      return;
-    }
-    if (event.event === 'patch') {
-      patchEmitted = true;
-    }
-    emitEvent(event);
+  const runTurn = async () => {
+    let doneEvent: JobEvent = { event: 'done', data: { status: 'ok' } };
+    const wrappedEmit: EmitEvent = (event) => {
+      if (event.event === 'done') {
+        doneEvent = event;
+        return;
+      }
+      emitEvent(event);
+    };
+
+    const result = await runClaudeText({
+      prompt: (images.length > 0 || pdfDocuments.length > 0)
+        ? buildMediaPromptStream(promptText, images, pdfDocuments)
+        : promptText,
+      emitEvent: wrappedEmit,
+      runtime: payload.runtime?.claude,
+      safety,
+      debugCliEvents,
+      overleafMessage: hasOverleafFileBlocks ? messageWithAttachments : undefined,
+    });
+
+    return { doneEvent, ...result };
   };
 
   emitTrace('Sending request to Claude…', {
     runtime: runtimeStatus.cliPath ? 'Claude Code CLI' : 'Anthropic API',
   });
-  const { resultText, emittedPatchFiles } = await runClaudeText({
-    prompt: (images.length > 0 || pdfDocuments.length > 0)
-      ? buildMediaPromptStream(promptText, images, pdfDocuments)
-      : promptText,
-    emitEvent: wrappedEmit,
-    runtime: payload.runtime?.claude,
-    safety,
-    debugCliEvents,
-    overleafMessage: hasOverleafFileBlocks ? messageWithAttachments : undefined,
-  });
+  let turn = await runTurn();
   emitTrace('Claude: reply completed');
 
-  const status = (doneEvent.data as any)?.status;
-  if (status && status !== 'ok') {
-    emitEvent(doneEvent);
-    return;
-  }
+  let status = normalizeDoneStatus((turn.doneEvent.data as any)?.status);
+  const doneMessage = (turn.doneEvent.data as any)?.message;
 
-  if (hasOverleafFileBlocks && typeof resultText === 'string' && resultText) {
-    const patches = buildReplaceRangePatchesFromFileUpdates({
-      output: resultText,
-      message: messageWithAttachments,
-    });
-    for (const patch of patches) {
-      if (patch.kind === 'replaceRangeInFile' && emittedPatchFiles.has(patch.filePath)) continue;
-      emitEvent({ event: 'patch', data: patch });
-      patchEmitted = true;
+  if (status !== 'ok' && isContextOverflowStatusMessage(doneMessage)) {
+    emitTrace('Claude: context overflow detected, compacting and retrying once');
+    try {
+      await sendCompactCommand('claude', payload, emitEvent);
+      emitTrace('Claude: retrying request after compaction');
+      turn = await runTurn();
+      status = normalizeDoneStatus((turn.doneEvent.data as any)?.status);
+    } catch (error) {
+      emitTrace('Claude: compaction retry failed');
+      emitEvent({
+        event: 'done',
+        data: {
+          status: 'error',
+          message: error instanceof Error ? error.message : 'Compaction retry failed',
+        },
+      });
+      return;
     }
   }
 
-  emitEvent(doneEvent);
+  if (status !== 'ok') {
+    emitEvent(turn.doneEvent);
+    return;
+  }
+
+  if (hasOverleafFileBlocks && typeof turn.resultText === 'string' && turn.resultText) {
+    const patches = buildReplaceRangePatchesFromFileUpdates({
+      output: turn.resultText,
+      message: messageWithAttachments,
+    });
+    for (const patch of patches) {
+      if (patch.kind === 'replaceRangeInFile' && turn.emittedPatchFiles.has(patch.filePath)) continue;
+      emitEvent({ event: 'patch', data: patch });
+    }
+  }
+
+  emitEvent(turn.doneEvent);
 }

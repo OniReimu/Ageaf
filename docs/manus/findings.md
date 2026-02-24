@@ -27,6 +27,18 @@
 - Ageaf test coverage around compaction is largely Codex-focused; Claude compaction tests cover helper-level lock behavior but not integrated job-route/runtime compaction lifecycle (`host/test/codex-compact-timeout.test.ts`, `host/test/codex-runtime-compaction-retry.test.ts`).
 - Evidence of stronger Codex path in Ageaf: runtime has retry-flag detection, compaction lifecycle event emitter, legacy signal handling, and retryable-overflow waiting logic (`host/src/runtimes/codex/run.ts`).
 - Jobs route import list and dispatch path include `runClaudeJob`/`runCodexJob` but no `sendCompactCommand`, reinforcing that compaction helper is currently not part of chat execution path (`host/src/routes/jobs.ts`).
+- Host tests currently rely heavily on `AGEAF_CLAUDE_MOCK` for Claude job route/SSE smoke checks (`host/test/jobs-sse.test.ts`, `host/test/claude-runtime.test.ts`), so new Claude compaction behavior tests should include unit-style runtime tests that do not require real CLI availability.
+- Existing compaction/retry coverage pattern in repo uses focused runtime tests with deterministic fixture-like inputs (`host/test/codex-runtime-compaction-retry.test.ts`), which can be mirrored for Claude parity tests.
+- Repo also uses lightweight structural smoke tests to lock important event/type contracts (`host/test/file-started-events.test.ts`); this pattern can guard newly introduced Claude compaction/session-resume hooks.
+
+## Implementation Findings
+- Added direct Claude `/compact` dispatch in `runClaudeJob`; direct compact requests now bypass JSON context envelope and execute native compact flow (`host/src/runtimes/claude/run.ts`).
+- Upgraded Claude compaction helper to emit lifecycle plan phases (`tool_start`, `compaction_complete`, `tool_error`) with stable compaction `toolId`, matching panel expectations (`host/src/compaction/sendCompact.ts`).
+- Added overflow-triggered compact-and-retry orchestration in Claude runtime (`runClaudeJob`): if first turn ends with context-overflow-style error status/message, host compacts then retries once (`host/src/runtimes/claude/run.ts`).
+- Implemented explicit Claude SDK session-id persistence by conversation in host state and wired SDK `resume` usage in query options (`host/src/runtimes/claude/state.ts`, `host/src/runtimes/claude/agent.ts`).
+- Added Claude-agent test hooks for query injection and session-cache reset to enable deterministic unit tests of runtime behavior (`host/src/runtimes/claude/agent.ts`).
+- Fixed timeout-handle leak in Claude compaction helper by clearing timeout in `finally`, eliminating 60s post-success test hangs (`host/src/compaction/sendCompact.ts`).
+- Added parity test coverage in `host/test/claude-compaction-parity.test.ts` for direct compact transport, overflow retry path, and session resume continuity.
 
 ## Parity Gap Matrix
 
@@ -47,6 +59,9 @@
 - Keep compatibility with existing panel event model by emitting `plan` phases already supported (`tool_start`, `compaction_complete`, `tool_error`).
 - Introduce Claude session persistence with minimal schema impact (conversation/provider state) before adding advanced retry policies.
 - Treat CodePilot as reference for command/session/status ergonomics, but avoid copying its badge-context `/compact` fallback bug.
+- Continue from existing approved parity design and implement directly (user explicitly requested implementation of all listed items).
+- Use host-layer TDD first because most gaps are in host Claude runtime and jobs routing; defer panel test additions unless host protocol changes require them.
+- Keep Claude compaction behavior compatible with existing panel semantics by reusing existing `plan` event phases already consumed in UI.
 - Recommended rollout:
   1. P0: Dedicated Claude `/compact` dispatch path and direct command transport (not JSON-wrapped context).
   2. P0: Claude compaction lifecycle emissions (`tool_start`, `compaction_complete`, `tool_error`) mapped to stable `toolId`.
