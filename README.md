@@ -106,6 +106,38 @@ BYOK supports **1,000+ models** across 20+ providers. Here is a highlight of sup
    - Select the `build/` directory from this repository
    - After making changes, click the reload icon on the extension card in `chrome://extensions`, then refresh your Overleaf tab
 
+## How to Update Ageaf
+
+### If you run Ageaf from source (this repo)
+Use **two terminals** for updates:
+
+**Terminal 1 (extension):**
+```bash
+git pull
+npm install
+npm run watch
+```
+
+**Terminal 2 (host, separate terminal):**
+```bash
+cd host
+npm install
+npm run dev
+```
+
+Keep both terminals running during the update so extension rebuilds and host runtime stay in sync.
+
+Then in Chrome:
+- Open `chrome://extensions`
+- Click **Reload** on Ageaf
+- Refresh your Overleaf tab
+
+### If you installed the host with Homebrew
+```bash
+brew update
+brew upgrade --cask ageaf-host
+```
+
 ## Native Messaging on macOS (Homebrew)
 
 For production-style local usage, install the native companion host with Homebrew:

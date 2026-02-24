@@ -89,6 +89,38 @@
 - `host/test/claude-usage-events.test.ts`
 - `test/panel-context-usage-refresh-queue.test.cjs`
 
+### Follow-up: 2026-02-24 panel grouping after `Accept all`
+**Status:** complete
+**Started:** 2026-02-24T00:00:00Z
+
+**Actions:**
+- Captured new user report: patch-review cards remain per-file before `Accept all` but split to per-hunk after accept.
+- Reproduced logically from code path in `src/iso/panel/Panel.tsx`.
+- Identified root cause: grouped map currently filters on `status === 'pending'`, so once hunks become `accepted` grouping metadata is dropped.
+- Added RED assertion in `test/panel-file-summary.test.cjs` to require grouped per-file mapping across status transitions.
+- Implemented `Panel.tsx` grouping fix: include all `replaceRangeInFile` statuses and use `firstPendingId ?? firstId` as single-card anchor.
+- Updated brittle `test/panel-feedback-action-order.test.cjs` to assert action order from `PatchReviewCard.tsx` (source of truth) instead of `Panel.tsx` substring slicing.
+- Re-ran targeted and full root test suites; all green.
+
+**Files Modified:**
+- `docs/manus/findings.md`
+- `src/iso/panel/Panel.tsx`
+- `test/panel-file-summary.test.cjs`
+- `test/panel-feedback-action-order.test.cjs`
+
+### Follow-up: 2026-02-24 README update instructions
+**Status:** complete
+**Started:** 2026-02-24T00:40:00Z
+
+**Actions:**
+- Added a concise `How to Update Ageaf` section to `README.md`.
+- Documented both update paths:
+  - source workflow (`git pull`, dependency refresh, rebuild/watch, host restart),
+  - Homebrew upgrade path for native host users.
+
+**Files Modified:**
+- `README.md`
+
 ## Test Results
 
 | Test | Expected | Actual | Pass/Fail |
@@ -97,7 +129,9 @@
 | `npx tsx --test test/claude-compaction-parity.test.ts` | 3 parity tests pass after implementation | 3 passed, 0 failed | Pass |
 | `npx tsx --test test/codex-compact-timeout.test.ts test/claude-runtime.test.ts test/jobs-sse.test.ts test/codex-runtime-compaction-retry.test.ts` | Related regressions stay green | 7 passed, 0 failed | Pass |
 | `cd host && npm test` | Full host suite green | 246 passed, 0 failed | Pass |
-| `npm test` (repo root) | Extension suite unaffected | 300 passed, 0 failed | Pass |
+| `node --test test/panel-file-summary.test.cjs` | New status-transition assertion fails first (RED), then passes after fix | RED: 1 failed, 17 passed; GREEN: 18 passed, 0 failed | Pass |
+| `node --test test/panel-feedback-action-order.test.cjs test/panel-file-summary.test.cjs` | Panel targeted regressions stay green | 19 passed, 0 failed | Pass |
+| `npm test` (repo root) | Extension suite unaffected by follow-up grouping fix | 305 passed, 0 failed | Pass |
 | `npm test -- test/panel-context-usage-refresh-queue.test.cjs` (root) | New queue test fails first (RED) then passes | RED: 1 failed; GREEN: 305 passed, 0 failed | Pass |
 | `cd host && npm test -- claude-usage-events.test.ts` | New usage-shape test fails first (RED) then passes | RED: 1 failed; GREEN: 247 passed, 0 failed | Pass |
 
@@ -108,6 +142,7 @@
 | 2026-02-23T00:15:00Z | `rg` attempted to read missing `host/src/index.ts` | Re-ran with valid `host/src` targets |
 | 2026-02-23T00:18:00Z | `sed` attempted missing `src/iso/panel/skillDirectives.ts` and `skillManifest.ts` | Located and used `src/iso/panel/skills/skillsRegistry.ts` plus `Panel.tsx` call sites |
 | 2026-02-23T01:02:00Z | Targeted parity test process stayed alive for ~60s after success | Fixed by clearing Claude compact timeout handle in `sendClaudeCompact` finally block |
+| 2026-02-24T00:20:00Z | Shell interpreted backticks inside an `rg` pattern and emitted `command not found: Accept` | Re-ran lookup without backticks in the shell pattern |
 
 ## 5-Question Reboot Check
 1. **Where am I?** Phase 5 (Delivery), in progress.

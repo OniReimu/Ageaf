@@ -145,12 +145,16 @@ test('expand control styles use visible foreground and chrome token', () => {
   assert.match(panelCss, /\.ageaf-patch-review__expand-icon \{[^}]*color:\s*var\(--ageaf-panel-text\);/);
 });
 
-test('Panel groups only pending replaceRangeInFile hunks to avoid hiding current-file cards', () => {
+test('Panel keeps replaceRangeInFile groups across status transitions', () => {
   const contents = read('src/iso/panel/Panel.tsx');
 
   assert.match(
     contents,
-    /const \{ messageById, fileGroupMap, fileGroupRole \} = useMemo\(\(\) => \{[\s\S]*?const status = \(patchReview as any\)\.status \?\? 'pending';[\s\S]*?if \(status !== 'pending'\) continue;[\s\S]*?const fileKey = patchReview\.filePath\.toLowerCase\(\);/
+    /const \{ messageById, fileGroupMap, fileGroupRole \} = useMemo\(\(\) => \{[\s\S]*?const fileKey = patchReview\.filePath\.toLowerCase\(\);/
+  );
+  assert.doesNotMatch(
+    contents,
+    /const \{ messageById, fileGroupMap, fileGroupRole \} = useMemo\(\(\) => \{[\s\S]*?const status = \(patchReview as any\)\.status \?\? 'pending';[\s\S]*?if \(status !== 'pending'\) continue;/
   );
 });
 

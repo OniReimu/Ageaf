@@ -492,6 +492,7 @@ type Message = {
 type FilePatchGroup = {
   filePath: string;
   firstId: string;
+  firstPendingId: string | null;
   ids: string[];
 };
 
@@ -774,15 +775,18 @@ const Panel = () => {
       const patchReview = message.patchReview;
       if (!patchReview || patchReview.kind !== 'replaceRangeInFile') continue;
       const status = (patchReview as any).status ?? 'pending';
-      if (status !== 'pending') continue;
       const fileKey = patchReview.filePath.toLowerCase();
       const existing = groupMap.get(fileKey);
       if (existing) {
         existing.ids.push(message.id);
+        if (status === 'pending' && !existing.firstPendingId) {
+          existing.firstPendingId = message.id;
+        }
       } else {
         groupMap.set(fileKey, {
           filePath: patchReview.filePath,
           firstId: message.id,
+          firstPendingId: status === 'pending' ? message.id : null,
           ids: [message.id],
         });
       }
@@ -791,8 +795,9 @@ const Panel = () => {
     const roleMap = new Map<string, 'first' | 'absorbed'>();
     for (const group of groupMap.values()) {
       if (group.ids.length < 2) continue;
+      const visibleId = group.firstPendingId ?? group.firstId;
       for (const id of group.ids) {
-        roleMap.set(id, id === group.firstId ? 'first' : 'absorbed');
+        roleMap.set(id, id === visibleId ? 'first' : 'absorbed');
       }
     }
 
