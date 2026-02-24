@@ -889,6 +889,9 @@ const Panel = () => {
 
     // Streaming status prefix (plan/tool/trace) to display during thinking timer
     statusPrefix: string | null;
+
+    // Whether this job compacted context and should force usage refresh on finalize.
+    didCompactContext: boolean;
   };
 
   const sessionStates = useRef<Map<string, SessionRuntimeState>>(new Map());
@@ -920,6 +923,7 @@ const Panel = () => {
     cotSequence: [],
 
     statusPrefix: null,
+    didCompactContext: false,
   });
 
   // Get or create session state
@@ -1049,6 +1053,11 @@ const Panel = () => {
   const latexCopyTimersRef = useRef<Map<HTMLElement, number>>(new Map());
   const chatSaveTimerRef = useRef<number | null>(null);
   const contextRefreshInFlightRef = useRef(false);
+  const contextRefreshPendingRef = useRef<{
+    provider?: ProviderId;
+    conversationId?: string | null;
+    force?: boolean;
+  } | null>(null);
   const lineFromBackfillAttemptedRef = useRef<Set<string>>(new Set());
 
   const providerDisplay =
@@ -4973,7 +4982,19 @@ const Panel = () => {
       return;
     }
 
-    if (contextRefreshInFlightRef.current) return;
+    if (contextRefreshInFlightRef.current) {
+      const pending = contextRefreshPendingRef.current;
+      contextRefreshPendingRef.current = {
+        provider: params?.provider ?? pending?.provider ?? provider,
+        conversationId:
+          params?.conversationId ??
+          pending?.conversationId ??
+          conversationId ??
+          null,
+        force: Boolean(params?.force) || Boolean(pending?.force),
+      };
+      return;
+    }
     const options = settings ?? (await getOptions());
     if (options.transport !== 'native' && !options.hostUrl) return;
     contextRefreshInFlightRef.current = true;
@@ -5105,6 +5126,11 @@ const Panel = () => {
       // ignore context usage errors
     } finally {
       contextRefreshInFlightRef.current = false;
+      const pendingRefresh = contextRefreshPendingRef.current;
+      contextRefreshPendingRef.current = null;
+      if (pendingRefresh) {
+        void refreshContextUsage(pendingRefresh);
+      }
     }
   };
 
@@ -5448,7 +5474,13 @@ const Panel = () => {
           setStreamingState(null, false);
 
           if (provider === 'claude') {
-            void refreshContextUsage();
+            const forceContextRefresh = sessionState.didCompactContext;
+            sessionState.didCompactContext = false;
+            void refreshContextUsage({
+              provider,
+              conversationId,
+              force: forceContextRefresh,
+            });
           }
         }
       }
@@ -5707,6 +5739,7 @@ const Panel = () => {
     sessionState.isSending = true;
     sessionState.interrupted = false;
     sessionState.didReceivePatch = false;
+    sessionState.didCompactContext = false;
     sessionState.activityStartTime = Date.now();
     sessionState.pendingDone = null;
     sessionState.pendingPatchReviewMessages = [];
@@ -6676,6 +6709,9 @@ const Panel = () => {
             const phase = (event.data as any)?.phase;
             const toolId = (event.data as any)?.toolId;
             const toolName = (event.data as any)?.toolName;
+            if (phase === 'compaction_complete') {
+              sessionState.didCompactContext = true;
+            }
 
             // Track tool execution states for visibility.
             const isToolStartPhase = phase === 'tool_start';

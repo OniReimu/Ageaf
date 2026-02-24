@@ -76,9 +76,18 @@
 
 **Actions:**
 - Preparing final handoff with behavior changes, test evidence, and residual risks.
+- Follow-up debugging for user-reported `/compact` ring staleness: verified panel race where forced refresh can be dropped while another refresh is in flight.
+- Added RED tests for follow-up fixes:
+  - `host/test/claude-usage-events.test.ts` (usage-only result shape),
+  - `test/panel-context-usage-refresh-queue.test.cjs` (queued forced refresh semantics).
+- Implemented host Claude usage parsing fallback (`result.usage` + `result.modelUsage`) and panel queued refresh retry on in-flight completion.
+- Re-ran root and host test suites; both green.
 
 **Files Modified:**
-- None
+- `host/src/runtimes/claude/agent.ts`
+- `src/iso/panel/Panel.tsx`
+- `host/test/claude-usage-events.test.ts`
+- `test/panel-context-usage-refresh-queue.test.cjs`
 
 ## Test Results
 
@@ -89,6 +98,8 @@
 | `npx tsx --test test/codex-compact-timeout.test.ts test/claude-runtime.test.ts test/jobs-sse.test.ts test/codex-runtime-compaction-retry.test.ts` | Related regressions stay green | 7 passed, 0 failed | Pass |
 | `cd host && npm test` | Full host suite green | 246 passed, 0 failed | Pass |
 | `npm test` (repo root) | Extension suite unaffected | 300 passed, 0 failed | Pass |
+| `npm test -- test/panel-context-usage-refresh-queue.test.cjs` (root) | New queue test fails first (RED) then passes | RED: 1 failed; GREEN: 305 passed, 0 failed | Pass |
+| `cd host && npm test -- claude-usage-events.test.ts` | New usage-shape test fails first (RED) then passes | RED: 1 failed; GREEN: 247 passed, 0 failed | Pass |
 
 ## Error Log
 
