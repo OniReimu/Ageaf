@@ -51,6 +51,7 @@ import {
   searchSkills,
   type SkillEntry,
 } from './skills/skillsRegistry';
+import { isReservedSlashCommand } from './skills/reservedSlashCommands';
 import {
   ProviderId,
   StoredConversation,
@@ -3029,6 +3030,7 @@ const Panel = () => {
     const match = before.match(/(^|[\s\(\[\{])\/([A-Za-z0-9._-]*)$/);
     if (!match) return null;
     const query = match[2] ?? '';
+    if (isReservedSlashCommand(query)) return null;
     const start = anchorOffset - (query.length + 1);
     return { query, node: textNode, start, end: anchorOffset };
   };
@@ -3045,6 +3047,12 @@ const Panel = () => {
     try {
       const manifest = await loadSkillsManifest();
       const results = searchSkills(manifest.skills, match.query);
+      if (results.length === 0) {
+        setSkillOpen(false);
+        setSkillResults([]);
+        skillRangeRef.current = null;
+        return;
+      }
       skillRangeRef.current = {
         node: match.node,
         start: match.start,
@@ -3096,12 +3104,15 @@ const Panel = () => {
     const seen = new Set<string>();
 
     for (const match of matches) {
-      const skillName = String(match[2] ?? '')
+      const normalized = String(match[2] ?? '')
         .trim()
         .toLowerCase();
-      if (skillName && !seen.has(skillName)) {
-        directiveNames.push(skillName);
-        seen.add(skillName);
+      if (isReservedSlashCommand(normalized)) {
+        continue;
+      }
+      if (normalized && !seen.has(normalized)) {
+        directiveNames.push(normalized);
+        seen.add(normalized);
       }
     }
 
@@ -3992,6 +4003,12 @@ const Panel = () => {
     updateImageAttachments([]);
     updateFileAttachments([]);
     updateDocumentAttachments([]);
+    setMentionOpen(false);
+    setMentionResults([]);
+    mentionRangeRef.current = null;
+    setSkillOpen(false);
+    setSkillResults([]);
+    skillRangeRef.current = null;
     const editor = editorRef.current;
     if (!editor) {
       setEditorEmpty(true);
