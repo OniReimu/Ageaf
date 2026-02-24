@@ -26,6 +26,7 @@
 - [x] Add overflow-triggered compact-and-retry behavior for Claude runtime
 - [x] Persist and use explicit Claude SDK session ID for resume
 - [x] Add/adjust tests for Claude compaction lifecycle and retry behavior
+- [x] Preserve grouped per-file review cards after status transitions (e.g., `Accept all`)
 
 **Status:** complete
 
@@ -59,6 +60,7 @@
 | Keep Claude session resume persistence host-side by conversationId map | Enables explicit SDK `resume` continuity without extension schema migration | 2026-02-23 |
 | Use runtime-level direct `/compact` dispatch in `runClaudeJob` | Preserves existing jobs route contract while enabling native compact path | 2026-02-23 |
 | Add Claude usage-shape fallback (`usage` + `modelUsage`) and queued panel refresh | Prevents stale context ring when compact completion happens during in-flight refresh or with `usage`-only result payloads | 2026-02-24 |
+| Group `replaceRangeInFile` cards by file across all statuses | Prevents grouped card from splitting into per-hunk cards after `Accept all` status transitions | 2026-02-24 |
 
 ## Errors Encountered
 
@@ -68,6 +70,7 @@
 | Tried to read non-existent `src/iso/panel/skillDirectives.ts` and `skillManifest.ts` | 1 | Located actual skill registry implementation in `src/iso/panel/skills/skillsRegistry.ts` and corresponding `Panel.tsx` call sites |
 | Running host test script with target still executes full `test/**/*.test.ts` glob | 1 | Accepted broader run for RED confirmation; will still use targeted assertions from new parity test failures |
 | Claude compact helper left timeout timers alive after success (test run hung until 60s timeout logs) | 1 | Cleared timeout in `sendClaudeCompact` finally block |
+| Shell interpreted backticks in `rg` pattern and emitted `command not found: Accept` | 1 | Re-ran command without backticks in shell pattern |
 
 ## Notes
 - Re-read this plan before major edits.

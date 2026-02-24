@@ -9,6 +9,8 @@
 - N/A (no prior brainstorming artifact provided for this task).
 
 ## Research Findings
+- Follow-up user report (2026-02-24): patch-review cards render per-file before `Accept all`, then split into per-hunk after accept completes.
+- Root cause in `src/iso/panel/Panel.tsx`: `fileGroupMap` construction filters `replaceRangeInFile` hunks to `status === 'pending'`; after acceptance status transitions to `accepted`, grouped card mapping disappears and each message falls back to individual `PatchReviewCard`.
 - Initial prior-session observation: CodePilot appears to support native `/compact` command passthrough and visible status streaming.
 - Initial prior-session observation: Ageaf has a Claude-specific `sendCompact.ts` helper that may not be wired into active request flow.
 - Initial prior-session observation: Ageaf Codex runtime has stronger compaction lifecycle/retry handling than Claude runtime.
@@ -34,6 +36,10 @@
 - Panel context refresh previously dropped forced refresh requests when `contextRefreshInFlightRef` was true, which explains stale ring state after `/compact` completion if a refresh race occurs.
 
 ## Implementation Findings
+- Added a short `How to Update Ageaf` section in `README.md` with simple source and Homebrew update steps.
+- Fixed `replaceRangeInFile` group-map behavior in `src/iso/panel/Panel.tsx` to include all statuses (not pending-only), with `firstPendingId` as visibility anchor to keep current pending cards visible while preserving grouped per-file rendering after accept/reject transitions.
+- Updated `test/panel-file-summary.test.cjs` to assert grouping survives status transitions and does not depend on `status !== 'pending'` filtering inside the grouped-card memoization block.
+- Updated `test/panel-feedback-action-order.test.cjs` to assert action ordering from `PatchReviewCard.tsx` (source of truth) instead of brittle slicing from `Panel.tsx`.
 - Added direct Claude `/compact` dispatch in `runClaudeJob`; direct compact requests now bypass JSON context envelope and execute native compact flow (`host/src/runtimes/claude/run.ts`).
 - Upgraded Claude compaction helper to emit lifecycle plan phases (`tool_start`, `compaction_complete`, `tool_error`) with stable compaction `toolId`, matching panel expectations (`host/src/compaction/sendCompact.ts`).
 - Added overflow-triggered compact-and-retry orchestration in Claude runtime (`runClaudeJob`): if first turn ends with context-overflow-style error status/message, host compacts then retries once (`host/src/runtimes/claude/run.ts`).

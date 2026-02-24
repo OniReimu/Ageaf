@@ -4,15 +4,15 @@ const path = require('node:path');
 const test = require('node:test');
 
 test('Patch review action buttons are ordered accept, reject, feedback', () => {
-  const panelPath = path.join(
+  const cardPath = path.join(
     __dirname,
     '..',
     'src',
     'iso',
     'panel',
-    'Panel.tsx'
+    'PatchReviewCard.tsx'
   );
-  const contents = fs.readFileSync(panelPath, 'utf8');
+  const contents = fs.readFileSync(cardPath, 'utf8');
 
   const pendingStart = contents.indexOf("status === 'pending'");
   assert.ok(pendingStart >= 0, 'expected pending patch review actions');
@@ -31,4 +31,3 @@ test('Patch review action buttons are ordered accept, reject, feedback', () => {
     'expected order accept < reject < feedback'
   );
 });
-
