@@ -70,6 +70,7 @@ async function sendClaudeCompact(
   debugCliEvents: boolean
 ): Promise<void> {
   const conversationId = runtime?.conversationId ?? 'unknown';
+  const toolId = `compaction-${Date.now()}`;
 
   // Prevent concurrent compaction
   if (activeCompacts.has(conversationId)) {
@@ -78,18 +79,24 @@ async function sendClaudeCompact(
 
   activeCompacts.add(conversationId);
   const compactStartTime = Date.now();
+  let timeoutId: NodeJS.Timeout | null = null;
 
   try {
     console.log(`[Claude Compact] Starting for conversation ${conversationId}`);
 
     emitEvent({
       event: 'plan',
-      data: { message: 'Sending compact command to Claude Code CLI...' },
+      data: {
+        phase: 'tool_start',
+        toolId,
+        toolName: 'Compacting',
+        message: 'Compacting context... (reducing context window usage)',
+      },
     });
 
     // Create timeout promise
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
+      timeoutId = setTimeout(() => {
         console.error(`[Claude Compact] Timeout after ${COMPACT_TIMEOUT_MS}ms for ${conversationId}`);
         reject(
           new Error(
@@ -117,15 +124,35 @@ async function sendClaudeCompact(
       debugCliEvents,
     });
 
-    await Promise.race([compactPromise, timeoutPromise]);
+    try {
+      await Promise.race([compactPromise, timeoutPromise]);
 
-    console.log(`[Claude Compact] Completed successfully for ${conversationId} in ${Date.now() - compactStartTime}ms`);
+      console.log(`[Claude Compact] Completed successfully for ${conversationId} in ${Date.now() - compactStartTime}ms`);
 
-    emitEvent({
-      event: 'plan',
-      data: { message: 'Compact completed successfully.' },
-    });
+      emitEvent({
+        event: 'plan',
+        data: {
+          phase: 'compaction_complete',
+          toolId,
+          toolName: 'Compacting',
+          message: 'Context compaction complete',
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Compaction failed';
+      emitEvent({
+        event: 'plan',
+        data: {
+          phase: 'tool_error',
+          toolId,
+          toolName: 'Compacting',
+          message: `Context compaction failed: ${message}`,
+        },
+      });
+      throw error;
+    }
   } finally {
+    if (timeoutId) clearTimeout(timeoutId);
     // Always remove from active compacts set
     activeCompacts.delete(conversationId);
   }

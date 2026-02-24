@@ -31,41 +31,64 @@
 - `docs/manus/findings.md`
 
 ### Phase 3: Implementation
-**Status:** pending
-**Started:** N/A
+**Status:** complete
+**Started:** 2026-02-23T00:45:00Z
 
 **Actions:**
-- Pending.
+- Resumed from existing manus plan as implementation continuation.
+- Reviewed host test inventory and identified Claude runtime/jobs touchpoints for TDD-first implementation.
+- Added `host/test/claude-compaction-parity.test.ts` with RED coverage for:
+  - direct `/compact` prompt transport + lifecycle events,
+  - overflow-triggered compact-and-retry flow,
+  - SDK session-id persistence/resume.
+- Ran host tests with new file included; new tests failed as expected (3 failures), confirming missing behavior before implementation.
+- Implemented host-side Claude session resume cache + accessors in `host/src/runtimes/claude/state.ts`.
+- Implemented Claude query test hooks (`set/reset`) and SDK session capture/resume wiring in `host/src/runtimes/claude/agent.ts`.
+- Implemented direct Claude `/compact` path and overflow compact+retry orchestration in `host/src/runtimes/claude/run.ts`.
+- Updated Claude compaction helper to emit lifecycle phases and clear timeout handles in `host/src/compaction/sendCompact.ts`.
 
 **Files Modified:**
-- None
+- `docs/manus/findings.md`
+- `docs/manus/task_plan.md`
+- `docs/manus/progress.md`
+- `host/src/runtimes/claude/state.ts`
+- `host/src/runtimes/claude/agent.ts`
+- `host/src/runtimes/claude/run.ts`
+- `host/src/compaction/sendCompact.ts`
+- `host/test/claude-compaction-parity.test.ts`
 
 ### Phase 4: Testing & Verification
-**Status:** pending
-**Started:** N/A
+**Status:** complete
+**Started:** 2026-02-23T01:05:00Z
 
 **Actions:**
-- Pending.
+- Ran targeted parity test: `npx tsx --test test/claude-compaction-parity.test.ts` (pass 3/3).
+- Ran targeted regression set: `npx tsx --test test/codex-compact-timeout.test.ts test/claude-runtime.test.ts test/jobs-sse.test.ts test/codex-runtime-compaction-retry.test.ts` (pass 7/7).
+- Ran full host suite: `npm test` in `host/` (pass 246/246).
+- Ran root extension suite: `npm test` in repo root (pass 300/300).
 
 **Files Modified:**
-- None
+- `host/src/compaction/sendCompact.ts` (timeout cleanup fix during verification)
 
 ### Phase 5: Delivery
 **Status:** in_progress
-**Started:** 2026-02-23T00:35:00Z
+**Started:** 2026-02-23T01:10:00Z
 
 **Actions:**
-- Prepared comparison + roadmap summary for user handoff.
+- Preparing final handoff with behavior changes, test evidence, and residual risks.
 
 **Files Modified:**
-- `docs/manus/task_plan.md`
-- `docs/manus/progress.md`
+- None
 
 ## Test Results
 
 | Test | Expected | Actual | Pass/Fail |
 |------|----------|--------|-----------|
-| N/A | N/A | N/A | N/A |
+| `npm test -- host/test/claude-compaction-parity.test.ts` (host) | New Claude parity tests fail first (RED) | 3 failing tests in `claude-compaction-parity.test.ts` (`clearClaudeSessionResumeCacheForTests is not a function`) while existing suite mostly passes | Pass (RED) |
+| `npx tsx --test test/claude-compaction-parity.test.ts` | 3 parity tests pass after implementation | 3 passed, 0 failed | Pass |
+| `npx tsx --test test/codex-compact-timeout.test.ts test/claude-runtime.test.ts test/jobs-sse.test.ts test/codex-runtime-compaction-retry.test.ts` | Related regressions stay green | 7 passed, 0 failed | Pass |
+| `cd host && npm test` | Full host suite green | 246 passed, 0 failed | Pass |
+| `npm test` (repo root) | Extension suite unaffected | 300 passed, 0 failed | Pass |
 
 ## Error Log
 
@@ -73,10 +96,11 @@
 |-----------|-------|------------|
 | 2026-02-23T00:15:00Z | `rg` attempted to read missing `host/src/index.ts` | Re-ran with valid `host/src` targets |
 | 2026-02-23T00:18:00Z | `sed` attempted missing `src/iso/panel/skillDirectives.ts` and `skillManifest.ts` | Located and used `src/iso/panel/skills/skillsRegistry.ts` plus `Panel.tsx` call sites |
+| 2026-02-23T01:02:00Z | Targeted parity test process stayed alive for ~60s after success | Fixed by clearing Claude compact timeout handle in `sendClaudeCompact` finally block |
 
 ## 5-Question Reboot Check
 1. **Where am I?** Phase 5 (Delivery), in progress.
-2. **Where am I going?** Finish handoff summary and confirm next-step implementation scope.
+2. **Where am I going?** Finalize handoff and, if requested, split follow-up polish tasks.
 3. **What's the goal?** Evidence-based comparison and prioritized parity plan for Claude compaction.
-4. **What have I learned?** Ageaf Claude compaction is weaker mainly due to missing integrated command path, lifecycle events, and retry flow.
-5. **What have I done?** Completed discovery and planning artifacts, including a severity-ranked gap matrix and rollout plan.
+4. **What have I learned?** Claude parity can be achieved with contained host-side changes (dispatch, lifecycle, retry, resume) without panel protocol rewrites.
+5. **What have I done?** Implemented parity items, added tests, and verified host + extension suites are green.
