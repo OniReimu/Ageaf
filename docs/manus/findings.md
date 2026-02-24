@@ -30,6 +30,8 @@
 - Host tests currently rely heavily on `AGEAF_CLAUDE_MOCK` for Claude job route/SSE smoke checks (`host/test/jobs-sse.test.ts`, `host/test/claude-runtime.test.ts`), so new Claude compaction behavior tests should include unit-style runtime tests that do not require real CLI availability.
 - Existing compaction/retry coverage pattern in repo uses focused runtime tests with deterministic fixture-like inputs (`host/test/codex-runtime-compaction-retry.test.ts`), which can be mirrored for Claude parity tests.
 - Repo also uses lightweight structural smoke tests to lock important event/type contracts (`host/test/file-started-events.test.ts`); this pattern can guard newly introduced Claude compaction/session-resume hooks.
+- CodePilot extracts token usage from `result.usage` in-stream (`src/lib/claude-client.ts`), while Ageaf Claude host previously only read `result.modelUsage`; this mismatch can drop usage updates when SDK emits usage-only shape.
+- Panel context refresh previously dropped forced refresh requests when `contextRefreshInFlightRef` was true, which explains stale ring state after `/compact` completion if a refresh race occurs.
 
 ## Implementation Findings
 - Added direct Claude `/compact` dispatch in `runClaudeJob`; direct compact requests now bypass JSON context envelope and execute native compact flow (`host/src/runtimes/claude/run.ts`).
@@ -39,6 +41,9 @@
 - Added Claude-agent test hooks for query injection and session-cache reset to enable deterministic unit tests of runtime behavior (`host/src/runtimes/claude/agent.ts`).
 - Fixed timeout-handle leak in Claude compaction helper by clearing timeout in `finally`, eliminating 60s post-success test hangs (`host/src/compaction/sendCompact.ts`).
 - Added parity test coverage in `host/test/claude-compaction-parity.test.ts` for direct compact transport, overflow retry path, and session resume continuity.
+- Extended Claude usage extraction to support both `result.modelUsage` and `result.usage` payloads (camelCase + snake_case fields), aligning with CodePilot-style real-time usage parsing (`host/src/runtimes/claude/agent.ts`).
+- Added panel-side queued refresh fallback so compaction-triggered forced refresh executes after any in-flight refresh completes (`src/iso/panel/Panel.tsx`).
+- Added follow-up tests: `host/test/claude-usage-events.test.ts` and `test/panel-context-usage-refresh-queue.test.cjs`.
 
 ## Parity Gap Matrix
 

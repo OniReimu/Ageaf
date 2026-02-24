@@ -452,28 +452,56 @@ async function runQuery(
     }
   };
 
+  const readUsageNumber = (...values: unknown[]): number => {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+    }
+    return 0;
+  };
+
+  const readOptionalUsageNumber = (...values: unknown[]): number | null => {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+    }
+    return null;
+  };
+
   const emitUsage = (resultMessage: {
     modelUsage?: Record<string, unknown>;
+    usage?: Record<string, unknown>;
   }) => {
     const usageRecord = resultMessage.modelUsage as Record<string, any> | undefined;
-    if (!usageRecord || typeof usageRecord !== 'object') return;
+    let model: string | null = null;
+    let usage: Record<string, unknown> | null = null;
 
-    const entries = Object.entries(usageRecord);
-    if (entries.length === 0) return;
+    if (usageRecord && typeof usageRecord === 'object') {
+      const entries = Object.entries(usageRecord);
+      if (entries.length > 0) {
+        const picked =
+          (configuredModel && entries.find(([key]) => key === configuredModel)) ??
+          entries[0];
+        if (picked) {
+          model = String(picked[0]);
+          usage = (picked[1] as Record<string, unknown>) ?? null;
+        }
+      }
+    }
 
-    const picked =
-      (configuredModel && entries.find(([key]) => key === configuredModel)) ??
-      entries[0];
-    if (!picked) return;
+    if (!usage && resultMessage.usage && typeof resultMessage.usage === 'object') {
+      usage = resultMessage.usage;
+    }
 
-    const [model, usage] = picked as [string, any];
+    if (!usage) return;
+
     const usedTokens =
-      (typeof usage?.inputTokens === 'number' ? usage.inputTokens : 0) +
-      (typeof usage?.outputTokens === 'number' ? usage?.outputTokens : 0) +
-      (typeof usage?.cacheReadInputTokens === 'number' ? usage?.cacheReadInputTokens : 0) +
-      (typeof usage?.cacheCreationInputTokens === 'number' ? usage?.cacheCreationInputTokens : 0);
-    const contextWindow =
-      typeof usage?.contextWindow === 'number' ? usage?.contextWindow : null;
+      readUsageNumber(usage.inputTokens, usage.input_tokens) +
+      readUsageNumber(usage.outputTokens, usage.output_tokens) +
+      readUsageNumber(usage.cacheReadInputTokens, usage.cache_read_input_tokens) +
+      readUsageNumber(usage.cacheCreationInputTokens, usage.cache_creation_input_tokens);
+    const contextWindow = readOptionalUsageNumber(
+      usage.contextWindow,
+      usage.context_window
+    );
 
     emitEvent({
       event: 'usage',

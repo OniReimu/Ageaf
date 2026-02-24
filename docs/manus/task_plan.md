@@ -58,6 +58,7 @@
 | Sequence fix as ingress -> lifecycle -> retry -> session persistence -> tests | Reduces risk by unlocking behavior first, then improving continuity and reliability | 2026-02-23 |
 | Keep Claude session resume persistence host-side by conversationId map | Enables explicit SDK `resume` continuity without extension schema migration | 2026-02-23 |
 | Use runtime-level direct `/compact` dispatch in `runClaudeJob` | Preserves existing jobs route contract while enabling native compact path | 2026-02-23 |
+| Add Claude usage-shape fallback (`usage` + `modelUsage`) and queued panel refresh | Prevents stale context ring when compact completion happens during in-flight refresh or with `usage`-only result payloads | 2026-02-24 |
 
 ## Errors Encountered
 
