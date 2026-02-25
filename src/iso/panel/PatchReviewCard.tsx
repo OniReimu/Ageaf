@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { createPortal } from 'preact/compat';
 import { StoredPatchReview } from './chatStore';
 import { copyToClipboard } from './clipboard';
 import { CloseIcon } from './ageaf-icons';
@@ -112,7 +113,6 @@ export function PatchReviewCard({
   const shouldAnimateRef = useRef<boolean>(!(patchReview as any).hasAnimated);
   const [collapsed, setCollapsed] = useState(true);
   const [showModal, setShowModal] = useState(false);
-  const [modalOffset, setModalOffset] = useState({ x: 0, y: 0 });
   const [headerCopied, setHeaderCopied] = useState(false);
   const headerCopyTimerRef = useRef<number | null>(null);
 
@@ -133,7 +133,6 @@ export function PatchReviewCard({
   // ESC key handler for modal
   useEffect(() => {
     if (!showModal) return;
-    setModalOffset({ x: 0, y: 0 });
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setShowModal(false);
@@ -142,29 +141,6 @@ export function PatchReviewCard({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showModal]);
-
-  const startModalDrag = (event: MouseEvent) => {
-    // Only left-click dragging.
-    if ((event as any).button !== 0) return;
-    event.preventDefault();
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const startOffset = { ...modalOffset };
-
-    const onMove = (e: MouseEvent) => {
-      setModalOffset({
-        x: startOffset.x + (e.clientX - startX),
-        y: startOffset.y + (e.clientY - startY),
-      });
-    };
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  };
 
   let fileLabel: string | null = null;
   if (patchReview.kind === 'replaceRangeInFile') {
@@ -316,18 +292,14 @@ export function PatchReviewCard({
         </button>
       ) : null}
 
-      {showModal ? (
+      {showModal ? createPortal(
         <div class="ageaf-diff-modal__backdrop">
           <div
             class="ageaf-diff-modal"
-            style={{
-              transform: `translate(${modalOffset.x}px, ${modalOffset.y}px)`,
-            }}
             onClick={(e) => e.stopPropagation()}
           >
             <div
               class="ageaf-diff-modal__header"
-              onMouseDown={(e) => startModalDrag(e as any)}
             >
               <div class="ageaf-diff-modal__title">
                 {title}
@@ -353,6 +325,7 @@ export function PatchReviewCard({
                   animate={false}
                   wrap={true}
                   startLineNumber={startLineNumber}
+                  isLightMode={isLightMode}
                 />
               ) : patchReview.kind === 'replaceSelection' ? (
                 <DiffReview
@@ -362,11 +335,13 @@ export function PatchReviewCard({
                   animate={false}
                   wrap={true}
                   startLineNumber={startLineNumber}
+                  isLightMode={isLightMode}
                 />
               ) : null}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       ) : null}
     </div>
   );

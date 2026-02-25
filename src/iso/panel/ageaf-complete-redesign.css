@@ -149,7 +149,8 @@
 }
 
 /* Light Mode Overrides */
-.ageaf-panel.light {
+.ageaf-panel.light,
+body[data-ageaf-theme="light"] .ageaf-diff-modal__backdrop {
   --ageaf-black: #ffffff;
   --ageaf-charcoal: #f8fafc;
   --ageaf-slate: #f1f5f9;
@@ -176,7 +177,7 @@
 }
 
 /* Modal backdrops when in Light Mode */
-.ageaf-panel.light .ageaf-diff-modal__backdrop,
+body[data-ageaf-theme="light"] .ageaf-diff-modal__backdrop,
 .ageaf-panel.light .ageaf-settings__backdrop {
   background: var(--ageaf-modal-backdrop);
 }
@@ -341,6 +342,12 @@
   border-color: var(--ageaf-border);
 }
 
+/* Modal is portaled to document.body, so use the global theme attribute */
+body[data-ageaf-theme="light"] .ageaf-diff-modal {
+  background: var(--ageaf-surface);
+  /* Fully opaque */
+}
+
 .ageaf-panel.light .ageaf-patch-review__header {
   background: transparent;
   border-bottom-color: var(--ageaf-border);
@@ -353,6 +360,25 @@
 .ageaf-panel.light .ageaf-patch-review__diff-wrap {
   background: transparent;
   border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-grouped-patch__separator::before,
+.ageaf-panel.light .ageaf-grouped-patch__separator::after,
+body[data-ageaf-theme="light"] .ageaf-grouped-patch__separator::before,
+body[data-ageaf-theme="light"] .ageaf-grouped-patch__separator::after {
+  background: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-diff-review,
+body[data-ageaf-theme="light"] .ageaf-diff-review {
+  border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-grouped-patch__hunk-status,
+body[data-ageaf-theme="light"] .ageaf-grouped-patch__hunk-status,
+.ageaf-panel.light .ageaf-grouped-patch__separator,
+body[data-ageaf-theme="light"] .ageaf-grouped-patch__separator {
+  color: var(--ageaf-text-secondary);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
