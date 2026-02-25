@@ -148,6 +148,213 @@
   --ageaf-diff-btn-feedback-border: rgba(77, 184, 232, 0.35);
 }
 
+/* Light Mode Overrides */
+.ageaf-panel.light {
+  --ageaf-black: #ffffff;
+  --ageaf-charcoal: #f8fafc;
+  --ageaf-slate: #f1f5f9;
+  --ageaf-surface: #ffffff;
+  --ageaf-border: #e2e8f0;
+
+  --ageaf-text-primary: #0f172a;
+  --ageaf-text-secondary: #334155;
+  --ageaf-text-muted: #64748b;
+  --ageaf-text-dim: #94a3b8;
+
+  --ageaf-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --ageaf-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --ageaf-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --ageaf-shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+
+  --ageaf-cite-unused-bg: rgba(107, 125, 115, 0.08);
+
+  /* Deeply nested Overrides to fix the dark backgrounds shown in the screenshot */
+  /* Modal backdrop needs to switch to a bright overlay so dark colors pop out */
+  --ageaf-modal-backdrop: rgba(255, 255, 255, 0.75);
+
+  /* Explicitly reset the chat/system message bubbles if needed, though they inherit natively */
+}
+
+/* Modal backdrops when in Light Mode */
+.ageaf-panel.light .ageaf-diff-modal__backdrop,
+.ageaf-panel.light .ageaf-settings__backdrop {
+  background: var(--ageaf-modal-backdrop);
+}
+
+/* Thinking block (CoT) backgrounds in Light Mode */
+.ageaf-panel.light .ageaf-cot-thinking {
+  background: var(--ageaf-slate);
+  border-left-color: var(--ageaf-emerald-dark);
+}
+
+.ageaf-panel.light .ageaf-message__cot-header {
+  background: rgba(57, 185, 138, 0.1);
+  border-color: rgba(57, 185, 138, 0.2);
+}
+
+.ageaf-panel.light .ageaf-message__cot-body {
+  background: rgba(57, 185, 138, 0.03);
+}
+
+/* Tool indicator backgrounds in Light Mode */
+.ageaf-panel.light .ageaf-tool-indicator {
+  background: var(--ageaf-surface);
+  border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-tool-indicator__input {
+  background: var(--ageaf-charcoal);
+}
+
+.ageaf-panel.light .ageaf-toolcall__detail {
+  background: var(--ageaf-charcoal);
+  border-color: var(--ageaf-border);
+}
+
+/* Code block backgrounds in Light Mode */
+.ageaf-panel.light .ageaf-message__content pre {
+  background: var(--ageaf-charcoal);
+  border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-message__content code {
+  background: rgba(57, 185, 138, 0.1);
+  border-color: rgba(57, 185, 138, 0.2);
+  color: var(--ageaf-emerald-dark);
+}
+
+/* Quote blocks in Light Mode */
+.ageaf-panel.light .ageaf-message__content blockquote {
+  background: var(--ageaf-slate);
+  color: var(--ageaf-text-primary);
+  border-left-color: var(--ageaf-emerald-dark);
+}
+
+/* Quotation/Code blocks in Light Mode */
+.ageaf-panel.light .ageaf-message__quote {
+  background: var(--ageaf-slate);
+  border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-message__quote-block {
+  background: var(--ageaf-charcoal);
+  border-color: var(--ageaf-border);
+  color: var(--ageaf-text-primary);
+}
+
+.ageaf-panel.light .ageaf-message__copy {
+  background: var(--ageaf-surface);
+  border-color: var(--ageaf-border);
+  color: var(--ageaf-text-secondary);
+}
+
+.ageaf-panel.light .ageaf-message__copy:hover:not(.is-disabled) {
+  background: var(--ageaf-slate);
+  border-color: var(--ageaf-emerald-dark);
+  color: var(--ageaf-emerald-dark);
+}
+
+/* Prism Syntax Highlighting - Light Theme Overrides */
+.ageaf-panel.light .ageaf-code-block code {
+  color: var(--ageaf-text-secondary);
+}
+
+.ageaf-panel.light .token.comment,
+.ageaf-panel.light .token.prolog,
+.ageaf-panel.light .token.doctype,
+.ageaf-panel.light .token.cdata {
+  color: #64748b;
+}
+
+.ageaf-panel.light .token.punctuation {
+  color: #475569;
+}
+
+.ageaf-panel.light .token.property,
+.ageaf-panel.light .token.tag,
+.ageaf-panel.light .token.boolean,
+.ageaf-panel.light .token.number,
+.ageaf-panel.light .token.constant,
+.ageaf-panel.light .token.symbol,
+.ageaf-panel.light .token.deleted {
+  color: #b91c1c;
+}
+
+.ageaf-panel.light .token.selector,
+.ageaf-panel.light .token.attr-name,
+.ageaf-panel.light .token.string,
+.ageaf-panel.light .token.char,
+.ageaf-panel.light .token.builtin,
+.ageaf-panel.light .token.inserted {
+  color: #15803d;
+}
+
+.ageaf-panel.light .token.operator,
+.ageaf-panel.light .token.entity,
+.ageaf-panel.light .token.url,
+.ageaf-panel.light .language-css .token.string,
+.ageaf-panel.light .style .token.string {
+  color: #0369a1;
+}
+
+.ageaf-panel.light .token.atrule,
+.ageaf-panel.light .token.attr-value,
+.ageaf-panel.light .token.keyword {
+  color: #be185d;
+}
+
+.ageaf-panel.light .token.function,
+.ageaf-panel.light .token.class-name {
+  color: #1d4ed8;
+}
+
+.ageaf-panel.light .token.regex,
+.ageaf-panel.light .token.important,
+.ageaf-panel.light .token.variable {
+  color: #b45309;
+}
+
+/* Provider Badge in Light Mode */
+.ageaf-panel.light .ageaf-provider {
+  background: transparent;
+  border-color: var(--ageaf-border);
+}
+
+/* Runtime menu horizontal divider in Light Mode */
+.ageaf-panel.light .ageaf-runtime {
+  border-top-color: var(--ageaf-border);
+}
+
+/* Chat Input Placeholder in Light Mode */
+.ageaf-panel.light .ageaf-panel__editor.is-empty::before {
+  color: var(--ageaf-text-dim);
+}
+
+/* Logo and panel text in Light Mode */
+.ageaf-panel.light .ageaf-panel__name {
+  color: var(--ageaf-text-primary);
+}
+
+/* Patch Review card backgrounds in Light Mode */
+.ageaf-panel.light .ageaf-patch-review {
+  background: transparent;
+  border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-patch-review__header {
+  background: transparent;
+  border-bottom-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-patch-review__title {
+  color: var(--ageaf-text-primary);
+}
+
+.ageaf-panel.light .ageaf-patch-review__diff-wrap {
+  background: transparent;
+  border-color: var(--ageaf-border);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    MAIN PANEL STRUCTURE
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -265,6 +472,38 @@
 .ageaf-panel__title {
   flex: 1;
   min-width: 0;
+}
+
+.ageaf-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ageaf-panel__help,
+.ageaf-panel__theme-toggle {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--ageaf-radius-sm);
+  background: transparent;
+  border: 1px solid var(--ageaf-border);
+  color: var(--ageaf-text-muted);
+  font-weight: 600;
+  font-size: 14px;
+  text-decoration: none;
+  transition: all var(--ageaf-transition-fast);
+  cursor: pointer;
+  padding: 0;
+}
+
+.ageaf-panel__help:hover,
+.ageaf-panel__theme-toggle:hover {
+  background: var(--ageaf-emerald-soft);
+  color: var(--ageaf-emerald-dark);
+  border-color: var(--ageaf-emerald);
 }
 
 .ageaf-panel__name {
@@ -604,9 +843,17 @@
 }
 
 @keyframes ageaf-copy-flash {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.05); }
-  100% { transform: scale(1); }
+  0% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.05);
+  }
+
+  100% {
+    transform: scale(1);
+  }
 }
 
 .ageaf-message__copy-icon,
@@ -1171,8 +1418,15 @@
 }
 
 @keyframes ageaf-modal-enter {
-  from { opacity: 0; transform: scale(0.96); }
-  to { opacity: 1; transform: scale(1); }
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .ageaf-settings__panel {

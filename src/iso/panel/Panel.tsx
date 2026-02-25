@@ -91,6 +91,8 @@ import {
   NewChatIconAlt,
   CloseSessionIcon,
   ClearChatIcon,
+  SunIcon,
+  MoonIcon,
 } from './ageaf-icons';
 
 const DEFAULT_WIDTH = 360;
@@ -675,6 +677,16 @@ const Panel = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const [isLightMode, setIsLightMode] = useState(false);
+
+  // Sync theme to document body so other injected scripts (like citations) can react to it
+  useEffect(() => {
+    if (isLightMode) {
+      document.body.setAttribute('data-ageaf-theme', 'light');
+    } else {
+      document.body.removeAttribute('data-ageaf-theme');
+    }
+  }, [isLightMode]);
   const [chatProvider, setChatProvider] = useState<ProviderId>('claude');
   const [sessionIds, setSessionIds] = useState<string[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -4480,6 +4492,7 @@ const Panel = () => {
                   onFeedback={(messageId) =>
                     onFeedbackPatchReviewMessage(messageId)
                   }
+                  isLightMode={isLightMode}
                 />
               );
             }
@@ -4520,6 +4533,7 @@ const Panel = () => {
               hasAnimated: true,
             }))
           }
+          isLightMode={isLightMode}
         />
       );
     }
@@ -9117,7 +9131,8 @@ const Panel = () => {
 
   return (
     <aside
-      class={`ageaf-panel ${collapsed ? 'ageaf-panel--collapsed' : ''}`}
+      class={`ageaf-panel ${collapsed ? 'ageaf-panel--collapsed' : ''} ${isLightMode ? 'light' : ''
+        }`}
       style={{ '--ageaf-panel-width': `${width}px` }}
     >
       <div
@@ -9178,6 +9193,15 @@ const Panel = () => {
                 <span class="ageaf-provider__dot" aria-hidden="true" />
                 <span class="ageaf-provider__label">{providerDisplay.label}</span>
               </div>
+              <button
+                class="ageaf-panel__theme-toggle"
+                type="button"
+                onClick={() => setIsLightMode(!isLightMode)}
+                aria-label={`Switch to ${isLightMode ? 'Dark' : 'Light'} Mode`}
+                title={`Switch to ${isLightMode ? 'Dark' : 'Light'} Mode`}
+              >
+                {isLightMode ? <SunIcon /> : <MoonIcon />}
+              </button>
               <a
                 class="ageaf-panel__help"
                 href={HOW_TO_GUIDES_URL}
