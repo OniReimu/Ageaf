@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { createPortal } from 'preact/compat';
 import type { StoredPatchReview, StoredPatchReviewStatus } from './chatStore';
 import { CloseIcon } from './ageaf-icons';
 import { DiffReview } from './DiffReview';
@@ -76,8 +77,6 @@ export function GroupedPatchReviewCard({
   const shouldAnimateRef = useRef(true);
   const [collapsed, setCollapsed] = useState(true);
   const [showModal, setShowModal] = useState(false);
-  const [modalPos, setModalPos] = useState<{ x: number; y: number } | null>(null);
-  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
 
   useEffect(() => {
     shouldAnimateRef.current = false;
@@ -85,7 +84,6 @@ export function GroupedPatchReviewCard({
 
   useEffect(() => {
     if (!showModal) {
-      setModalPos(null);
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -97,26 +95,6 @@ export function GroupedPatchReviewCard({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [showModal]);
 
-  useEffect(() => {
-    if (!dragRef.current) return;
-    const onMouseMove = (event: MouseEvent) => {
-      const drag = dragRef.current;
-      if (!drag) return;
-      setModalPos({
-        x: drag.origX + (event.clientX - drag.startX),
-        y: drag.origY + (event.clientY - drag.startY),
-      });
-    };
-    const onMouseUp = () => {
-      dragRef.current = null;
-    };
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-  });
 
   const sortedHunks = useMemo(() => {
     const copy = [...hunks];
@@ -299,24 +277,14 @@ export function GroupedPatchReviewCard({
           Show less
         </button>
       ) : null}
-      {showModal ? (
+      {showModal ? createPortal(
         <div class="ageaf-diff-modal__backdrop">
           <div
             class="ageaf-diff-modal"
             onClick={(event) => event.stopPropagation()}
-            style={modalPos ? { transform: `translate(${modalPos.x}px, ${modalPos.y}px)` } : undefined}
           >
             <div
               class="ageaf-diff-modal__header"
-              onMouseDown={(event: MouseEvent) => {
-                if ((event.target as HTMLElement).closest('button')) return;
-                dragRef.current = {
-                  startX: event.clientX,
-                  startY: event.clientY,
-                  origX: modalPos?.x ?? 0,
-                  origY: modalPos?.y ?? 0,
-                };
-              }}
             >
               <div class="ageaf-diff-modal__title">
                 {title}
@@ -345,7 +313,8 @@ export function GroupedPatchReviewCard({
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       ) : null}
     </div>
   );
