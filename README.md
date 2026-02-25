@@ -11,6 +11,14 @@ https://github.com/user-attachments/assets/8360eb0e-4285-407b-96ff-268df143e074
 
 Ageaf is an Chrome Plugin that adds an agent panel specifically to Overleaf, enabling Claude Code and Codex CLI features.
 
+## News
+
+- **2026-02-25**: Light mode enabled — use Ageaf comfortably in bright environments
+- **2026-02-24**: Smarter slash commands — type `/` for suggestions that actually match what you're looking for
+- **2026-02-23**: Work with longer papers without slowdowns — better memory management for big documents
+- **2026-02-22**: Automatic notation checker — Ageaf now helps keep your abbreviations and symbols consistent
+- **2026-02-20**: Check all your citations at once — find missing or incorrect references in seconds
+
 ## Features
 
 - In-page agent panel
@@ -84,7 +92,7 @@ BYOK supports **1,000+ models** across 20+ providers. Here is a highlight of sup
 
 ## Quick Start
 
-### Local Development
+### Local Development (Strongly recommended)
 0. Under the project directory.
 
 1. Install dependencies and build and load the extension:
