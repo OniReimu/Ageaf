@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'preact/hooks';
 import { preloadDiffHTML } from '@pierre/diffs/ssr';
 import { ResolvedThemes, parseDiffFromFile, setLanguageOverride } from '@pierre/diffs';
 import githubDark from '@shikijs/themes/github-dark';
+// @ts-ignore: TS module resolution missing from package
+import githubLight from '@shikijs/themes/github-light';
 import { diffLines } from 'diff';
 import { startTypingReveal, type TypingRevealController } from './typingReveal';
 import { copyToClipboard } from './clipboard';
@@ -13,10 +15,14 @@ type Props = {
   animate?: boolean;
   wrap?: boolean;
   startLineNumber?: number;
+  isLightMode?: boolean;
 };
 
 if (!ResolvedThemes.has('github-dark')) {
-  ResolvedThemes.set('github-dark', githubDark);
+  ResolvedThemes.set('github-dark', githubDark as any);
+}
+if (!ResolvedThemes.has('github-light')) {
+  ResolvedThemes.set('github-light', githubLight as any);
 }
 
 const SHADOW_OVERRIDES_STYLE_ID = 'ageaf-diff-shadow-overrides';
@@ -41,6 +47,9 @@ function injectShadowOverrides(shadowRoot: ShadowRoot, options: { wrap: boolean 
   style.id = SHADOW_OVERRIDES_STYLE_ID;
   style.textContent = `
     /* Ageaf overrides for @pierre/diffs Shadow DOM */
+    .shiki {
+      background: transparent !important;
+    }
 
     ${options.wrap ? `
       /* In wrap mode, keep the library's layout/backgrounds and only reserve
@@ -143,17 +152,17 @@ function adjustLineNumbers(shadowRoot: ShadowRoot, startLineNumber: number) {
 
   // Find all line number elements - the library uses [data-line-number-content] or direct text in [data-column-number]
   const lineNumberElements = shadowRoot.querySelectorAll('[data-column-number]');
-  
+
   lineNumberElements.forEach((el) => {
     // Try to find [data-line-number-content] first, then fall back to the column element itself
     const lineNumberContent = el.querySelector('[data-line-number-content]') as HTMLElement | null;
     const target = lineNumberContent ?? (el as HTMLElement);
-    
+
     if (!target) return;
-    
+
     // Get the text content - might be in a child node or directly in the element
     let text = target.textContent?.trim() ?? '';
-    
+
     // If empty, try to find text in child nodes
     if (!text) {
       const textNode = Array.from(target.childNodes).find(
@@ -161,25 +170,25 @@ function adjustLineNumbers(shadowRoot: ShadowRoot, startLineNumber: number) {
       );
       text = textNode?.textContent?.trim() ?? '';
     }
-    
+
     if (!text) return;
-    
+
     // Parse line numbers - could be "123" or "123-456" for ranges, or might have whitespace
     const match = text.match(/^(\d+)(?:-(\d+))?$/);
     if (!match) return;
-    
+
     const start = Number.parseInt(match[1], 10);
     const end = match[2] ? Number.parseInt(match[2], 10) : null;
-    
+
     if (!Number.isFinite(start) || start <= 0) return;
-    
+
     // Adjust by adding the offset (subtract 1 because the diff starts at line 1, but we want to add the offset)
     const adjustedStart = start + startLineNumber - 1;
     const adjustedEnd = end ? end + startLineNumber - 1 : null;
-    
+
     // Update the display
     const newText = adjustedEnd ? `${adjustedStart}-${adjustedEnd}` : String(adjustedStart);
-    
+
     if (lineNumberContent) {
       lineNumberContent.textContent = newText;
     } else {
@@ -364,6 +373,7 @@ export function DiffReview({
   animate = true,
   wrap = false,
   startLineNumber,
+  isLightMode = false,
 }: Props) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const renderSeqRef = useRef(0);
@@ -413,8 +423,8 @@ export function DiffReview({
         const html = await preloadDiffHTML({
           fileDiff,
           options: {
-            theme: 'github-dark',
-            themeType: 'dark',
+            theme: isLightMode ? 'github-light' : 'github-dark',
+            themeType: isLightMode ? 'light' : 'dark',
             diffStyle: 'unified',
             overflow: wrap ? 'wrap' : 'scroll',
             expandUnchanged: false,
@@ -443,18 +453,18 @@ export function DiffReview({
         const shadowRoot = host.shadowRoot ?? host.attachShadow({ mode: 'open' });
         shadowRoot.innerHTML = html;
 
-         injectShadowOverrides(shadowRoot, { wrap });
+        injectShadowOverrides(shadowRoot, { wrap });
         normalizeCollapsedUnchangedIndicators(shadowRoot);
-        
+
         // Adjust line numbers to show absolute line numbers from the file
         if (startLineNumber) {
           adjustLineNumbers(shadowRoot, startLineNumber);
         }
 
-         // Inject copy buttons on added line segments (modal only).
-         if (wrap) {
-           injectCopyButtons(shadowRoot);
-         }
+        // Inject copy buttons on added line segments (modal only).
+        if (wrap) {
+          injectCopyButtons(shadowRoot);
+        }
 
         if (animate) {
           typingControllerRef.current?.cancel();
@@ -483,7 +493,7 @@ export function DiffReview({
       typingControllerRef.current?.cancel();
       typingControllerRef.current = null;
     };
-  }, [oldText, newText, fileName, startLineNumber, animate, wrap]);
+  }, [oldText, newText, fileName, startLineNumber, animate, wrap, isLightMode]);
 
   return <div class="ageaf-diff-review" ref={wrapperRef} />;
 }

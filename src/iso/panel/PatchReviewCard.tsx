@@ -89,6 +89,7 @@ type PatchReviewCardProps = {
   onFeedback: () => void;
   onReject: () => void;
   markAnimated: () => void;
+  isLightMode?: boolean;
 };
 
 export function PatchReviewCard({
@@ -104,6 +105,7 @@ export function PatchReviewCard({
   onFeedback,
   onReject,
   markAnimated,
+  isLightMode,
 }: PatchReviewCardProps) {
   // One-off: animate only the very first time this card is created.
   // Persist a flag so refreshes / subsequent renders do not animate.
@@ -282,6 +284,7 @@ export function PatchReviewCard({
             fileName={patchReview.filePath}
             animate={shouldAnimateRef.current}
             startLineNumber={startLineNumber}
+            isLightMode={isLightMode}
           />
         ) : patchReview.kind === 'replaceSelection' ? (
           <DiffReview
@@ -290,6 +293,7 @@ export function PatchReviewCard({
             fileName={patchReview.fileName ?? undefined}
             animate={shouldAnimateRef.current}
             startLineNumber={startLineNumber}
+            isLightMode={isLightMode}
           />
         ) : null}
         {collapsed ? (

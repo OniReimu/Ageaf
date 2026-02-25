@@ -17,6 +17,7 @@ type GroupedPatchReviewCardProps = {
   onAcceptAll: () => void;
   onRejectAll: () => void;
   onFeedback: (messageId: string) => void;
+  isLightMode?: boolean;
 };
 
 const ExpandIcon = () => (
@@ -70,6 +71,7 @@ export function GroupedPatchReviewCard({
   onAcceptAll,
   onRejectAll,
   onFeedback,
+  isLightMode,
 }: GroupedPatchReviewCardProps) {
   const shouldAnimateRef = useRef(true);
   const [collapsed, setCollapsed] = useState(true);
@@ -216,6 +218,7 @@ export function GroupedPatchReviewCard({
           animate={options.animate}
           wrap={options.wrap}
           startLineNumber={hunk.patchReview.lineFrom}
+          isLightMode={isLightMode}
         />
       </div>
     );

@@ -65,6 +65,37 @@ export const AgeafLogo = ({ class: className, style }: IconProps) => (
 );
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   THEME ICONS (LIGHT / DARK TOGGLE)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+export const SunIcon = ({ class: className, style }: IconProps) => (
+  <svg
+    class={className}
+    style={style}
+    viewBox="0 0 20 20"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    stroke="currentColor"
+  >
+    <circle cx="10" cy="10" r="4.5" fill="currentColor" stroke="none" />
+    <path d="M10 1.5v2.5M10 16v2.5M1.5 10h2.5M16 10h2.5M4 4l1.5 1.5M14.5 14.5l1.5 1.5M4 16l1.5-1.5M14.5 5.5l1.5-1.5" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+  </svg>
+);
+
+export const MoonIcon = ({ class: className, style }: IconProps) => (
+  <svg
+    class={className}
+    style={style}
+    viewBox="0 0 20 20"
+    fill="currentColor"
+    xmlns="http://www.w3.org/2000/svg"
+    stroke="none"
+  >
+    <path d="M15.5 13.5A7.5 7.5 0 116.5 2.5a6.5 6.5 0 009 11z" />
+  </svg>
+);
+
+/* ═══════════════════════════════════════════════════════════════════════════
    TOOLBAR ICONS
    ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -339,7 +370,7 @@ export const ToolIcon = ({ class: className, style }: IconProps) => (
 export const SpinnerIcon = ({ class: className, style }: IconProps) => (
   <svg
     class={className}
-    style={{...style, animation: 'spin 1s linear infinite'}}
+    style={{ ...style, animation: 'spin 1s linear infinite' }}
     viewBox="0 0 20 20"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
@@ -620,6 +651,8 @@ export const Icons = {
   NewChatIconAlt,
   CloseSessionIcon,
   ClearChatIcon,
+  SunIcon,
+  MoonIcon,
 };
 
 export default Icons;
