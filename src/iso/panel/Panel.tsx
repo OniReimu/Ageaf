@@ -482,6 +482,7 @@ type Message = {
   id: string;
   role: 'system' | 'assistant' | 'user';
   content: string;
+  displayContent?: string;
   statusLine?: string;
   cot?: CoTItem[];
   thinking?: string[];
@@ -2136,6 +2137,7 @@ const Panel = () => {
     next.map((message) => ({
       role: message.role,
       content: message.content,
+      ...(message.displayContent ? { displayContent: message.displayContent } : {}),
       ...(message.statusLine ? { statusLine: message.statusLine } : {}),
       ...(message.cot ? { cot: message.cot } : {}),
       ...(message.thinking && message.thinking.length > 0
@@ -4612,11 +4614,13 @@ const Panel = () => {
         .replace(/[ \t]+/g, ' ')
         .replace(/\n{3,}/g, '\n\n');
 
+    const contentToRender = message.displayContent ?? message.content;
+
     const {
       mainHtml: rawMainHtml,
       quotes,
       interrupted,
-    } = extractQuotesFromHtml(renderMarkdown(message.content));
+    } = extractQuotesFromHtml(renderMarkdown(contentToRender));
     const mainHtml = decorateMentionsHtml(
       decorateAttachmentLabelsHtml(rawMainHtml)
     );
@@ -5729,7 +5733,8 @@ const Panel = () => {
     attachments: FileAttachment[] = [],
     documents: DocumentAttachment[] = [],
     action: JobAction = 'chat',
-    patchFeedbackTarget?: PatchFeedbackTarget
+    patchFeedbackTarget?: PatchFeedbackTarget,
+    displayContent?: string
   ) => {
     const bridge = window.ageafBridge;
     if (!bridge) return;
@@ -5779,6 +5784,7 @@ const Panel = () => {
       createMessage({
         role: 'user',
         content: text,
+        ...(displayContent ? { displayContent } : {}),
         ...(messageImages ? { images: messageImages } : {}),
         ...(messageAttachments ? { attachments: messageAttachments } : {}),
         ...(messageDocuments ? { documents: messageDocuments } : {}),
@@ -7606,7 +7612,9 @@ const Panel = () => {
       + 'Output the complete updated file using AGEAF_FILE_UPDATE markers.'
       + fileBlock;
 
-    void sendMessage(message, [], [bibAttachment], [], 'chat');
+    const displayContent = `Checking references in ${bibEntry.name}...`;
+
+    void sendMessage(message, [], [bibAttachment], [], 'chat', undefined, displayContent);
   };
 
   const collectNotationAttachments = async (
