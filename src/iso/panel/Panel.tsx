@@ -2210,7 +2210,6 @@ const Panel = () => {
       ) {
         continue;
       }
-      lineFromBackfillAttemptedRef.current.add(message.id);
       entries.push({
         messageId: message.id,
         filePath: patchReview.filePath,
@@ -2236,6 +2235,22 @@ const Panel = () => {
     void (async () => {
       for (const group of byFile.values()) {
         if (cancelled) return;
+        const activeFilename = getActiveFilename()?.toLowerCase() ?? null;
+        const normalizedFilePath = group.filePath.trim().toLowerCase();
+        const normalizedBaseName =
+          normalizedFilePath.split('/').filter(Boolean).pop() ??
+          normalizedFilePath;
+        if (
+          !activeFilename ||
+          (normalizedFilePath !== activeFilename &&
+            normalizedBaseName !== activeFilename)
+        ) {
+          continue;
+        }
+        for (const entry of group.entries) {
+          lineFromBackfillAttemptedRef.current.add(entry.messageId);
+        }
+
         let response: any = null;
         try {
           response = await bridge.requestFileContent(group.filePath);
