@@ -86,7 +86,6 @@ import {
   RewriteIcon,
   CheckReferencesIcon,
   NotationCheckIcon,
-  NotationDraftIcon,
   AttachFilesIcon,
   NewChatIconAlt,
   CloseSessionIcon,
@@ -7910,7 +7909,7 @@ const Panel = () => {
         ...prev,
         createMessage({
           role: 'system',
-          content: 'Clear the message input before running notation check.',
+          content: 'Clear the message input before running notation pass.',
         }),
       ]);
       return;
@@ -7935,7 +7934,7 @@ const Panel = () => {
         createMessage({
           role: 'system',
           content:
-            'No readable project text files found for notation check. Open the file tree and retry.',
+            'No readable project text files found for notation pass. Open the file tree and retry.',
         }),
       ]);
       return;
@@ -7947,64 +7946,7 @@ const Panel = () => {
         : '';
 
     void sendMessage(
-      'Notation consistency pass' + warningBlock,
-      [],
-      attachments,
-      [],
-      'notation_check'
-    );
-  };
-
-  const onDraftNotationFixes = async () => {
-    const bridge = window.ageafBridge;
-    if (!bridge) return;
-
-    const conversationId = chatConversationIdRef.current;
-    if (!conversationId) return;
-
-    if (!editorEmpty) {
-      setMessages((prev) => [
-        ...prev,
-        createMessage({
-          role: 'system',
-          content: 'Clear the message input before drafting notation fixes.',
-        }),
-      ]);
-      return;
-    }
-
-    const sessionState = getSessionState(conversationId);
-    if (sessionState.isSending) {
-      setMessages((prev) => [
-        ...prev,
-        createMessage({
-          role: 'system',
-          content: 'Please wait for the current response to finish.',
-        }),
-      ]);
-      return;
-    }
-
-    const { attachments, warnings } = await collectNotationAttachments(bridge);
-    if (attachments.length === 0) {
-      setMessages((prev) => [
-        ...prev,
-        createMessage({
-          role: 'system',
-          content:
-            'No readable project text files found for notation draft fixes. Open the file tree and retry.',
-        }),
-      ]);
-      return;
-    }
-
-    const warningBlock =
-      warnings.length > 0
-        ? `\n\n[Notation scan warnings]\n- ${warnings.join('\n- ')}`
-        : '';
-
-    void sendMessage(
-      'Draft notation fixes' + warningBlock,
+      'Notation consistency pass + draft fixes' + warningBlock,
       [],
       attachments,
       [],
@@ -9887,19 +9829,10 @@ const Panel = () => {
                   class="ageaf-toolbar-button"
                   type="button"
                   onClick={() => void onNotationConsistencyPass()}
-                  aria-label="Notation consistency pass"
-                  data-tooltip="Notation consistency pass"
+                  aria-label="Notation consistency pass + draft fixes"
+                  data-tooltip="Notation consistency pass + draft fixes"
                 >
                   <NotationCheckIcon />
-                </button>
-                <button
-                  class="ageaf-toolbar-button"
-                  type="button"
-                  onClick={() => void onDraftNotationFixes()}
-                  aria-label="Draft notation fixes"
-                  data-tooltip="Draft notation fixes"
-                >
-                  <NotationDraftIcon />
                 </button>
                 <button
                   class="ageaf-toolbar-button"

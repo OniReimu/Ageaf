@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-test('Panel exposes notation consistency actions', () => {
+test('Panel merges notation pass with draft fixes into one action', () => {
   const panelPath = path.join(
     __dirname,
     '..',
@@ -17,11 +17,7 @@ test('Panel exposes notation consistency actions', () => {
   assert.match(contents, /Notation consistency pass/);
   assert.match(
     contents,
-    /sendMessage\([\s\S]*'Notation consistency pass'[\s\S]*'notation_check'[\s\S]*\)/
+    /sendMessage\([\s\S]*'Notation consistency pass[\s\S]*'notation_draft_fixes'[\s\S]*\)/
   );
-  assert.match(contents, /Draft notation fixes/);
-  assert.match(
-    contents,
-    /sendMessage\([\s\S]*'Draft notation fixes'[\s\S]*'notation_draft_fixes'[\s\S]*\)/
-  );
+  assert.doesNotMatch(contents, /Draft notation fixes/);
 });
