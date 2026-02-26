@@ -761,6 +761,65 @@ function buildPrompt(
     '- Do not announce skill-loading or mention internal skill frameworks; just apply the skill.',
   ].join('\n');
 
+  const contextSection = (() => {
+    if (!contextForPrompt) return '';
+    if (action !== 'rewrite') {
+      return `Context:\n${JSON.stringify(contextForPrompt, null, 2)}`;
+    }
+
+    const sections: string[] = ['Context:'];
+    const messageText =
+      typeof contextForPrompt.message === 'string'
+        ? contextForPrompt.message.trim()
+        : '';
+    if (messageText) {
+      sections.push('User request:');
+      sections.push(messageText);
+    }
+
+    const selectionText =
+      typeof contextForPrompt.selection === 'string'
+        ? contextForPrompt.selection
+        : '';
+    if (selectionText.trim()) {
+      sections.push('Selection:');
+      sections.push('```latex');
+      sections.push(selectionText);
+      sections.push('```');
+    }
+
+    const beforeText =
+      typeof contextForPrompt.surroundingBefore === 'string'
+        ? contextForPrompt.surroundingBefore
+        : '';
+    if (beforeText.trim()) {
+      sections.push('Context before:');
+      sections.push('```latex');
+      sections.push(beforeText);
+      sections.push('```');
+    }
+
+    const afterText =
+      typeof contextForPrompt.surroundingAfter === 'string'
+        ? contextForPrompt.surroundingAfter
+        : '';
+    if (afterText.trim()) {
+      sections.push('Context after:');
+      sections.push('```latex');
+      sections.push(afterText);
+      sections.push('```');
+    }
+
+    if (
+      Array.isArray(contextForPrompt.images) &&
+      contextForPrompt.images.length > 0
+    ) {
+      sections.push(`Image attachments: ${contextForPrompt.images.length}`);
+    }
+
+    return sections.join('\n');
+  })();
+
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     'Respond in Markdown, keep it concise.',
@@ -769,7 +828,7 @@ function buildPrompt(
       : '',
     action === 'chat' ? selectionPatchGuidance : '',
     `Action: ${action}`,
-    contextForPrompt ? `Context:\n${JSON.stringify(contextForPrompt, null, 2)}` : '',
+    contextSection,
     action === 'rewrite' ? rewriteInstructions : '',
     action === 'notation_check' ? notationCheckInstructions : '',
     action === 'notation_draft_fixes' ? notationDraftInstructions : '',
