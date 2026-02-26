@@ -21,10 +21,16 @@ Ageaf is an Chrome Plugin that adds an agent panel specifically to Overleaf, ena
 
 ## Features
 
-- In-page agent panel
-- Rewrite selection
-- Fix compile errors
-- Bib cleanup and related content discovery
+Ageaf supercharges your academic writing workflow — right inside Overleaf, where your papers already live.
+
+- **Powered by Claude Code CLI & Codex CLI** — Ageaf stands on the shoulders of the two most powerful coding CLIs available today. That means full access to **agent skills, MCP servers, and plugins** out of the box — the most capable, most extensible AI toolchain ever brought to academic writing.
+- **AI Agent Panel, Built Into Overleaf** — No tab-switching, no copy-pasting. Chat with a powerful AI assistant that sees your LaTeX source in real time and proposes inline edits you can accept or reject with one click.
+- **Instant Prose Refinement** — Select any paragraph and let Ageaf rewrite it for clarity, conciseness, or tone. Tighten an abstract, sharpen a related-work discussion, or polish camera-ready text in seconds.
+- **One-Click Compile Error Fixes** — Cryptic LaTeX errors become a thing of the past. Ageaf reads the log, pinpoints the issue, and generates a ready-to-apply patch so you can get back to writing instead of debugging.
+- **Smart Citation Management** — Audit your bibliography in bulk: detect missing references, flag inconsistent entries, and discover related work — all without leaving your editor.
+- **Multi-File Paper Support** — Working on a 50-page thesis split across dozens of `.tex` files? Ageaf navigates your full project tree and applies targeted edits to the right file, every time.
+- **Notation & Consistency Checker** — Automatically catch inconsistent abbreviations, variable names, and notation across sections before your reviewers do.
+- **Bring Your Own Model** — Use Claude, GPT, Gemini, DeepSeek, Qwen, Grok, and 1,000+ more models. Plug in any API key and start writing — your choice, your data.
 
 ## Authentication & Requirements
 
