@@ -152,6 +152,17 @@ function getReplaceRangeIdentityKey(
   return `replaceRangeInFile:${review.filePath}:${review.expectedOldText}:${review.text}`;
 }
 
+function getPatchFeedbackAnchorKey(
+  review: StoredPatchReview & {
+    kind: 'replaceSelection' | 'replaceRangeInFile';
+  }
+) {
+  if (review.kind === 'replaceSelection') {
+    return `replaceSelection:${review.fileName ?? ''}:${review.from}:${review.to}:${review.selection}`;
+  }
+  return `replaceRangeInFile:${review.filePath}:${review.expectedOldText}:${typeof review.from === 'number' ? review.from : ''}:${typeof review.to === 'number' ? review.to : ''}`;
+}
+
 function computeLineFromOffset(content: string, from: number) {
   const offset = Math.max(0, Math.min(content.length, Math.floor(from)));
   let line = 1;
@@ -504,6 +515,7 @@ type PatchFeedbackTarget = {
   messageId: string;
   messageIndex: number;
   kind: 'replaceSelection' | 'replaceRangeInFile';
+  anchorKey: string;
 };
 
 type QueuedMessage = {
@@ -5773,6 +5785,8 @@ const Panel = () => {
         patchFeedbackTarget.conversationId === sessionConversationId
         ? patchFeedbackTarget
         : null;
+    const startedWithPatchFeedbackTarget = Boolean(patchFeedbackTargetActive);
+    let patchFeedbackResponseHandled = false;
 
     // Update session state
     sessionState.isSending = true;
@@ -6999,6 +7013,9 @@ const Panel = () => {
           if (event.event === 'patch') {
             markThinkingComplete(sessionConversationId);
             sessionState.didReceivePatch = true;
+            if (startedWithPatchFeedbackTarget && patchFeedbackResponseHandled) {
+              return;
+            }
             const patch = event.data as Patch;
             const state = chatStateRef.current;
             if (!state) return;
@@ -7014,17 +7031,44 @@ const Panel = () => {
                 patch.kind === 'replaceSelection' ||
                 patch.kind === 'replaceRangeInFile'
               ) {
-                const idx = patchFeedbackTargetActive.messageIndex;
-                const storedTarget = conversation.messages[idx];
-                const targetReview = storedTarget?.patchReview;
+                const directIndex = patchFeedbackTargetActive.messageIndex;
+                const directTarget = conversation.messages[directIndex];
+                const directReview = directTarget?.patchReview;
+                let targetIndex = -1;
                 if (
-                  storedTarget &&
-                  targetReview &&
-                  targetReview.kind === expectedKind &&
-                  'text' in targetReview
+                  directTarget &&
+                  directReview &&
+                  directReview.kind === expectedKind &&
+                  'text' in directReview
                 ) {
+                  targetIndex = directIndex;
+                } else {
+                  for (
+                    let i = conversation.messages.length - 1;
+                    i >= 0;
+                    i -= 1
+                  ) {
+                    const review = conversation.messages[i]?.patchReview;
+                    if (!review || review.kind !== expectedKind) continue;
+                    if (!('text' in review)) continue;
+                    if (
+                      getPatchFeedbackAnchorKey(review) ===
+                      patchFeedbackTargetActive.anchorKey
+                    ) {
+                      targetIndex = i;
+                      break;
+                    }
+                  }
+                }
+
+                if (targetIndex >= 0) {
+                  const storedTarget = conversation.messages[targetIndex]!;
+                  const targetReview = storedTarget.patchReview as StoredPatchReview & {
+                    kind: 'replaceSelection' | 'replaceRangeInFile';
+                    text: string;
+                  };
                   const updatedStoredMessages = [...conversation.messages];
-                  updatedStoredMessages[idx] = {
+                  updatedStoredMessages[targetIndex] = {
                     ...storedTarget,
                     patchReview: {
                       ...(targetReview as any),
@@ -7069,13 +7113,21 @@ const Panel = () => {
                     selectionSnapshotsRef.current.delete(jobId);
                   }
 
+                  patchFeedbackResponseHandled = true;
                   patchFeedbackTargetActive = null;
                   return;
                 }
+
+                // Feedback response target missing; ignore to avoid creating a detached rewrite card.
+                patchFeedbackResponseHandled = true;
+                patchFeedbackTargetActive = null;
+                return;
               }
 
-              // Only apply feedback target once; fall through to the normal patch handling otherwise.
+              // Ignore non-rewrite feedback patch kinds.
+              patchFeedbackResponseHandled = true;
               patchFeedbackTargetActive = null;
+              return;
             }
 
             let storedPatchReviewMessage: StoredMessage | null = null;
@@ -8183,6 +8235,7 @@ const Panel = () => {
       messageId,
       messageIndex,
       kind: patchReview.kind,
+      anchorKey: getPatchFeedbackAnchorKey(patchReview),
     };
   };
 
