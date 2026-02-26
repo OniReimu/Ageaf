@@ -82,6 +82,7 @@ export type StoredPatchReview =
 export type StoredMessage = {
   role: 'system' | 'assistant' | 'user';
   content: string;
+  displayContent?: string;
   statusLine?: string;
   cot?: CoTItem[];
   thinking?: string[];
@@ -266,6 +267,7 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
   if (role !== 'system' && role !== 'assistant' && role !== 'user') return null;
   const content = typeof raw.content === 'string' ? raw.content : null;
   if (content == null) return null;
+  const displayContent = typeof raw.displayContent === 'string' ? raw.displayContent : undefined;
   const statusLine = typeof raw.statusLine === 'string' ? raw.statusLine : undefined;
 
   const cotRaw = Array.isArray(raw.cot) ? raw.cot : [];
@@ -299,6 +301,7 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
   return {
     role,
     content,
+    ...(displayContent ? { displayContent } : {}),
     ...(statusLine ? { statusLine } : {}),
     ...(cot.length > 0 ? { cot } : {}),
     ...(images.length > 0 ? { images } : {}),
