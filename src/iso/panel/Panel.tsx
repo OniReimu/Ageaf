@@ -9135,6 +9135,15 @@ const Panel = () => {
         </div>
       </div>
       <div class="ageaf-landing__footer">
+        <button
+          class="ageaf-panel__theme-toggle"
+          type="button"
+          onClick={() => setIsLightMode(!isLightMode)}
+          aria-label={`Switch to ${isLightMode ? 'Dark' : 'Light'} Mode`}
+          title={`Switch to ${isLightMode ? 'Dark' : 'Light'} Mode`}
+        >
+          {isLightMode ? <SunIcon /> : <MoonIcon />}
+        </button>
         <a
           class="ageaf-landing__help"
           href={HOW_TO_GUIDES_URL}

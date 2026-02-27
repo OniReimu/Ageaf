@@ -3645,6 +3645,9 @@
 
 .ageaf-landing__footer {
   padding-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .ageaf-landing__help {
