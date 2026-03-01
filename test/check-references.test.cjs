@@ -98,6 +98,11 @@ test('toStoredMessages strips content from attachments before persisting', () =>
   assert.match(contents, /attachments: message\.attachments\.map\(\(\{ content, \.\.\.rest \}\) => rest\)/);
 });
 
+test('check references prompt explicitly forbids keeping both preprint and published versions', () => {
+  const contents = fs.readFileSync(panelPath, 'utf8');
+  assert.match(contents, /Do NOT keep both a preprint and a published version of the same work/);
+});
+
 // ─── Behavioral tests for selectBibEntry ─────────────────────────────
 
 const mkEntry = (p, name, id) => ({ path: p, name, ext: '.bib', kind: 'bib', ...(id ? { id } : {}) });
