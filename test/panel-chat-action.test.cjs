@@ -13,3 +13,13 @@ test('Panel sends chat action with user message', () => {
   assert.match(contents, /processSkillDirectives/);
   assert.match(contents, /skillsPrompt/);
 });
+
+test('Panel prioritizes user custom prompt after injected skill directives', () => {
+  const panelPath = path.join(__dirname, '..', 'src', 'iso', 'panel', 'Panel.tsx');
+  const contents = fs.readFileSync(panelPath, 'utf8');
+
+  assert.match(
+    contents,
+    /customSystemPrompt:\s*skillsPrompt[\s\S]*\$\{skillsPrompt\}[\s\S]*\$\{options\.customSystemPrompt \|\| ''\}/
+  );
+});

@@ -6501,7 +6501,7 @@ const Panel = () => {
       const sharedUserSettings = {
         displayName: options.displayName,
         customSystemPrompt: skillsPrompt
-          ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
+          ? `${skillsPrompt}\n\n${options.customSystemPrompt || ''}`
           : options.customSystemPrompt,
         debugCliEvents: options.debugCliEvents,
       };
@@ -7675,6 +7675,7 @@ const Panel = () => {
       + 'that have since been published. '
       + 'For each incorrect or fabricated entry, DELETE it from the file and replace it with the verified version. '
       + 'For preprint entries that have since been published, replace the preprint entry with the published version. '
+      + 'Do NOT keep both a preprint and a published version of the same work; keep only the published entry. '
       + 'Output the complete updated file using AGEAF_FILE_UPDATE markers.'
       + fileBlock;
 
