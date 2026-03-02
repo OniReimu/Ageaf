@@ -7679,9 +7679,9 @@ const Panel = () => {
       + 'Output the complete updated file using AGEAF_FILE_UPDATE markers.'
       + fileBlock;
 
-    const displayContent = `Checking references in ${bibEntry.name}...`;
-
-    void sendMessage(message, [], [bibAttachment], [], 'chat', undefined, displayContent);
+    // Show the exact prompt being sent (including /citation-management and file block)
+    // so users can verify invocation and payload content in the conversation panel.
+    void sendMessage(message, [], [bibAttachment], [], 'chat');
   };
 
   const collectNotationAttachments = async (

@@ -103,6 +103,15 @@ test('check references prompt explicitly forbids keeping both preprint and publi
   assert.match(contents, /Do NOT keep both a preprint and a published version of the same work/);
 });
 
+test('onCheckReferences sends raw /citation-management prompt without displayContent override', () => {
+  const contents = fs.readFileSync(panelPath, 'utf8');
+  assert.match(contents, /void sendMessage\(message,\s*\[\],\s*\[bibAttachment\],\s*\[\],\s*'chat'\s*\);/);
+  assert.doesNotMatch(
+    contents,
+    /sendMessage\(message,\s*\[\],\s*\[bibAttachment\],\s*\[\],\s*'chat',\s*undefined,\s*displayContent\)/
+  );
+});
+
 // ─── Behavioral tests for selectBibEntry ─────────────────────────────
 
 const mkEntry = (p, name, id) => ({ path: p, name, ext: '.bib', kind: 'bib', ...(id ? { id } : {}) });
