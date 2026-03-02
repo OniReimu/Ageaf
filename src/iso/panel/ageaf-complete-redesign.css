@@ -727,9 +727,9 @@ body[data-ageaf-theme="light"] .ageaf-grouped-patch__separator {
 .ageaf-message__content h2,
 .ageaf-message__content h3,
 .ageaf-message__content h4 {
-  font-family: var(--ageaf-font-display);
-  font-style: italic;
-  letter-spacing: -0.02em;
+  font-family: var(--ageaf-font-body);
+  font-style: normal;
+  letter-spacing: 0;
   color: var(--ageaf-text-primary);
   margin-top: 1.2em;
   margin-bottom: 0.6em;
