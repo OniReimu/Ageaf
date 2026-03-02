@@ -51,7 +51,8 @@ function acquirePidTurnLock(pid: number): { acquired: Promise<void>; release: ()
 // Debug logging to console (enabled via AGEAF_DEBUG_CLI=true)
 const debugToConsole = process.env.AGEAF_DEBUG_CLI === 'true';
 const traceAllCodexEvents = process.env.AGEAF_CODEX_TRACE_ALL_EVENTS === 'true';
-const DEFAULT_CODEX_TURN_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_CODEX_TURN_TIMEOUT_MS = 0;
+const DEFAULT_CODEX_COMPLETION_GRACE_MS = 1200;
 function debugLog(message: string, data?: Record<string, unknown>) {
   if (!debugToConsole) return;
   console.log(`[CODEX DEBUG] ${message}`, data ?? '');
@@ -602,7 +603,10 @@ function hasRetryFlag(value: unknown): boolean {
 }
 
 function shouldAwaitRetryableError(params: unknown, message: string) {
-  void message;
+  // Newer Codex CLI builds can emit context-overflow turn errors without an
+  // explicit retry flag, then immediately compact and continue the same turn.
+  // Treat this message shape as retry-awaitable to avoid premature termination.
+  if (isContextOverflowMessage(message)) return true;
   if (hasRetryFlag(params)) return true;
   if (params && typeof params === 'object') {
     const record = params as Record<string, unknown>;
@@ -618,6 +622,14 @@ function getCodexTurnTimeoutMs() {
   if (raw === undefined) return DEFAULT_CODEX_TURN_TIMEOUT_MS;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return DEFAULT_CODEX_TURN_TIMEOUT_MS;
+  return parsed;
+}
+
+function getCodexCompletionGraceMs() {
+  const raw = process.env.AGEAF_CODEX_COMPLETION_GRACE_MS;
+  if (raw === undefined) return DEFAULT_CODEX_COMPLETION_GRACE_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_CODEX_COMPLETION_GRACE_MS;
   return parsed;
 }
 
@@ -1273,6 +1285,7 @@ export async function runCodexJob(
   const turnStartTime = Date.now();
   let lastMessageTime = Date.now();
   const TURN_TIMEOUT_MS = getCodexTurnTimeoutMs();
+  const COMPLETION_GRACE_MS = getCodexCompletionGraceMs();
   const HEARTBEAT_MS = 10000;
   let lastHeartbeatAt = 0;
   let lastTraceDiagnosticsAt = 0;
@@ -1303,12 +1316,14 @@ export async function runCodexJob(
   let stderrEmitted = 0;
   const STDERR_TRACE_LIMIT = 20;
   let compactionNoticeEmitted = false;
+  let compactionLifecycleSeen = false;
   let activeCompactionToolId: string | null = null;
 
   const emitCompactionLifecycle = (
     phase: 'tool_start' | 'compaction_complete' | 'tool_error',
     source?: unknown
   ) => {
+    compactionLifecycleSeen = true;
     const sourceToolId = extractLifecycleToolId(source);
     const fallbackToolId =
       activeCompactionToolId ??
@@ -1341,8 +1356,130 @@ export async function runCodexJob(
     }
   };
 
+  const completionHasOutput = () => patchEmitted || fullText.trim().length > 0;
+  const sawCompaction = () => compactionNoticeEmitted || compactionLifecycleSeen;
+  let completionGraceTimer: NodeJS.Timeout | null = null;
+  let awaitingLateCompletionOutput = false;
+
+  const clearCompletionGraceTimer = () => {
+    if (!completionGraceTimer) return;
+    clearTimeout(completionGraceTimer);
+    completionGraceTimer = null;
+  };
+
+  const emitPatchesFromCompletedText = () => {
+    if (!patchEmitted) {
+      const fence = extractAgeafPatchFence(fullText);
+      if (fence) {
+        try {
+          const patch = validatePatch(JSON.parse(fence));
+          emitEvent({ event: 'patch', data: patch });
+          patchEmitted = true;
+        } catch {
+          // Ignore patch parse failures; user can still read the raw response.
+        }
+      }
+    }
+
+    if (!patchEmitted && action === 'rewrite') {
+      const startMatch = rewriteStartRe.exec(fullText);
+      if (startMatch) {
+        const endMatch = rewriteEndRe.exec(
+          fullText.slice(startMatch.index + startMatch[0].length)
+        );
+        if (endMatch) {
+          const startIndex = startMatch.index + startMatch[0].length;
+          const endIndex = startIndex + endMatch.index;
+          const rewritten = fullText.slice(startIndex, endIndex).trim();
+          if (rewritten) {
+            emitEvent({ event: 'patch', data: { kind: 'replaceSelection', text: rewritten } });
+            patchEmitted = true;
+          }
+        }
+      }
+    }
+
+    if (hasOverleafFileBlocks) {
+      const patches = buildReplaceRangePatchesFromFileUpdates({
+        output: fullText,
+        message: messageWithAttachments,
+      });
+      for (const patch of patches) {
+        if (patch.kind === 'replaceRangeInFile' && emittedPatchFiles.has(patch.filePath)) continue;
+        emitEvent({ event: 'patch', data: patch });
+        patchEmitted = true;
+      }
+    }
+  };
+
+  const finalizeCompletion = () => {
+    if (done) return;
+    clearCompletionGraceTimer();
+    awaitingLateCompletionOutput = false;
+
+    if (activeCompactionToolId) {
+      emitCompactionLifecycle('compaction_complete', {
+        toolId: activeCompactionToolId,
+      });
+    }
+    if (shouldHidePatchPayload && !patchPayloadStarted) {
+      flushVisibleBuffer();
+    }
+    emitPatchesFromCompletedText();
+
+    done = true;
+    if (sawCompaction() && !completionHasOutput()) {
+      emitTrace('Codex: completed after compaction but returned no output');
+      emitEvent({
+        event: 'done',
+        data: {
+          status: 'error',
+          message: 'Codex completed after context compaction but returned no output. Please retry.',
+          threadId,
+        },
+      });
+    } else {
+      emitEvent({ event: 'done', data: { status: 'ok', threadId } });
+    }
+    unsubscribe();
+    resolveDone();
+  };
+
+  const queueLateCompletionOutputWindow = (method: string) => {
+    if (done) return;
+    if (!sawCompaction() || completionHasOutput()) {
+      finalizeCompletion();
+      return;
+    }
+    if (awaitingLateCompletionOutput) return;
+
+    awaitingLateCompletionOutput = true;
+    emitTrace('Codex: completion arrived before post-compaction output; waiting briefly', {
+      method,
+      graceMs: COMPLETION_GRACE_MS,
+    });
+    completionGraceTimer = setTimeout(() => {
+      if (done) return;
+      emitTrace('Codex: post-compaction late-output wait elapsed', {
+        graceMs: COMPLETION_GRACE_MS,
+      });
+      finalizeCompletion();
+    }, COMPLETION_GRACE_MS);
+  };
+
+  const maybeFinalizeAfterLateOutput = () => {
+    if (!awaitingLateCompletionOutput || done) return;
+    if (!completionHasOutput()) return;
+
+    emitTrace('Codex: received late output after completion');
+    finalizeCompletion();
+  };
+
   const donePromise = new Promise<void>((resolve) => {
-    resolveDone = () => resolve();
+    resolveDone = () => {
+      clearCompletionGraceTimer();
+      resolve();
+    };
 
     const unsubscribeStderr =
       debugCliEvents || debugToConsole
@@ -1601,16 +1738,19 @@ export async function runCodexJob(
 
           if (!shouldHidePatchPayload) {
             emitEvent({ event: 'delta', data: { text: delta } });
+            maybeFinalizeAfterLateOutput();
             return;
           }
 
           if (patchPayloadStarted) {
             payloadBuffer += delta;
             extractAndEmitCompletedBlocks();
+            maybeFinalizeAfterLateOutput();
             return;
           }
 
           emitVisibleDelta(delta);
+          maybeFinalizeAfterLateOutput();
         }
         return;
       }
@@ -1638,16 +1778,19 @@ export async function runCodexJob(
 
         if (!shouldHidePatchPayload) {
           emitEvent({ event: 'delta', data: { text: delta } });
+          maybeFinalizeAfterLateOutput();
           return;
         }
 
         if (patchPayloadStarted) {
           payloadBuffer += delta;
           extractAndEmitCompletedBlocks();
+          maybeFinalizeAfterLateOutput();
           return;
         }
 
         emitVisibleDelta(delta);
+        maybeFinalizeAfterLateOutput();
         return;
       }
 
@@ -1943,81 +2086,16 @@ export async function runCodexJob(
 
       if (method === 'turn/completed') {
         if (!done) {
-          if (activeCompactionToolId) {
-            emitCompactionLifecycle('compaction_complete', {
-              toolId: activeCompactionToolId,
-            });
-          }
-          done = true;
-          if (shouldHidePatchPayload && !patchPayloadStarted) {
-            flushVisibleBuffer();
-          }
-
-          if (!patchEmitted) {
-            const fence = extractAgeafPatchFence(fullText);
-            if (fence) {
-              try {
-                const patch = validatePatch(JSON.parse(fence));
-                emitEvent({ event: 'patch', data: patch });
-                patchEmitted = true;
-              } catch {
-                // Ignore patch parse failures; user can still read the raw response.
-              }
-            }
-          }
-
-          if (!patchEmitted && action === 'rewrite') {
-            const startMatch = rewriteStartRe.exec(fullText);
-            if (startMatch) {
-              const endMatch = rewriteEndRe.exec(
-                fullText.slice(startMatch.index + startMatch[0].length)
-              );
-              if (endMatch) {
-                const startIndex = startMatch.index + startMatch[0].length;
-                const endIndex = startIndex + endMatch.index;
-                const rewritten = fullText.slice(startIndex, endIndex).trim();
-                if (rewritten) {
-                  emitEvent({ event: 'patch', data: { kind: 'replaceSelection', text: rewritten } });
-                  patchEmitted = true;
-                }
-              }
-            }
-          }
-
-          if (hasOverleafFileBlocks) {
-            const patches = buildReplaceRangePatchesFromFileUpdates({
-              output: fullText,
-              message: messageWithAttachments,
-            });
-            for (const patch of patches) {
-              if (patch.kind === 'replaceRangeInFile' && emittedPatchFiles.has(patch.filePath)) continue;
-              emitEvent({ event: 'patch', data: patch });
-              patchEmitted = true;
-            }
-          }
-          emitEvent({ event: 'done', data: { status: 'ok', threadId } });
+          queueLateCompletionOutputWindow(method);
         }
-        unsubscribe();
-        resolve();
         return;
       }
 
       // Codex CLI variants may signal completion via codex/event/task_completed.
       if (method === 'codex/event/task_completed') {
         if (!done) {
-          if (activeCompactionToolId) {
-            emitCompactionLifecycle('compaction_complete', {
-              toolId: activeCompactionToolId,
-            });
-          }
-          done = true;
-          if (shouldHidePatchPayload && !patchPayloadStarted) {
-            flushVisibleBuffer();
-          }
-          emitEvent({ event: 'done', data: { status: 'ok', threadId } });
+          queueLateCompletionOutputWindow(method);
         }
-        unsubscribe();
-        resolve();
         return;
       }
 
@@ -2065,6 +2143,7 @@ export async function runCodexJob(
           } else if (deltaToEmit) {
             emitVisibleDelta(deltaToEmit);
           }
+          maybeFinalizeAfterLateOutput();
         }
         // Don't return: item/completed can occur alongside turn/completed.
       }
@@ -2080,6 +2159,8 @@ export async function runCodexJob(
           return;
         }
         if (!done) {
+          clearCompletionGraceTimer();
+          awaitingLateCompletionOutput = false;
           if (activeCompactionToolId) {
             emitCompactionLifecycle('tool_error', {
               toolId: activeCompactionToolId,
@@ -2092,7 +2173,7 @@ export async function runCodexJob(
           });
         }
         unsubscribe();
-        resolve();
+        resolveDone();
         return;
       }
     });
@@ -2129,6 +2210,101 @@ export async function runCodexJob(
     });
   }
 
+  const turnStartParams = {
+    threadId,
+    input,
+    cwd,
+    approvalPolicy: effectiveApprovalPolicy,
+    sandboxPolicy: { type: 'readOnly' as const },
+    model,
+    effort,
+    summary: null,
+    outputSchema: null,
+    collaborationMode: null,
+  };
+
+  const requestTurnStart = async () => {
+    if (done) return;
+
+    emitTrace('Codex: sending turn/start request');
+    if (debugToConsole) {
+      debugLog('sending turn/start', {
+        ...(options?.jobId ? { jobId: options.jobId } : {}),
+        threadId,
+        approvalPolicy: effectiveApprovalPolicy,
+        blocklistEnabled: compiledBlockedPatterns.length > 0,
+        model: model ?? undefined,
+        effort: effort ?? undefined,
+      });
+    }
+
+    try {
+      const turnResponse = await appServer.request(
+        'turn/start',
+        turnStartParams,
+        { timeoutMs: 30000 }
+      );
+      lastMessageTime = Date.now();
+      emitTrace('Codex: turn/start acknowledged', {
+        hasResult: Boolean((turnResponse as any)?.result),
+        hasError: Boolean((turnResponse as any)?.error),
+      });
+      if (debugToConsole) {
+        debugLog('turn/start acknowledged', {
+          ...(options?.jobId ? { jobId: options.jobId } : {}),
+          hasResult: Boolean((turnResponse as any)?.result),
+          hasError: Boolean((turnResponse as any)?.error),
+        });
+      }
+
+      if (!done && turnResponse && Object.prototype.hasOwnProperty.call(turnResponse, 'error')) {
+        const errorMessage = normalizeErrorMessage((turnResponse as any).error ?? 'Turn failed');
+        const retryable =
+          shouldAwaitRetryableError((turnResponse as any).error, errorMessage) ||
+          shouldAwaitRetryableError(turnResponse, errorMessage);
+
+        if (retryable) {
+          if (isContextOverflowMessage(errorMessage) && !compactionNoticeEmitted) {
+            compactionNoticeEmitted = true;
+            emitCompactionLifecycle('tool_start', (turnResponse as any).error ?? turnResponse);
+          }
+          emitTrace('Codex: turn/start returned retryable error, waiting', {
+            message: errorMessage,
+          });
+          return;
+        }
+
+        if (activeCompactionToolId) {
+          emitCompactionLifecycle('tool_error', {
+            toolId: activeCompactionToolId,
+          });
+        }
+        done = true;
+        emitEvent({
+          event: 'done',
+          data: { status: 'error', message: errorMessage, threadId },
+        });
+        unsubscribe();
+        resolveDone();
+      }
+    } catch (error) {
+      if (done) return;
+      const message = normalizeErrorMessage(error ?? 'Turn failed');
+      if (activeCompactionToolId) {
+        emitCompactionLifecycle('tool_error', {
+          toolId: activeCompactionToolId,
+        });
+      }
+      done = true;
+      emitEvent({
+        event: 'done',
+        data: { status: 'error', message, threadId },
+      });
+      unsubscribe();
+      resolveDone();
+    }
+  };
+
   // Track active Codex job for ask_user HTTP callback correlation.
   // Keyed by the Codex CLI PID so the stdio server can identify the job via process.ppid.
   // A per-PID turn lock serializes concurrent turns that share the same app-server,
@@ -2145,75 +2321,7 @@ export async function runCodexJob(
   }
 
   try {
-    emitTrace('Codex: sending turn/start request');
-    if (debugToConsole) {
-      debugLog('sending turn/start', {
-        ...(options?.jobId ? { jobId: options.jobId } : {}),
-        threadId,
-        approvalPolicy: effectiveApprovalPolicy,
-        blocklistEnabled: compiledBlockedPatterns.length > 0,
-        model: model ?? undefined,
-        effort: effort ?? undefined,
-      });
-    }
-    const turnResponse = await appServer.request(
-      'turn/start',
-      {
-        threadId,
-        input,
-        cwd,
-        approvalPolicy: effectiveApprovalPolicy,
-        sandboxPolicy: { type: 'readOnly' },
-        model,
-        effort,
-        summary: null,
-        outputSchema: null,
-        collaborationMode: null,
-      },
-      { timeoutMs: 30000 }
-    );
-    lastMessageTime = Date.now();
-    emitTrace('Codex: turn/start acknowledged', {
-      hasResult: Boolean((turnResponse as any)?.result),
-      hasError: Boolean((turnResponse as any)?.error),
-    });
-    if (debugToConsole) {
-      debugLog('turn/start acknowledged', {
-        ...(options?.jobId ? { jobId: options.jobId } : {}),
-        hasResult: Boolean((turnResponse as any)?.result),
-        hasError: Boolean((turnResponse as any)?.error),
-      });
-    }
-
-    if (!done && turnResponse && Object.prototype.hasOwnProperty.call(turnResponse, 'error')) {
-      const errorMessage = normalizeErrorMessage((turnResponse as any).error ?? 'Turn failed');
-      const retryable =
-        shouldAwaitRetryableError((turnResponse as any).error, errorMessage) ||
-        shouldAwaitRetryableError(turnResponse, errorMessage);
-
-      if (retryable) {
-        if (isContextOverflowMessage(errorMessage) && !compactionNoticeEmitted) {
-          compactionNoticeEmitted = true;
-          emitCompactionLifecycle('tool_start', (turnResponse as any).error ?? turnResponse);
-        }
-        emitTrace('Codex: turn/start returned retryable error, waiting', {
-          message: errorMessage,
-        });
-      } else {
-        if (activeCompactionToolId) {
-          emitCompactionLifecycle('tool_error', {
-            toolId: activeCompactionToolId,
-          });
-        }
-        done = true;
-        emitEvent({
-          event: 'done',
-          data: { status: 'error', message: errorMessage, threadId },
-        });
-        unsubscribe();
-        resolveDone();
-      }
-    }
+    await requestTurnStart();
 
     // Ensure the job never hangs forever if the Codex CLI stalls (common near 100% context).
     let heartbeatId: NodeJS.Timeout | null = null;
@@ -2303,6 +2411,8 @@ export async function runCodexJob(
 
     await Promise.race([donePromise, timeoutPromise]);
     if (!done) {
+      clearCompletionGraceTimer();
+      awaitingLateCompletionOutput = false;
       done = true;
       const seconds = Math.round(TURN_TIMEOUT_MS / 1000);
       const last = diagnostics.lastMatchedMethod || diagnostics.lastAnyMethod || 'unknown';
@@ -2332,6 +2442,7 @@ export async function runCodexJob(
       }
     }
     unsubscribe();
+    clearCompletionGraceTimer();
     if (timeoutId) clearTimeout(timeoutId);
     if (heartbeatId) clearInterval(heartbeatId);
   } finally {
