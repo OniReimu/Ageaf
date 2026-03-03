@@ -7812,6 +7812,61 @@ const Panel = () => {
     void sendMessage(message, [], [bibAttachment], [], 'chat');
   };
 
+  type NotationRootSelection =
+    | { kind: 'found'; entry: OverleafEntry }
+    | { kind: 'none' };
+
+  function selectNotationRootEntry(
+    entries: OverleafEntry[],
+    activeFile: string | null,
+    activeFileId: string | null
+  ): NotationRootSelection {
+    if (!activeFile || !activeFile.toLowerCase().endsWith('.tex')) {
+      return { kind: 'none' };
+    }
+
+    const normalizeExt = (ext: string) =>
+      ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
+    const texEntries = entries.filter((entry) => {
+      const ext = normalizeExt(entry.ext || getFileExtension(entry.path) || '');
+      return ext === '.tex';
+    });
+
+    if (activeFileId) {
+      const idMatch = texEntries.filter((entry) => entry.id === activeFileId);
+      if (idMatch.length === 1) return { kind: 'found', entry: idMatch[0] };
+    }
+
+    const activeNorm = activeFile.toLowerCase();
+    const matches = texEntries.filter(
+      (entry) =>
+        entry.path.toLowerCase() === activeNorm ||
+        entry.name.toLowerCase() === activeNorm
+    );
+    if (matches.length === 1) return { kind: 'found', entry: matches[0] };
+    if (matches.length > 1) {
+      // Ambiguous basename without an id match: keep basename so bridge fallback
+      // reads from the active tab instead of pinning a potentially wrong path.
+      return {
+        kind: 'found',
+        entry: { path: activeFile, name: activeFile, ext: '.tex', kind: 'tex' },
+      };
+    }
+
+    const baseName = activeFile.includes('/')
+      ? activeFile.split('/').filter(Boolean).pop()!
+      : activeFile;
+    return {
+      kind: 'found',
+      entry: {
+        path: activeFile,
+        name: baseName,
+        ext: getFileExtension(baseName) || '.tex',
+        kind: classifyOverleafFile(baseName),
+      },
+    };
+  }
+
   const collectNotationAttachments = async (
     bridge: NonNullable<typeof window.ageafBridge>
   ) => {
@@ -7877,6 +7932,10 @@ const Panel = () => {
     const queued = new Set<string>();
     const processed = new Set<string>();
     const origins = new Map<string, NotationEntryOrigin>();
+    const warnings: string[] = [];
+    const attachments: FileAttachment[] = [];
+    let totalBytes = 0;
+    let failedLatexInputReads = 0;
 
     const enqueueEntry = (entry: OverleafEntry, origin: NotationEntryOrigin) => {
       const normalizedPath = entry.path.trim();
@@ -7899,19 +7958,24 @@ const Panel = () => {
         ...entry,
         path: normalizedPath,
         name: entry.name || basename(normalizedPath),
-        ext: normalizedExt,
-      });
-    };
+          ext: normalizedExt,
+        });
+      };
 
-    const domEntries = [...allEntries].sort((a, b) =>
-      a.path.localeCompare(b.path)
+    const activeFile = getActiveFilename();
+    const activeFileId = getActiveFileId();
+    const rootSelection = selectNotationRootEntry(
+      allEntries,
+      activeFile,
+      activeFileId
     );
-    for (const entry of domEntries) enqueueEntry(entry, 'dom');
-
-    const warnings: string[] = [];
-    const attachments: FileAttachment[] = [];
-    let totalBytes = 0;
-    let failedLatexInputReads = 0;
+    if (rootSelection.kind === 'none') {
+      warnings.push(
+        'No active .tex file selected for notation pass. Select the target .tex file and retry.'
+      );
+      return { attachments, warnings };
+    }
+    enqueueEntry(rootSelection.entry, 'dom');
 
     while (queue.length > 0) {
       if (attachments.length >= MAX_NOTATION_SCAN_FILES) {
@@ -8058,12 +8122,14 @@ const Panel = () => {
 
     const { attachments, warnings } = await collectNotationAttachments(bridge);
     if (attachments.length === 0) {
+      const emptyMessage =
+        warnings[0] ??
+        'No readable project text files found for notation pass. Open the file tree and retry.';
       setMessages((prev) => [
         ...prev,
         createMessage({
           role: 'system',
-          content:
-            'No readable project text files found for notation pass. Open the file tree and retry.',
+          content: emptyMessage,
         }),
       ]);
       return;
@@ -9236,7 +9302,7 @@ const Panel = () => {
       {updateNotice ? (
         <div class="ageaf-panel__update-banner" role="status" aria-live="polite">
           <span class="ageaf-panel__update-text">
-            New GitHub update: {updateNotice.shortSha} · {updateNotice.summary}
+            There is a new version. Please git pull and reload.
           </span>
           <a
             class="ageaf-panel__update-link"
@@ -9408,7 +9474,7 @@ const Panel = () => {
                 aria-live="polite"
               >
                 <span class="ageaf-panel__update-text">
-                  New GitHub update: {updateNotice.shortSha} · {updateNotice.summary}
+                  There is a new version. Please git pull and reload.
                 </span>
                 <a
                   class="ageaf-panel__update-link"
