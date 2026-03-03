@@ -146,16 +146,21 @@ export function registerJobs(server: FastifyInstance) {
         await runWithJobContext(id, async () => {
           emitEvent({ event: 'plan', data: { message: 'Job queued' } });
 
-          if (provider === 'pi') {
-            await runPiJob(payload as PiJobPayload, emitEvent);
-            return;
-          }
-
           const requestedAction = payload.action ?? 'chat';
           const action =
             requestedAction === 'notation_check'
               ? 'notation_draft_fixes'
               : requestedAction;
+
+          if (provider !== 'codex' && action === 'notation_draft_fixes') {
+            await runNotationDraftFixes(payload, emitEvent);
+            return;
+          }
+
+          if (provider === 'pi') {
+            await runPiJob({ ...payload, action } as PiJobPayload, emitEvent);
+            return;
+          }
 
           if (provider === 'codex') {
             if (
@@ -183,10 +188,6 @@ export function registerJobs(server: FastifyInstance) {
           }
           if (action === 'fix_error') {
             await runFixCompileError(payload, emitEvent);
-            return;
-          }
-          if (action === 'notation_draft_fixes') {
-            await runNotationDraftFixes(payload, emitEvent);
             return;
           }
 

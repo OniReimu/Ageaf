@@ -8141,7 +8141,7 @@ const Panel = () => {
         : '';
 
     void sendMessage(
-      'Notation consistency pass + draft fixes' + warningBlock,
+      'Notation consistency pass' + warningBlock,
       [],
       attachments,
       [],
@@ -10093,8 +10093,8 @@ const Panel = () => {
                   class="ageaf-toolbar-button"
                   type="button"
                   onClick={() => void onNotationConsistencyPass()}
-                  aria-label="Notation consistency pass + draft fixes"
-                  data-tooltip="Notation consistency pass + draft fixes"
+                  aria-label="Notation consistency pass"
+                  data-tooltip="Notation consistency pass"
                 >
                   <NotationCheckIcon />
                 </button>

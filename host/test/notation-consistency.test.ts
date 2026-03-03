@@ -70,3 +70,49 @@ test('notation draft patches include canonical acronym expansion replacements', 
   assert.equal(acronymPatch.text, 'Large Language Model (LLM)');
   assert.ok(typeof acronymPatch.lineFrom === 'number' && acronymPatch.lineFrom > 0);
 });
+
+test('notation analysis flags acronym usage before first definition', () => {
+  const files: ProjectTextFile[] = [
+    {
+      path: 'intro.tex',
+      content: [
+        'LLM systems are now common.',
+        'A Large Language Model (LLM) can follow instructions.',
+      ].join('\n'),
+    },
+  ];
+
+  const analysis = analyzeNotationConsistencyFiles(files);
+  const finding = analysis.findings.find(
+    (item) =>
+      item.kind === 'acronym_inconsistency' &&
+      /before its first definition/i.test(item.summary)
+  );
+
+  assert.ok(finding);
+  assert.equal(finding?.subject, 'LLM');
+});
+
+test('notation draft patches abbreviate repeated full term after first definition', () => {
+  const files: ProjectTextFile[] = [
+    {
+      path: 'main.tex',
+      content: [
+        'A Large Language Model (LLM) can be instruction-tuned.',
+        'The Large Language Model then adapts at test time.',
+      ].join('\n'),
+    },
+  ];
+
+  const analysis = analyzeNotationConsistencyFiles(files);
+  const patches = buildNotationDraftPatches(analysis.findings);
+  const abbreviationPatches = patches.filter(
+    (patch) =>
+      patch.kind === 'replaceRangeInFile' &&
+      patch.filePath === 'main.tex' &&
+      patch.expectedOldText === 'Large Language Model' &&
+      patch.text === 'LLM'
+  );
+
+  assert.equal(abbreviationPatches.length, 1);
+});

@@ -19,5 +19,6 @@ test('Panel merges notation pass with draft fixes into one action', () => {
     contents,
     /sendMessage\([\s\S]*'Notation consistency pass[\s\S]*'notation_draft_fixes'[\s\S]*\)/
   );
+  assert.doesNotMatch(contents, /Notation consistency pass \+ draft fixes/);
   assert.doesNotMatch(contents, /Draft notation fixes/);
 });
