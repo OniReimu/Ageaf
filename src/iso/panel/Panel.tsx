@@ -10354,12 +10354,6 @@ const Panel = () => {
                 </div>
               </div>
             ) : null}
-            {isSending || queueCount > 0 ? (
-              <div class="ageaf-panel__queue">
-                {isSending ? 'Sending…' : 'Queued'}
-                {queueCount > 0 ? ` (${queueCount})` : ''}
-              </div>
-            ) : null}
           </div>
         ) : null}
       </div>

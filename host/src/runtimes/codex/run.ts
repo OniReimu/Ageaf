@@ -52,7 +52,7 @@ function acquirePidTurnLock(pid: number): { acquired: Promise<void>; release: ()
 const debugToConsole = process.env.AGEAF_DEBUG_CLI === 'true';
 const traceAllCodexEvents = process.env.AGEAF_CODEX_TRACE_ALL_EVENTS === 'true';
 const DEFAULT_CODEX_TURN_TIMEOUT_MS = 0;
-const DEFAULT_CODEX_COMPLETION_GRACE_MS = 1200;
+const DEFAULT_CODEX_COMPLETION_GRACE_MS = 60 * 60 * 1000;
 function debugLog(message: string, data?: Record<string, unknown>) {
   if (!debugToConsole) return;
   console.log(`[CODEX DEBUG] ${message}`, data ?? '');
@@ -1454,7 +1454,7 @@ export async function runCodexJob(
     if (awaitingLateCompletionOutput) return;
 
     awaitingLateCompletionOutput = true;
-    emitTrace('Codex: completion arrived before post-compaction output; waiting briefly', {
+    emitTrace('Codex: completion arrived before post-compaction output; waiting', {
       method,
       graceMs: COMPLETION_GRACE_MS,
     });

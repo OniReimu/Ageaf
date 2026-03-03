@@ -2621,12 +2621,6 @@
   color: var(--ageaf-panel-muted);
 }
 
-.ageaf-panel__queue {
-  justify-self: end;
-  font-size: 12px;
-  color: var(--ageaf-panel-muted);
-}
-
 .ageaf-panel__settings {
   font-size: 14px;
 }
