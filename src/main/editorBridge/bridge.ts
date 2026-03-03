@@ -12,6 +12,8 @@ const FILE_REQUEST_EVENT = 'ageaf:editor:file-content:request';
 const FILE_RESPONSE_EVENT = 'ageaf:editor:file-content:response';
 const FILE_NAVIGATE_REQUEST_EVENT = 'ageaf:editor:file-navigate:request';
 const FILE_NAVIGATE_RESPONSE_EVENT = 'ageaf:editor:file-navigate:response';
+const HISTORY_REQUEST_EVENT = 'ageaf:editor:history:request';
+const HISTORY_RESPONSE_EVENT = 'ageaf:editor:history:response';
 
 interface SelectionRequest {
   requestId: string;
@@ -88,6 +90,17 @@ interface FileNavigateRequest {
 interface FileNavigateResponse {
   requestId: string;
   ok: boolean;
+}
+
+interface HistoryRequest {
+  requestId: string;
+  direction: 'undo' | 'redo';
+}
+
+interface HistoryResponse {
+  requestId: string;
+  ok: boolean;
+  error?: string;
 }
 
 function extractFilenameFromLabel(raw: string): string | null {
@@ -606,6 +619,66 @@ async function onFileNavigateRequest(event: Event) {
   );
 }
 
+function onHistoryRequest(event: Event) {
+  const detail = (event as CustomEvent<HistoryRequest>).detail;
+  if (!detail?.requestId) return;
+
+  let ok = true;
+  let error: string | undefined;
+
+  try {
+    if (detail.direction !== 'undo' && detail.direction !== 'redo') {
+      ok = false;
+      error = 'Unsupported history direction';
+    } else {
+      const view = getCmView();
+      const editorDom = view.contentDOM as HTMLElement;
+      const activeEl = document.activeElement as HTMLElement | null;
+      editorDom.focus();
+
+      let handled = false;
+      try {
+        const inputType =
+          detail.direction === 'undo' ? 'historyUndo' : 'historyRedo';
+        const beforeInput = new InputEvent('beforeinput', {
+          inputType,
+          bubbles: true,
+          cancelable: true,
+        });
+        handled = !editorDom.dispatchEvent(beforeInput);
+      } catch {
+        handled = false;
+      }
+
+      if (!handled) {
+        const command = detail.direction === 'undo' ? 'undo' : 'redo';
+        handled = Boolean(document.execCommand(command));
+      }
+
+      if (!handled) {
+        ok = false;
+        error = `Unable to ${detail.direction} editor history`;
+      }
+
+      if (activeEl && activeEl !== editorDom) {
+        activeEl.focus();
+      }
+    }
+  } catch (err) {
+    ok = false;
+    error = err instanceof Error ? err.message : String(err);
+  }
+
+  const response: HistoryResponse = {
+    requestId: detail.requestId,
+    ok,
+    ...(error ? { error } : {}),
+  };
+  window.dispatchEvent(
+    new CustomEvent(HISTORY_RESPONSE_EVENT, { detail: response })
+  );
+}
+
 export function registerEditorBridge() {
   window.addEventListener(REQUEST_EVENT, onSelectionRequest as EventListener);
   window.addEventListener(FILE_REQUEST_EVENT, onFileContentRequest as EventListener);
@@ -613,4 +686,5 @@ export function registerEditorBridge() {
   window.addEventListener(REPLACE_EVENT, onReplaceSelection as EventListener);
   window.addEventListener(INSERT_EVENT, onInsertAtCursor as EventListener);
   window.addEventListener(FILE_NAVIGATE_REQUEST_EVENT, onFileNavigateRequest as EventListener);
+  window.addEventListener(HISTORY_REQUEST_EVENT, onHistoryRequest as EventListener);
 }

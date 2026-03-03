@@ -131,7 +131,7 @@ function getCurrentProjectId() {
   return getProjectIdFromPathname(window.location.pathname);
 }
 
-const STYLE_VERSION = '2';
+const STYLE_VERSION = '4';
 
 function ensureInlineDiffStyles() {
   const existing = document.getElementById(STYLE_ID);
@@ -259,6 +259,30 @@ function ensureInlineDiffStyles() {
       overflow-wrap: anywhere;
       word-break: break-word;
       color: inherit;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
+    textarea.ageaf-inline-diff-addition__text {
+      border: 1px dashed rgba(57, 185, 138, 0.25);
+      border-radius: 4px;
+      outline: none;
+      resize: none;
+      min-height: 32px;
+      display: block;
+      overflow: hidden;
+      height: auto;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    textarea.ageaf-inline-diff-addition__text:hover {
+      border-color: rgba(57, 185, 138, 0.4);
+    }
+
+    textarea.ageaf-inline-diff-addition__text:focus {
+      border-style: solid;
+      border-color: rgba(57, 185, 138, 0.6);
+      box-shadow: 0 0 0 2px rgba(57, 185, 138, 0.15);
     }
 
     .ageaf-inline-diff-addition__actions {
@@ -293,6 +317,7 @@ function ensureInlineDiffStyles() {
     }
 
     .ageaf-inline-diff-widget__old {
+      position: relative;
       background: rgba(239, 68, 68, 0.14);
       text-decoration: line-through;
       opacity: 0.75;
@@ -304,6 +329,8 @@ function ensureInlineDiffStyles() {
       font-size: inherit;
       line-height: inherit;
       color: inherit;
+      user-select: text;
+      -webkit-user-select: text;
     }
 
     .ageaf-inline-diff-widget__text {
@@ -319,6 +346,8 @@ function ensureInlineDiffStyles() {
       overflow-wrap: anywhere;
       word-break: break-word;
       color: inherit;
+      user-select: text;
+      -webkit-user-select: text;
     }
 
     /* Make the proposed text editable with visual affordance */
@@ -570,7 +599,7 @@ function ensureReviewBar() {
           ? (CSS as any).escape(messageId)
           : messageId;
       const editor = document.querySelector(
-        `.ageaf-inline-diff-widget[data-message-id="${esc}"] textarea[data-ageaf-proposed-editor="1"]`
+        `.ageaf-inline-diff-widget[data-message-id="${esc}"] textarea[data-ageaf-proposed-editor="1"], .ageaf-inline-diff-addition[data-message-id="${esc}"] textarea[data-ageaf-proposed-editor="1"]`
       ) as HTMLTextAreaElement | null;
       if (editor) detail.text = editor.value;
     }
@@ -1022,8 +1051,8 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       }
 
       ignoreEvent() {
-        // Let DOM controls inside the widget receive pointer/click events.
-        return true;
+        // Do not hide DOM events from CM so text selection/focus works naturally.
+        return false;
       }
 
       toDOM() {
@@ -1046,7 +1075,7 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       }
 
       ignoreEvent() {
-        return true;
+        return false;
       }
 
       toDOM() {
@@ -1239,6 +1268,9 @@ function createWidgetDOM(oldText: string, text: string, messageId: string): HTML
   if (oldText) {
     const oldTextEl = document.createElement('div');
     oldTextEl.className = 'ageaf-inline-diff-widget__old';
+    oldTextEl.setAttribute('data-ageaf-old-readonly', '1');
+    oldTextEl.setAttribute('contenteditable', 'false');
+    oldTextEl.setAttribute('aria-readonly', 'true');
     oldTextEl.textContent = oldText;
     wrap.appendChild(oldTextEl);
   }
@@ -1569,11 +1601,33 @@ function renderOverlay() {
 
     const added = document.createElement('div');
     added.className = 'ageaf-inline-diff-addition';
+    added.setAttribute('data-message-id', overlayState.messageId);
     added.style.left = `${rel.left}px`;
     added.style.top = `${rel.top}px`;
     const availableWidth = Math.max(220, scrollDOM.clientWidth - rel.left - 24);
     added.style.width = `${availableWidth}px`;
     added.style.maxWidth = `${availableWidth}px`;
+
+    const text = document.createElement('textarea');
+    text.className = 'ageaf-inline-diff-addition__text';
+    (text as HTMLTextAreaElement).value = range.newText;
+    text.spellcheck = false;
+    text.setAttribute('aria-label', 'Edit proposed text');
+    text.setAttribute('data-ageaf-proposed-editor', '1');
+    const autosize = () => {
+      try {
+        (text as HTMLTextAreaElement).style.height = 'auto';
+        (text as HTMLTextAreaElement).style.height = `${(text as HTMLTextAreaElement).scrollHeight}px`;
+      } catch {
+        // ignore
+      }
+    };
+    text.addEventListener('input', autosize);
+    requestAnimationFrame(() => autosize());
+    const contentStyle = window.getComputedStyle(contentDOM);
+    text.style.fontFamily = contentStyle.fontFamily;
+    text.style.fontSize = contentStyle.fontSize;
+    text.style.lineHeight = contentStyle.lineHeight;
 
     const actions = document.createElement('div');
     actions.className = 'ageaf-inline-diff-addition__actions';
@@ -1585,7 +1639,11 @@ function renderOverlay() {
     accept.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      emitOverlayAction(overlayState.messageId, 'accept');
+      emitOverlayAction(
+        overlayState.messageId,
+        'accept',
+        (text as HTMLTextAreaElement).value
+      );
     });
 
     const feedback = document.createElement('button');
@@ -1595,7 +1653,11 @@ function renderOverlay() {
     feedback.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      emitOverlayAction(overlayState.messageId, 'feedback', range.newText);
+      emitOverlayAction(
+        overlayState.messageId,
+        'feedback',
+        (text as HTMLTextAreaElement).value
+      );
     });
 
     const reject = document.createElement('button');
@@ -1611,14 +1673,6 @@ function renderOverlay() {
     actions.appendChild(accept);
     actions.appendChild(reject);
     actions.appendChild(feedback);
-
-    const text = document.createElement('div');
-    text.className = 'ageaf-inline-diff-addition__text';
-    text.textContent = range.newText;
-    const contentStyle = window.getComputedStyle(contentDOM);
-    text.style.fontFamily = contentStyle.fontFamily;
-    text.style.fontSize = contentStyle.fontSize;
-    text.style.lineHeight = contentStyle.lineHeight;
 
     added.appendChild(text);
     added.appendChild(actions);

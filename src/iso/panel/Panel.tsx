@@ -626,6 +626,17 @@ type SelectionSnapshot = {
   fileName?: string;
 };
 
+type PatchReviewStatus = 'pending' | 'accepted' | 'rejected';
+
+type ReviewActionHistoryEntry = {
+  messageId: string;
+  action: 'accept' | 'reject';
+  prevStatus: PatchReviewStatus;
+  nextStatus: PatchReviewStatus;
+  patchKind: StoredPatchReview['kind'];
+  appliedText?: string;
+};
+
 type ToolRequest = {
   kind: 'approval' | 'user_input';
   requestId: number | string;
@@ -843,6 +854,8 @@ const Panel = () => {
   const pendingPatchFeedbackTargetRef = useRef<PatchFeedbackTarget | null>(
     null
   );
+  const reviewUndoStackRef = useRef<ReviewActionHistoryEntry[]>([]);
+  const reviewRedoStackRef = useRef<ReviewActionHistoryEntry[]>([]);
   const [toolRequests, setToolRequests] = useState<ToolRequest[]>([]);
   const [toolRequestInputs, setToolRequestInputs] = useState<
     Record<string, string>
@@ -8281,7 +8294,7 @@ const Panel = () => {
 
   const setPatchReviewStatus = (
     messageId: string,
-    status: 'pending' | 'accepted' | 'rejected'
+    status: PatchReviewStatus
   ) => {
     updatePatchReviewMessage(
       messageId,
@@ -8289,12 +8302,221 @@ const Panel = () => {
     );
   };
 
-  const onRejectPatchReviewMessage = (messageId: string) => {
-    if (bulkActionBusy) return;
-    setPatchReviewStatus(messageId, 'rejected');
+  const setPatchReviewTextAndStatus = (
+    messageId: string,
+    status: PatchReviewStatus,
+    nextText?: string
+  ) => {
+    updatePatchReviewMessage(messageId, (patchReview) => {
+      const updated: any = { ...patchReview, status };
+      if (typeof nextText === 'string' && 'text' in patchReview) {
+        updated.text = nextText;
+      }
+      return updated as StoredPatchReview;
+    });
+  };
+
+  const clearPatchErrorForMessage = (messageId: string) => {
     setPatchActionErrors((prev) => {
       const { [messageId]: _removed, ...rest } = prev;
       return rest;
+    });
+  };
+
+  const recordReviewAction = (entry: ReviewActionHistoryEntry) => {
+    reviewUndoStackRef.current.push(entry);
+    reviewRedoStackRef.current = [];
+  };
+
+  const applyReviewAcceptHistory = async (
+    entry: ReviewActionHistoryEntry,
+    patchReview: StoredPatchReview,
+    direction: 'undo' | 'redo'
+  ) => {
+    const appliedText =
+      typeof entry.appliedText === 'string'
+        ? entry.appliedText
+        : 'text' in patchReview
+          ? patchReview.text
+          : '';
+
+    if (patchReview.kind === 'replaceSelection') {
+      if (!window.ageafBridge?.applyReplaceRange) {
+        return { ok: false, error: 'Apply bridge unavailable' };
+      }
+      const result =
+        direction === 'undo'
+          ? await window.ageafBridge.applyReplaceRange({
+            from: patchReview.from,
+            to: patchReview.to,
+            expectedOldText: appliedText,
+            text: patchReview.selection,
+          })
+          : await window.ageafBridge.applyReplaceRange({
+            from: patchReview.from,
+            to: patchReview.to,
+            expectedOldText: patchReview.selection,
+            text: appliedText,
+          });
+      return {
+        ok: Boolean(result?.ok),
+        ...(result?.ok
+          ? {}
+          : {
+            error:
+              result?.error ??
+              `Unable to ${direction} accepted change`,
+          }),
+      };
+    }
+
+    if (patchReview.kind === 'replaceRangeInFile') {
+      if (!window.ageafBridge?.applyReplaceInFile) {
+        return { ok: false, error: 'Apply bridge unavailable' };
+      }
+      const result =
+        direction === 'undo'
+          ? await window.ageafBridge.applyReplaceInFile({
+            filePath: patchReview.filePath,
+            expectedOldText: appliedText,
+            text: patchReview.expectedOldText,
+            ...(typeof patchReview.from === 'number'
+              ? { from: patchReview.from }
+              : {}),
+            ...(typeof patchReview.to === 'number'
+              ? { to: patchReview.to }
+              : {}),
+          })
+          : await window.ageafBridge.applyReplaceInFile({
+            filePath: patchReview.filePath,
+            expectedOldText: patchReview.expectedOldText,
+            text: appliedText,
+            ...(typeof patchReview.from === 'number'
+              ? { from: patchReview.from }
+              : {}),
+            ...(typeof patchReview.to === 'number'
+              ? { to: patchReview.to }
+              : {}),
+          });
+      return {
+        ok: Boolean(result?.ok),
+        ...(result?.ok
+          ? {}
+          : {
+            error:
+              result?.error ??
+              `Unable to ${direction} accepted change`,
+          }),
+      };
+    }
+
+    if (patchReview.kind === 'insertAtCursor') {
+      if (direction === 'undo') {
+        if (!window.ageafBridge?.undoEditor) {
+          return { ok: false, error: 'Undo bridge unavailable' };
+        }
+        return await window.ageafBridge.undoEditor();
+      }
+      if (window.ageafBridge?.redoEditor) {
+        return await window.ageafBridge.redoEditor();
+      }
+      if (appliedText && window.ageafBridge?.insertAtCursor) {
+        window.ageafBridge.insertAtCursor(appliedText);
+        return { ok: true };
+      }
+      return { ok: false, error: 'Redo bridge unavailable' };
+    }
+
+    return { ok: false, error: 'Unsupported patch kind' };
+  };
+
+  const executeReviewUndo = async () => {
+    if (bulkActionBusy || patchActionBusyId) return false;
+    const entry = reviewUndoStackRef.current.pop();
+    if (!entry) return false;
+
+    const latest = messagesRef.current.find((message) => message.id === entry.messageId);
+    if (!latest?.patchReview) {
+      return false;
+    }
+
+    if (entry.action === 'accept') {
+      const result = await applyReviewAcceptHistory(
+        entry,
+        latest.patchReview,
+        'undo'
+      );
+      if (!result?.ok) {
+        reviewUndoStackRef.current.push(entry);
+        setPatchActionErrors((prev) => ({
+          ...prev,
+          [entry.messageId]: result?.error ?? 'Unable to undo accepted change',
+        }));
+        return false;
+      }
+    }
+
+    setPatchReviewTextAndStatus(
+      entry.messageId,
+      entry.prevStatus,
+      entry.appliedText
+    );
+    clearPatchErrorForMessage(entry.messageId);
+    reviewRedoStackRef.current.push(entry);
+    return true;
+  };
+
+  const executeReviewRedo = async () => {
+    if (bulkActionBusy || patchActionBusyId) return false;
+    const entry = reviewRedoStackRef.current.pop();
+    if (!entry) return false;
+
+    const latest = messagesRef.current.find((message) => message.id === entry.messageId);
+    if (!latest?.patchReview) {
+      return false;
+    }
+
+    if (entry.action === 'accept') {
+      const result = await applyReviewAcceptHistory(
+        entry,
+        latest.patchReview,
+        'redo'
+      );
+      if (!result?.ok) {
+        reviewRedoStackRef.current.push(entry);
+        setPatchActionErrors((prev) => ({
+          ...prev,
+          [entry.messageId]: result?.error ?? 'Unable to redo accepted change',
+        }));
+        return false;
+      }
+    }
+
+    setPatchReviewTextAndStatus(
+      entry.messageId,
+      entry.nextStatus,
+      entry.appliedText
+    );
+    clearPatchErrorForMessage(entry.messageId);
+    reviewUndoStackRef.current.push(entry);
+    return true;
+  };
+
+  const onRejectPatchReviewMessage = (messageId: string) => {
+    if (bulkActionBusy) return;
+    const latest = messagesRef.current.find((message) => message.id === messageId);
+    const patchReview = latest?.patchReview;
+    if (!patchReview) return;
+    const prevStatus = ((patchReview as any).status ?? 'pending') as PatchReviewStatus;
+    if (prevStatus !== 'pending') return;
+    setPatchReviewStatus(messageId, 'rejected');
+    clearPatchErrorForMessage(messageId);
+    recordReviewAction({
+      messageId,
+      action: 'reject',
+      prevStatus,
+      nextStatus: 'rejected',
+      patchKind: patchReview.kind,
     });
   };
 
@@ -8380,11 +8602,8 @@ const Panel = () => {
     messageId: string,
     patchReview: StoredPatchReview,
     overrideText?: string
-  ) => {
-    setPatchActionErrors((prev) => {
-      const { [messageId]: _removed, ...rest } = prev;
-      return rest;
-    });
+  ): Promise<boolean> => {
+    clearPatchErrorForMessage(messageId);
 
     try {
       if (patchReview.kind === 'replaceSelection') {
@@ -8393,7 +8612,7 @@ const Panel = () => {
             ...prev,
             [messageId]: 'Apply bridge unavailable',
           }));
-          return;
+          return false;
         }
         const nextText =
           typeof overrideText === 'string' ? overrideText : patchReview.text;
@@ -8408,10 +8627,10 @@ const Panel = () => {
             ...prev,
             [messageId]: result?.error ?? 'Selection changed',
           }));
-          return;
+          return false;
         }
-        setPatchReviewStatus(messageId, 'accepted');
-        return;
+        setPatchReviewTextAndStatus(messageId, 'accepted', nextText);
+        return true;
       }
 
       if (patchReview.kind === 'replaceRangeInFile') {
@@ -8420,7 +8639,7 @@ const Panel = () => {
             ...prev,
             [messageId]: 'Apply bridge unavailable',
           }));
-          return;
+          return false;
         }
         const nextText =
           typeof overrideText === 'string' ? overrideText : patchReview.text;
@@ -8438,29 +8657,31 @@ const Panel = () => {
             ...prev,
             [messageId]: result?.error ?? 'Unable to apply patch',
           }));
-          return;
+          return false;
         }
-        setPatchReviewStatus(messageId, 'accepted');
-        return;
+        setPatchReviewTextAndStatus(messageId, 'accepted', nextText);
+        return true;
       }
 
       if (patchReview.kind === 'insertAtCursor') {
-        if (!window.ageafBridge) return;
+        if (!window.ageafBridge) return false;
         const nextText =
           typeof overrideText === 'string' ? overrideText : patchReview.text;
         window.ageafBridge.insertAtCursor(nextText);
-        setPatchReviewStatus(messageId, 'accepted');
-        return;
+        setPatchReviewTextAndStatus(messageId, 'accepted', nextText);
+        return true;
       }
 
       setPatchActionErrors((prev) => ({
         ...prev,
         [messageId]: 'Unsupported patch kind',
       }));
+      return false;
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Failed to apply patch';
       setPatchActionErrors((prev) => ({ ...prev, [messageId]: message }));
+      return false;
     }
   };
 
@@ -8477,7 +8698,23 @@ const Panel = () => {
 
     setPatchActionBusyId(messageId);
     try {
-      await acceptSinglePatch(messageId, patchReview, overrideText);
+      const accepted = await acceptSinglePatch(messageId, patchReview, overrideText);
+      if (accepted) {
+        const appliedText =
+          typeof overrideText === 'string'
+            ? overrideText
+            : 'text' in patchReview
+              ? patchReview.text
+              : undefined;
+        recordReviewAction({
+          messageId,
+          action: 'accept',
+          prevStatus: status,
+          nextStatus: 'accepted',
+          patchKind: patchReview.kind,
+          ...(typeof appliedText === 'string' ? { appliedText } : {}),
+        });
+      }
     } finally {
       setPatchActionBusyId(null);
     }
@@ -8532,9 +8769,21 @@ const Panel = () => {
           if (!latest?.patchReview) continue;
           const latestStatus = (latest.patchReview as any).status ?? 'pending';
           if (latestStatus !== 'pending') continue;
+          const appliedText =
+            'text' in latest.patchReview ? latest.patchReview.text : undefined;
 
           try {
-            await acceptSinglePatch(latest.id, latest.patchReview);
+            const accepted = await acceptSinglePatch(latest.id, latest.patchReview);
+            if (accepted) {
+              recordReviewAction({
+                messageId: latest.id,
+                action: 'accept',
+                prevStatus: latestStatus as PatchReviewStatus,
+                nextStatus: 'accepted',
+                patchKind: latest.patchReview.kind,
+                ...(typeof appliedText === 'string' ? { appliedText } : {}),
+              });
+            }
           } catch {
             // Continue processing remaining hunks.
           }
@@ -8548,6 +8797,20 @@ const Panel = () => {
 
   const onBulkRejectAll = () => {
     if (bulkActionBusy || patchActionBusyId) return;
+    const pendingEntries = messagesRef.current
+      .filter((message) => {
+        if (!message.patchReview) return false;
+        const status = (message.patchReview as any).status ?? 'pending';
+        return status === 'pending';
+      })
+      .map((message) => ({
+        messageId: message.id,
+        patchKind: message.patchReview!.kind,
+        prevStatus: ((message.patchReview as any).status ??
+          'pending') as PatchReviewStatus,
+      }));
+    if (pendingEntries.length === 0) return;
+
     setMessages((prev) =>
       prev.map((message) => {
         if (!message.patchReview) return message;
@@ -8563,6 +8826,15 @@ const Panel = () => {
       })
     );
     setPatchActionErrors({});
+    for (const entry of pendingEntries) {
+      recordReviewAction({
+        messageId: entry.messageId,
+        action: 'reject',
+        prevStatus: entry.prevStatus,
+        nextStatus: 'rejected',
+        patchKind: entry.patchKind,
+      });
+    }
   };
 
   const onAcceptFilePatches = async (fileKey: string) => {
@@ -8604,8 +8876,22 @@ const Panel = () => {
 
       for (const message of pendingMessages) {
         if (!message.patchReview) continue;
+        const appliedText =
+          'text' in message.patchReview ? message.patchReview.text : undefined;
+        const prevStatus = ((message.patchReview as any).status ??
+          'pending') as PatchReviewStatus;
         try {
-          await acceptSinglePatch(message.id, message.patchReview);
+          const accepted = await acceptSinglePatch(message.id, message.patchReview);
+          if (accepted) {
+            recordReviewAction({
+              messageId: message.id,
+              action: 'accept',
+              prevStatus,
+              nextStatus: 'accepted',
+              patchKind: message.patchReview.kind,
+              ...(typeof appliedText === 'string' ? { appliedText } : {}),
+            });
+          }
         } catch {
           // Continue processing remaining hunks in this file.
         }
@@ -8618,18 +8904,23 @@ const Panel = () => {
 
   const onRejectFilePatches = (fileKey: string) => {
     if (bulkActionBusy || patchActionBusyId) return;
-    const ids = new Set(
-      messagesRef.current
-        .filter((entry) => {
-          const patchReview = entry.patchReview;
-          return Boolean(
-            patchReview &&
-            patchReview.kind === 'replaceRangeInFile' &&
-            patchReview.filePath.toLowerCase() === fileKey
-          );
-        })
-        .map((entry) => entry.id)
-    );
+    const pendingEntries = messagesRef.current
+      .filter((entry) => {
+        const patchReview = entry.patchReview;
+        if (!patchReview || patchReview.kind !== 'replaceRangeInFile') {
+          return false;
+        }
+        if (patchReview.filePath.toLowerCase() !== fileKey) return false;
+        const status = (patchReview as any).status ?? 'pending';
+        return status === 'pending';
+      })
+      .map((entry) => ({
+        messageId: entry.id,
+        patchKind: entry.patchReview!.kind,
+        prevStatus: ((entry.patchReview as any).status ??
+          'pending') as PatchReviewStatus,
+      }));
+    const ids = new Set(pendingEntries.map((entry) => entry.messageId));
     if (ids.size === 0) return;
     setMessages((prev) =>
       prev.map((message) => {
@@ -8662,6 +8953,15 @@ const Panel = () => {
       }
       return next;
     });
+    for (const entry of pendingEntries) {
+      recordReviewAction({
+        messageId: entry.messageId,
+        action: 'reject',
+        prevStatus: entry.prevStatus,
+        nextStatus: 'rejected',
+        patchKind: entry.patchKind,
+      });
+    }
   };
 
   const onNavigateToFile = (filePath: string) => {
@@ -8674,9 +8974,13 @@ const Panel = () => {
   const onAcceptPatchReviewRef = useRef(onAcceptPatchReviewMessage);
   const onFeedbackPatchReviewRef = useRef(onFeedbackPatchReviewMessage);
   const onRejectPatchReviewRef = useRef(onRejectPatchReviewMessage);
+  const executeReviewUndoRef = useRef(executeReviewUndo);
+  const executeReviewRedoRef = useRef(executeReviewRedo);
   onAcceptPatchReviewRef.current = onAcceptPatchReviewMessage;
   onFeedbackPatchReviewRef.current = onFeedbackPatchReviewMessage;
   onRejectPatchReviewRef.current = onRejectPatchReviewMessage;
+  executeReviewUndoRef.current = executeReviewUndo;
+  executeReviewRedoRef.current = executeReviewRedo;
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -8709,6 +9013,62 @@ const Panel = () => {
         PANEL_OVERLAY_ACTION_EVENT,
         handler as EventListener
       );
+  }, []);
+
+  useEffect(() => {
+    const isEditorShortcutTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.closest('#ageaf-panel-root')) return false;
+      return Boolean(target.closest('.cm-editor, .cm-content'));
+    };
+
+    const isEditorFocused = () => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement)) return false;
+      if (active.closest('#ageaf-panel-root')) return false;
+      return Boolean(active.closest('.cm-editor, .cm-content'));
+    };
+
+    const isTypingTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      const tagName = target.tagName;
+      if (tagName === 'TEXTAREA') return true;
+      if (tagName !== 'INPUT') return false;
+      const input = target as HTMLInputElement;
+      const type = (input.type || 'text').toLowerCase();
+      return type !== 'button' && type !== 'checkbox' && type !== 'radio';
+    };
+
+    const onWindowKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.altKey) return;
+      const active = document.activeElement;
+      const editorContext = isEditorShortcutTarget(event.target) || isEditorFocused();
+      const isTypingContext = isTypingTarget(event.target) || isTypingTarget(active);
+      if (isTypingContext && !editorContext) return;
+
+      const key = event.key.toLowerCase();
+      const isUndo = key === 'z' && !event.shiftKey;
+      const isRedo = (key === 'z' && event.shiftKey) || key === 'y';
+      if (!isUndo && !isRedo) return;
+
+      const hasReviewHistory = isUndo
+        ? reviewUndoStackRef.current.length > 0
+        : reviewRedoStackRef.current.length > 0;
+      if (!hasReviewHistory) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (isUndo) {
+        void executeReviewUndoRef.current();
+      } else {
+        void executeReviewRedoRef.current();
+      }
+    };
+
+    window.addEventListener('keydown', onWindowKeyDown, true);
+    return () => window.removeEventListener('keydown', onWindowKeyDown, true);
   }, []);
 
   const emitPendingOverlay = (force = false) => {
