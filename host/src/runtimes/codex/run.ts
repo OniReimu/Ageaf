@@ -679,6 +679,7 @@ function buildPrompt(
     '- symbol reuse conflicts (same symbol used for different definitions),',
     '- term drift (canonical term formatting or spelling drifts),',
     '- inconsistent acronym expansion (same acronym expanded differently).',
+    '- abbreviation order/usage issues (first introduce "full term (ABBR)", then prefer ABBR in later mentions).',
     'Return concise findings with file and line references.',
     'Do not emit patches in this mode unless explicitly requested.',
   ].join('\n');

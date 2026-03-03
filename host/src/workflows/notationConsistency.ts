@@ -61,8 +61,17 @@ type AcronymOccurrence = {
   snippet: string;
   from: number;
   to: number;
+  fileIndex: number;
   source: 'macro' | 'prose';
-  order: number;
+};
+
+type AcronymMention = {
+  path: string;
+  line: number;
+  snippet: string;
+  from: number;
+  to: number;
+  fileIndex: number;
 };
 
 type SymbolOccurrence = {
@@ -95,6 +104,12 @@ function normalizeLower(value: string) {
     .toLowerCase()
     .replace(/[^a-z0-9 ]+/g, '')
     .trim();
+}
+
+function normalizeAcronymExpansion(value: string) {
+  const normalized = normalizeSpaces(value);
+  const stripped = normalized.replace(/^(?:a|an|the)\s+/i, '');
+  return stripped || normalized;
 }
 
 function lineFromOffset(content: string, offset: number) {
@@ -149,16 +164,17 @@ function toProjectFiles(payload: NotationPayload): {
 
 function extractAcronymOccurrences(files: ProjectTextFile[]) {
   const occurrences: AcronymOccurrence[] = [];
-  let order = 0;
 
-  for (const file of files) {
+  for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+    const file = files[fileIndex];
+    if (!file) continue;
     const text = file.content;
 
     const newAcronymRegex = /\\newacronym\{[^}]+\}\{([^}]+)\}\{([^}]+)\}/g;
     let macroMatch: RegExpExecArray | null;
     while ((macroMatch = newAcronymRegex.exec(text))) {
       const short = normalizeSpaces(macroMatch[1] ?? '').toUpperCase();
-      const long = normalizeSpaces(macroMatch[2] ?? '');
+      const long = normalizeAcronymExpansion(macroMatch[2] ?? '');
       if (!short || !long) continue;
       const from = macroMatch.index;
       const to = from + macroMatch[0].length;
@@ -171,15 +187,15 @@ function extractAcronymOccurrences(files: ProjectTextFile[]) {
         snippet: macroMatch[0],
         from,
         to,
+        fileIndex,
         source: 'macro',
-        order: order += 1,
       });
     }
 
     const acroRegex = /\\acro\{([^}]+)\}\{([^}]+)\}/g;
     while ((macroMatch = acroRegex.exec(text))) {
       const short = normalizeSpaces(macroMatch[1] ?? '').toUpperCase();
-      const long = normalizeSpaces(macroMatch[2] ?? '');
+      const long = normalizeAcronymExpansion(macroMatch[2] ?? '');
       if (!short || !long) continue;
       const from = macroMatch.index;
       const to = from + macroMatch[0].length;
@@ -192,8 +208,8 @@ function extractAcronymOccurrences(files: ProjectTextFile[]) {
         snippet: macroMatch[0],
         from,
         to,
+        fileIndex,
         source: 'macro',
-        order: order += 1,
       });
     }
 
@@ -201,7 +217,7 @@ function extractAcronymOccurrences(files: ProjectTextFile[]) {
     const proseRegex = /\b([A-Za-z][A-Za-z0-9/-]*(?:\s+[A-Za-z0-9/-]+){1,8})\s*\(([A-Z]{2,12})\)/g;
     let proseMatch: RegExpExecArray | null;
     while ((proseMatch = proseRegex.exec(text))) {
-      const rawExpansion = normalizeSpaces(proseMatch[1] ?? '');
+      const rawExpansion = normalizeAcronymExpansion(proseMatch[1] ?? '');
       const short = normalizeSpaces(proseMatch[2] ?? '').toUpperCase();
       if (!rawExpansion || !short) continue;
       const from = proseMatch.index;
@@ -215,8 +231,8 @@ function extractAcronymOccurrences(files: ProjectTextFile[]) {
         snippet: proseMatch[0],
         from,
         to,
+        fileIndex,
         source: 'prose',
-        order: order += 1,
       });
     }
   }
@@ -318,8 +334,104 @@ function extractTermDriftOccurrences(files: ProjectTextFile[]) {
   return drifts;
 }
 
+function compareByDocumentPosition(
+  a: { fileIndex: number; from: number },
+  b: { fileIndex: number; from: number }
+) {
+  if (a.fileIndex !== b.fileIndex) return a.fileIndex - b.fileIndex;
+  return a.from - b.from;
+}
+
+function overlapsAnyRange(
+  from: number,
+  to: number,
+  ranges: Array<{ from: number; to: number }>
+) {
+  return ranges.some((range) => from < range.to && range.from < to);
+}
+
+function buildAcronymDefinitionRanges(items: AcronymOccurrence[]) {
+  const rangesByPath = new Map<string, Array<{ from: number; to: number }>>();
+  for (const item of items) {
+    const ranges = rangesByPath.get(item.path) ?? [];
+    ranges.push({ from: item.from, to: item.to });
+    rangesByPath.set(item.path, ranges);
+  }
+  return rangesByPath;
+}
+
+function collectStandaloneAcronymMentions(
+  files: ProjectTextFile[],
+  acronym: string,
+  definitionRangesByPath: Map<string, Array<{ from: number; to: number }>>
+) {
+  const mentions: AcronymMention[] = [];
+  const pattern = new RegExp(`\\b${escapeRegExp(acronym)}\\b`, 'g');
+
+  for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+    const file = files[fileIndex];
+    if (!file) continue;
+    const ranges = definitionRangesByPath.get(file.path) ?? [];
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(file.content))) {
+      const snippet = match[0] ?? '';
+      if (!snippet) continue;
+      const from = match.index;
+      const to = from + snippet.length;
+      if (overlapsAnyRange(from, to, ranges)) continue;
+      mentions.push({
+        path: file.path,
+        line: lineFromOffset(file.content, from),
+        snippet,
+        from,
+        to,
+        fileIndex,
+      });
+    }
+  }
+
+  return mentions;
+}
+
+function collectFullExpansionMentions(
+  files: ProjectTextFile[],
+  expansion: string,
+  definitionRangesByPath: Map<string, Array<{ from: number; to: number }>>
+) {
+  const mentions: AcronymMention[] = [];
+  const expansionPattern = new RegExp(
+    `\\b${escapeRegExp(expansion).replace(/\\ /g, '\\s+')}\\b`,
+    'gi'
+  );
+
+  for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+    const file = files[fileIndex];
+    if (!file) continue;
+    const ranges = definitionRangesByPath.get(file.path) ?? [];
+    let match: RegExpExecArray | null;
+    while ((match = expansionPattern.exec(file.content))) {
+      const snippet = match[0] ?? '';
+      if (!snippet) continue;
+      const from = match.index;
+      const to = from + snippet.length;
+      if (overlapsAnyRange(from, to, ranges)) continue;
+      mentions.push({
+        path: file.path,
+        line: lineFromOffset(file.content, from),
+        snippet,
+        from,
+        to,
+        fileIndex,
+      });
+    }
+  }
+
+  return mentions;
+}
+
 function buildAcronymFindings(
-  occurrences: AcronymOccurrence[]
+  occurrences: AcronymOccurrence[],
+  files: ProjectTextFile[]
 ): NotationFinding[] {
   const byAcronym = new Map<string, AcronymOccurrence[]>();
 
@@ -332,69 +444,138 @@ function buildAcronymFindings(
 
   const findings: NotationFinding[] = [];
   for (const [acronym, items] of byAcronym.entries()) {
-    const variants = new Map<string, string>();
-    const firstByVariant = new Map<string, AcronymOccurrence>();
+    const sortedItems = [...items].sort(compareByDocumentPosition);
+    const canonicalOccurrence = sortedItems[0];
+    if (!canonicalOccurrence) continue;
 
-    for (const item of items) {
+    const canonicalExpansion = canonicalOccurrence.expansion;
+    const canonicalExpansionKey = canonicalOccurrence.expansionNormalized;
+    const definitionRangesByPath = buildAcronymDefinitionRanges(sortedItems);
+
+    const variants = new Map<string, string>();
+    for (const item of sortedItems) {
       if (!item.expansionNormalized) continue;
       if (!variants.has(item.expansionNormalized)) {
         variants.set(item.expansionNormalized, item.expansion);
-        firstByVariant.set(item.expansionNormalized, item);
       }
     }
 
-    if (variants.size <= 1) continue;
+    if (variants.size > 1) {
+      const conflicts = Array.from(variants.entries())
+        .filter(([variantKey]) => variantKey !== canonicalExpansionKey)
+        .map(([, display]) => display);
+      const suggestedPatches: Array<Patch & { kind: 'replaceRangeInFile' }> = [];
 
-    const sorted = Array.from(firstByVariant.values()).sort(
-      (a, b) => a.order - b.order
-    );
-    const canonicalOccurrence = sorted[0];
-    if (!canonicalOccurrence) continue;
+      for (const item of sortedItems) {
+        if (
+          item.source === 'prose' &&
+          item.expansionNormalized !== canonicalExpansionKey &&
+          item.from < item.to
+        ) {
+          suggestedPatches.push({
+            kind: 'replaceRangeInFile',
+            filePath: item.path,
+            expectedOldText: item.snippet,
+            text: `${canonicalExpansion} (${acronym})`,
+            from: item.from,
+            to: item.to,
+            lineFrom: item.line,
+          });
+        }
+      }
 
-    const canonical = canonicalOccurrence.expansion;
-    const canonicalKey = canonicalOccurrence.expansionNormalized;
-    const conflicts = Array.from(variants.entries())
-      .filter(([variantKey]) => variantKey !== canonicalKey)
-      .map(([, display]) => display);
-
-    const findingOccurrences: NotationOccurrence[] = [];
-    const suggestedPatches: Array<Patch & { kind: 'replaceRangeInFile' }> = [];
-
-    for (const item of items) {
-      findingOccurrences.push({
-        path: item.path,
-        line: item.line,
-        snippet: item.snippet,
+      findings.push({
+        id: `acronym:${acronym}`,
+        kind: 'acronym_inconsistency',
+        severity: 'high',
+        subject: acronym,
+        canonical: canonicalExpansion,
+        summary: `Acronym ${acronym} has conflicting expansions.`,
+        conflicts,
+        occurrences: sortedItems.map((item) => ({
+          path: item.path,
+          line: item.line,
+          snippet: item.snippet,
+        })),
+        suggestedPatches,
       });
-
-      if (
-        item.source === 'prose' &&
-        item.expansionNormalized !== canonicalKey &&
-        item.from < item.to
-      ) {
-        suggestedPatches.push({
-          kind: 'replaceRangeInFile',
-          filePath: item.path,
-          expectedOldText: item.snippet,
-          text: `${canonical} (${acronym})`,
-          from: item.from,
-          to: item.to,
-          lineFrom: item.line,
-        });
-      }
     }
 
-    findings.push({
-      id: `acronym:${acronym}`,
-      kind: 'acronym_inconsistency',
-      severity: 'high',
-      subject: acronym,
-      canonical,
-      summary: `Acronym ${acronym} has conflicting expansions.`,
-      conflicts,
-      occurrences: findingOccurrences,
-      suggestedPatches,
-    });
+    const preDefinitionMentions = collectStandaloneAcronymMentions(
+      files,
+      acronym,
+      definitionRangesByPath
+    ).filter(
+      (mention) => compareByDocumentPosition(mention, canonicalOccurrence) < 0
+    );
+    if (preDefinitionMentions.length > 0) {
+      findings.push({
+        id: `acronym:${acronym}:define-before-use`,
+        kind: 'acronym_inconsistency',
+        severity: 'high',
+        subject: acronym,
+        canonical: `${canonicalExpansion} (${acronym})`,
+        summary: `Acronym ${acronym} is used before its first definition.`,
+        conflicts: [
+          `Define "${canonicalExpansion} (${acronym})" before standalone "${acronym}" usage.`,
+        ],
+        occurrences: [
+          ...preDefinitionMentions.map((mention) => ({
+            path: mention.path,
+            line: mention.line,
+            snippet: mention.snippet,
+          })),
+          {
+            path: canonicalOccurrence.path,
+            line: canonicalOccurrence.line,
+            snippet: canonicalOccurrence.snippet,
+          },
+        ],
+        suggestedPatches: [],
+      });
+    }
+
+    const repeatedFullMentions = collectFullExpansionMentions(
+      files,
+      canonicalExpansion,
+      definitionRangesByPath
+    ).filter(
+      (mention) => compareByDocumentPosition(mention, canonicalOccurrence) > 0
+    );
+    if (repeatedFullMentions.length > 0) {
+      findings.push({
+        id: `acronym:${acronym}:prefer-short-form`,
+        kind: 'acronym_inconsistency',
+        severity: 'medium',
+        subject: acronym,
+        canonical: acronym,
+        summary: `After introducing ${canonicalExpansion} (${acronym}), use ${acronym} for subsequent mentions.`,
+        conflicts: Array.from(
+          new Set(repeatedFullMentions.map((mention) => normalizeSpaces(mention.snippet)))
+        ),
+        occurrences: [
+          {
+            path: canonicalOccurrence.path,
+            line: canonicalOccurrence.line,
+            snippet: canonicalOccurrence.snippet,
+          },
+          ...repeatedFullMentions.map((mention) => ({
+            path: mention.path,
+            line: mention.line,
+            snippet: mention.snippet,
+          })),
+        ],
+        suggestedPatches: repeatedFullMentions.map((mention) => ({
+          kind: 'replaceRangeInFile',
+          filePath: mention.path,
+          expectedOldText: mention.snippet,
+          text: acronym,
+          from: mention.from,
+          to: mention.to,
+          lineFrom: mention.line,
+        })),
+      });
+    }
   }
 
   return findings;
@@ -494,7 +675,7 @@ export function analyzeNotationConsistencyFiles(
   const termDriftOccurrences = extractTermDriftOccurrences(files);
 
   const findings = [
-    ...buildAcronymFindings(acronymOccurrences),
+    ...buildAcronymFindings(acronymOccurrences, files),
     ...buildSymbolFindings(symbolOccurrences),
     ...buildTermDriftFindings(termDriftOccurrences),
   ];
