@@ -14,12 +14,15 @@ const EDITOR_FILE_REQUEST_EVENT = 'ageaf:editor:file-content:request';
 const EDITOR_FILE_RESPONSE_EVENT = 'ageaf:editor:file-content:response';
 const EDITOR_FILE_NAVIGATE_REQUEST_EVENT = 'ageaf:editor:file-navigate:request';
 const EDITOR_FILE_NAVIGATE_RESPONSE_EVENT = 'ageaf:editor:file-navigate:response';
+const EDITOR_HISTORY_REQUEST_EVENT = 'ageaf:editor:history:request';
+const EDITOR_HISTORY_RESPONSE_EVENT = 'ageaf:editor:history:response';
 const PANEL_INSERT_SELECTION_EVENT = 'ageaf:panel:insert-selection';
 const APPLY_REQUEST_TIMEOUT_MS = 12000;
 const selectionRequests = new Map<string, (payload: any) => void>();
 const fileRequests = new Map<string, (payload: any) => void>();
 const applyRequests = new Map<string, (payload: { ok: boolean; error?: string }) => void>();
 const fileNavigateRequests = new Map<string, (payload: { ok: boolean }) => void>();
+const historyRequests = new Map<string, (payload: { ok: boolean; error?: string }) => void>();
 
 type ApplyReplaceRangeArgs = {
   from: number;
@@ -42,6 +45,14 @@ type ApplyResponse = {
   error?: string;
 };
 
+type HistoryDirection = 'undo' | 'redo';
+
+type HistoryResponse = {
+  requestId: string;
+  ok: boolean;
+  error?: string;
+};
+
 declare global {
   interface Window {
     ageafBridge?: {
@@ -52,6 +63,8 @@ declare global {
       applyReplaceRange: (payload: ApplyReplaceRangeArgs) => Promise<{ ok: boolean; error?: string }>;
       applyReplaceInFile: (payload: ApplyReplaceInFileArgs) => Promise<{ ok: boolean; error?: string }>;
       navigateToFile: (name: string) => Promise<{ ok: boolean }>;
+      undoEditor: () => Promise<{ ok: boolean; error?: string }>;
+      redoEditor: () => Promise<{ ok: boolean; error?: string }>;
     };
   }
 }
@@ -90,6 +103,15 @@ function onFileNavigateResponse(event: Event) {
   if (!handler) return;
   fileNavigateRequests.delete(detail.requestId);
   handler({ ok: detail.ok });
+}
+
+function onHistoryResponse(event: Event) {
+  const detail = (event as CustomEvent<HistoryResponse>).detail;
+  if (!detail?.requestId) return;
+  const handler = historyRequests.get(detail.requestId);
+  if (!handler) return;
+  historyRequests.delete(detail.requestId);
+  handler({ ok: detail.ok, error: detail.error });
 }
 
 function requestSelection() {
@@ -204,6 +226,26 @@ function applyReplaceInFile({ filePath, expectedOldText, text, from, to }: Apply
     ...(typeof from === 'number' ? { from } : {}),
     ...(typeof to === 'number' ? { to } : {}),
   });
+}
+
+function requestEditorHistory(direction: HistoryDirection) {
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    historyRequests.set(requestId, resolve);
+    window.dispatchEvent(
+      new CustomEvent(EDITOR_HISTORY_REQUEST_EVENT, {
+        detail: { requestId, direction },
+      })
+    );
+  });
+}
+
+function undoEditor() {
+  return requestEditorHistory('undo');
+}
+
+function redoEditor() {
+  return requestEditorHistory('redo');
 }
 
 function ensureKatexFontFaces() {
@@ -330,6 +372,7 @@ window.addEventListener(EDITOR_RESPONSE_EVENT, onSelectionResponse as EventListe
 window.addEventListener(EDITOR_FILE_RESPONSE_EVENT, onFileContentResponse as EventListener);
 window.addEventListener(EDITOR_APPLY_RESPONSE_EVENT, onApplyResponse as EventListener);
 window.addEventListener(EDITOR_FILE_NAVIGATE_RESPONSE_EVENT, onFileNavigateResponse as EventListener);
+window.addEventListener(EDITOR_HISTORY_RESPONSE_EVENT, onHistoryResponse as EventListener);
 window.ageafBridge = {
   requestSelection,
   requestFileContent,
@@ -338,6 +381,8 @@ window.ageafBridge = {
   applyReplaceRange,
   applyReplaceInFile,
   navigateToFile,
+  undoEditor,
+  redoEditor,
 };
 
 function isPanelTarget(target: EventTarget | null) {
