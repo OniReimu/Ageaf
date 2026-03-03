@@ -40,6 +40,8 @@ import { getOptions, invalidateOptionsCache } from '../../utils/helper';
 import {
   LOCAL_STORAGE_KEY_INLINE_OVERLAY,
   LOCAL_STORAGE_KEY_OPTIONS,
+  LOCAL_STORAGE_KEY_DISMISSED_UPDATE_COMMIT_SHA,
+  LOCAL_STORAGE_KEY_LAST_SEEN_REMOTE_COMMIT_SHA,
 } from '../../constants';
 import { Options } from '../../types';
 import { parseMarkdown, renderMarkdown } from './markdown';
@@ -102,10 +104,80 @@ const DEFAULT_MODEL_LABEL = 'Sonnet';
 const INTERRUPTED_BY_USER_MARKER = 'INTERRUPTED BY USER';
 const DEBUG_DIFF = false;
 const HOW_TO_GUIDES_URL = 'https://github.com/OniReimu/Ageaf/tree/main';
+const GITHUB_REPO_URL = 'https://github.com/OniReimu/Ageaf';
+const GITHUB_COMMITS_API_URL =
+  'https://api.github.com/repos/OniReimu/Ageaf/commits/main';
+const UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const EDITOR_OVERLAY_SHOW_EVENT = 'ageaf:editor:overlay:show';
 const EDITOR_OVERLAY_CLEAR_EVENT = 'ageaf:editor:overlay:clear';
 const EDITOR_OVERLAY_READY_EVENT = 'ageaf:editor:overlay:ready';
 const PANEL_OVERLAY_ACTION_EVENT = 'ageaf:panel:patch-review-action';
+
+type RemoteCommitInfo = {
+  sha: string;
+  shortSha: string;
+  commitUrl: string;
+  summary: string;
+};
+
+async function readLocalStorageString(key: string): Promise<string | null> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return null;
+  try {
+    const data = await chrome.storage.local.get([key]);
+    const value = data?.[key];
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeLocalStorageString(key: string, value: string): Promise<void> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+  try {
+    await chrome.storage.local.set({ [key]: value });
+  } catch {
+    // Best effort persistence only.
+  }
+}
+
+async function fetchLatestGitHubCommit(
+  signal?: AbortSignal
+): Promise<RemoteCommitInfo | null> {
+  const requestInit: RequestInit = {
+    method: 'GET',
+    headers: { Accept: 'application/vnd.github+json' },
+    signal,
+  };
+
+  try {
+    const response = await fetch(GITHUB_COMMITS_API_URL, requestInit);
+    if (!response.ok) return null;
+    const payload = (await response.json()) as {
+      sha?: unknown;
+      html_url?: unknown;
+      commit?: { message?: unknown };
+    };
+    const sha = String(payload.sha ?? '').trim();
+    if (!sha) return null;
+    const message = String(payload.commit?.message ?? '').trim();
+    const summaryLine = message ? message.split('\n')[0].trim() : '';
+    const summary = summaryLine || 'Latest main branch update';
+    const commitUrl =
+      typeof payload.html_url === 'string' && payload.html_url.trim()
+        ? payload.html_url
+        : `${GITHUB_REPO_URL}/commit/${sha}`;
+    return {
+      sha,
+      shortSha: sha.slice(0, 7),
+      commitUrl,
+      summary,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function getIconUrl(path: string) {
   try {
@@ -690,6 +762,9 @@ const Panel = () => {
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const [isLightMode, setIsLightMode] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState<RemoteCommitInfo | null>(
+    null
+  );
 
   // Sync theme to document body so other injected scripts (like citations) can react to it
   useEffect(() => {
@@ -699,6 +774,59 @@ const Panel = () => {
       document.body.removeAttribute('data-ageaf-theme');
     }
   }, [isLightMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let checkInFlight = false;
+    const controller =
+      typeof AbortController !== 'undefined' ? new AbortController() : null;
+
+    const checkForUpdate = async () => {
+      if (checkInFlight) return;
+      checkInFlight = true;
+      try {
+        const latest = await fetchLatestGitHubCommit(controller?.signal);
+        if (!latest) return;
+
+        const [lastSeenSha, dismissedSha] = await Promise.all([
+          readLocalStorageString(LOCAL_STORAGE_KEY_LAST_SEEN_REMOTE_COMMIT_SHA),
+          readLocalStorageString(LOCAL_STORAGE_KEY_DISMISSED_UPDATE_COMMIT_SHA),
+        ]);
+
+        if (!lastSeenSha) {
+          await writeLocalStorageString(
+            LOCAL_STORAGE_KEY_LAST_SEEN_REMOTE_COMMIT_SHA,
+            latest.sha
+          );
+          return;
+        }
+
+        if (lastSeenSha === latest.sha) return;
+
+        await writeLocalStorageString(
+          LOCAL_STORAGE_KEY_LAST_SEEN_REMOTE_COMMIT_SHA,
+          latest.sha
+        );
+
+        if (dismissedSha === latest.sha) return;
+        if (cancelled) return;
+        setUpdateNotice(latest);
+      } finally {
+        checkInFlight = false;
+      }
+    };
+
+    void checkForUpdate();
+    const intervalId = window.setInterval(() => {
+      void checkForUpdate();
+    }, UPDATE_CHECK_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      window.clearInterval(intervalId);
+    };
+  }, []);
   const [chatProvider, setChatProvider] = useState<ProviderId>('claude');
   const [sessionIds, setSessionIds] = useState<string[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -9051,6 +9179,16 @@ const Panel = () => {
   };
 
   // Session switching is always allowed - no blocking during streaming
+  const dismissUpdateNotice = () => {
+    if (!updateNotice) return;
+    const sha = updateNotice.sha;
+    setUpdateNotice(null);
+    void writeLocalStorageString(
+      LOCAL_STORAGE_KEY_DISMISSED_UPDATE_COMMIT_SHA,
+      sha
+    );
+  };
+
   const activeToolRequest = toolRequests[0] ?? null;
   const activeToolQuestions: ToolInputQuestion[] =
     activeToolRequest?.kind === 'user_input' &&
@@ -9095,6 +9233,29 @@ const Panel = () => {
   const hasSessions = sessionIds.length > 0;
   const landingPage = (
     <div class="ageaf-landing">
+      {updateNotice ? (
+        <div class="ageaf-panel__update-banner" role="status" aria-live="polite">
+          <span class="ageaf-panel__update-text">
+            New GitHub update: {updateNotice.shortSha} · {updateNotice.summary}
+          </span>
+          <a
+            class="ageaf-panel__update-link"
+            href={updateNotice.commitUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            View commit
+          </a>
+          <button
+            class="ageaf-panel__update-close"
+            type="button"
+            aria-label="Dismiss update notification"
+            onClick={dismissUpdateNotice}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <div class="ageaf-landing__content">
         <div class="ageaf-landing__header">
           <img
@@ -9240,6 +9401,33 @@ const Panel = () => {
                 ?
               </a>
             </div>
+            {updateNotice ? (
+              <div
+                class="ageaf-panel__update-banner"
+                role="status"
+                aria-live="polite"
+              >
+                <span class="ageaf-panel__update-text">
+                  New GitHub update: {updateNotice.shortSha} · {updateNotice.summary}
+                </span>
+                <a
+                  class="ageaf-panel__update-link"
+                  href={updateNotice.commitUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  View commit
+                </a>
+                <button
+                  class="ageaf-panel__update-close"
+                  type="button"
+                  aria-label="Dismiss update notification"
+                  onClick={dismissUpdateNotice}
+                >
+                  ×
+                </button>
+              </div>
+            ) : null}
             <div
               class={`ageaf-tips ageaf-tips--${tipDirection}`}
               key={tipIndex}

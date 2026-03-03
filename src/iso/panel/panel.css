@@ -301,6 +301,64 @@
   background: var(--ageaf-panel-accent-soft);
 }
 
+.ageaf-panel__update-banner {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 179, 87, 0.38);
+  background: rgba(255, 179, 87, 0.12);
+  color: var(--ageaf-panel-text);
+  font-size: 12px;
+}
+
+.ageaf-panel__update-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.ageaf-panel__update-link {
+  color: #ffe4be;
+  text-decoration: none;
+  font-weight: 600;
+  border-bottom: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.ageaf-panel__update-link:hover {
+  border-bottom-color: currentColor;
+}
+
+.ageaf-panel__update-close {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+}
+
+.ageaf-panel__update-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.ageaf-panel.light .ageaf-panel__update-banner {
+  border-color: rgba(163, 102, 20, 0.35);
+  background: rgba(255, 208, 145, 0.4);
+  color: #4a3316;
+}
+
+.ageaf-panel.light .ageaf-panel__update-link {
+  color: #7f4904;
+}
+
 /* ── Tips ticker ── */
 .ageaf-tips {
   width: 100%;
