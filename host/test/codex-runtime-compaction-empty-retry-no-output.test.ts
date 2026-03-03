@@ -9,6 +9,8 @@ import { runCodexJob } from '../src/runtimes/codex/run.js';
 test('Codex runtime fails clearly when compaction flow returns empty output', async () => {
   const cliPath = path.join(process.cwd(), 'test', 'fixtures', 'codex-compaction-empty-retry-no-output');
   const events: JobEvent[] = [];
+  const previousCompletionGrace = process.env.AGEAF_CODEX_COMPLETION_GRACE_MS;
+  process.env.AGEAF_CODEX_COMPLETION_GRACE_MS = '50';
 
   try {
     await runCodexJob(
@@ -40,6 +42,11 @@ test('Codex runtime fails clearly when compaction flow returns empty output', as
       /returned no output/i
     );
   } finally {
+    if (previousCompletionGrace === undefined) {
+      delete process.env.AGEAF_CODEX_COMPLETION_GRACE_MS;
+    } else {
+      process.env.AGEAF_CODEX_COMPLETION_GRACE_MS = previousCompletionGrace;
+    }
     await resetCodexAppServerForTests();
   }
 });
