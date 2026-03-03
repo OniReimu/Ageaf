@@ -20,6 +20,7 @@ test('Panel checks latest main commit and renders a dismissible update banner', 
   );
   assert.match(contents, /ageaf-panel__update-banner/);
   assert.match(contents, /Dismiss update notification/);
+  assert.match(contents, /There is a new version\. Please git pull and reload\./);
   assert.match(contents, /UPDATE_CHECK_INTERVAL_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/);
   assert.match(contents, /setInterval\(\(\)\s*=>\s*\{\s*void checkForUpdate\(\);\s*\},\s*UPDATE_CHECK_INTERVAL_MS\)/);
 });
