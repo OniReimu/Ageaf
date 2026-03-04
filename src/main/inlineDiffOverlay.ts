@@ -52,6 +52,7 @@ let overlayCompartment: any = null;
 let overlayField: any = null;
 let overlayEffect: any = null;
 let overlayWidgetView: any = null;
+let lastWidgetPayloadSignature: string | null = null;
 let overlayInstalledViews: WeakSet<any> | null = null;
 let lastInstallAttemptAt = 0;
 let overlayGuardExtension: any = null;
@@ -331,6 +332,15 @@ function ensureInlineDiffStyles() {
       color: inherit;
       user-select: text;
       -webkit-user-select: text;
+    }
+
+    /* CM6 mark decoration for old (deleted) text — text stays in the document
+       so it remains natively selectable/copyable. */
+    .ageaf-inline-diff-mark-old {
+      background-color: rgba(239, 68, 68, 0.14);
+      text-decoration: line-through;
+      user-select: text !important;
+      -webkit-user-select: text !important;
     }
 
     .ageaf-inline-diff-widget__text {
@@ -1051,8 +1061,12 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       }
 
       ignoreEvent() {
-        // Do not hide DOM events from CM so text selection/focus works naturally.
-        return false;
+        // Keep events inside widget DOM for native selection/editing behavior.
+        return true;
+      }
+
+      get editable() {
+        return true;
       }
 
       toDOM() {
@@ -1075,7 +1089,11 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       }
 
       ignoreEvent() {
-        return false;
+        return true;
+      }
+
+      get editable() {
+        return true;
       }
 
       toDOM() {
@@ -1121,18 +1139,29 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
               const rt = Number(entry.replaceTo);
               const hasOldRange = Number.isFinite(rf) && Number.isFinite(rt) && rt > rf;
 
+              // Widget only carries the proposed (new) text; old text stays
+              // in the document via a mark decoration so it remains selectable.
               const widget = new WidgetClass(
-                hasOldRange ? (entry.oldText ?? '') : '',
+                '',
                 entry.text,
                 entry.messageId
               );
 
               if (hasOldRange) {
-                // REPLACEMENT: use Decoration.replace() — widget fills old text's position,
-                // gutter stays aligned. block: true tells CM6 to treat the widget as a
-                // block-level replacement so the gutter line numbers adjust correctly.
+                // REPLACEMENT: mark the old text inline (strikethrough + red bg)
+                // so the user can still select/copy it.  The proposed new text
+                // appears as a block widget right after the marked range.
                 items.push(
-                  Decoration.replace({ widget }).range(rf, rt)
+                  Decoration.mark({
+                    class: 'ageaf-inline-diff-mark-old',
+                  }).range(rf, rt)
+                );
+                items.push(
+                  Decoration.widget({
+                    widget,
+                    block: true,
+                    side: 1,
+                  }).range(rt)
                 );
                 nextRanges.push([rf, rt]);
               } else {
@@ -1265,6 +1294,12 @@ function createWidgetDOM(oldText: string, text: string, messageId: string): HTML
   wrap.className = 'ageaf-inline-diff-widget';
   wrap.setAttribute('data-message-id', messageId);
 
+  // Prevent CM6 from capturing mouse events so the textarea inside the
+  // widget is interactive (focus, selection, editing all work natively).
+  wrap.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+  });
+
   if (oldText) {
     const oldTextEl = document.createElement('div');
     oldTextEl.className = 'ageaf-inline-diff-widget__old';
@@ -1348,13 +1383,38 @@ function createWidgetDOM(oldText: string, text: string, messageId: string): HTML
   return wrap;
 }
 
-function setOverlayWidget(view: any, payload: OverlayWidgetPayload | null) {
+function setOverlayWidget(
+  view: any,
+  payload: OverlayWidgetPayload | OverlayWidgetPayload[] | null
+) {
   if (!cm6Exports || !overlayEffect) return;
+  const list = payload
+    ? (Array.isArray(payload) ? payload : [payload])
+    : [];
+  const nextSignature = list
+    .map((entry) =>
+      [
+        entry.messageId,
+        entry.replaceFrom,
+        entry.replaceTo,
+        entry.from,
+        entry.oldText,
+        entry.text,
+      ].join('\u0001')
+    )
+    .join('\u0002');
+  if (
+    overlayWidgetView === view &&
+    lastWidgetPayloadSignature === nextSignature
+  ) {
+    return;
+  }
 
   view.dispatch({
     effects: overlayEffect.of(payload),
   });
   overlayWidgetView = view;
+  lastWidgetPayloadSignature = nextSignature;
 }
 
 function renderOverlay() {
@@ -1437,6 +1497,7 @@ function renderOverlay() {
       setOverlayWidget(overlayWidgetView, null);
       overlayWidgetView = null;
     }
+    lastWidgetPayloadSignature = null;
     // Clear DOM fallback artifacts if any.
     clearOverlayElements();
     clearGap();
@@ -1759,6 +1820,7 @@ function clearOverlay() {
     setOverlayWidget(overlayWidgetView, null);
     overlayWidgetView = null;
   }
+  lastWidgetPayloadSignature = null;
 
   overlayRoot?.remove();
   overlayRoot = null;
