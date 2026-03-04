@@ -2242,7 +2242,7 @@
 .ageaf-toolbar-button[data-tooltip]::after {
   content: attr(data-tooltip);
   position: absolute;
-  right: 0;
+  left: 0;
   bottom: calc(100% + 6px);
   background: #0f1411;
   border: 1px solid var(--ageaf-panel-border);
@@ -2330,7 +2330,7 @@
 .ageaf-toolbar-menu__option[data-tooltip]::after {
   content: attr(data-tooltip);
   position: absolute;
-  right: 0;
+  left: 0;
   bottom: calc(100% + 6px);
   background: #0f1411;
   border: 1px solid var(--ageaf-panel-border);
