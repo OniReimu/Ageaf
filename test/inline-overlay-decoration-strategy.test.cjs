@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-test('Replacement hunks use Decoration.replace, not block widgets', () => {
+test('Replacement hunks use Decoration.mark + Decoration.widget for selectability', () => {
   const overlayPath = path.join(
     __dirname,
     '..',
@@ -25,27 +25,28 @@ test('Replacement hunks use Decoration.replace, not block widgets', () => {
 
   const stateFieldBlock = contents.slice(fieldStart, fieldEnd);
 
-  // 1. Decoration.replace({ widget }) exists in the overlay update path
+  // 1. Decoration.mark() is used for old text so it stays in the document
+  //    and remains natively selectable/copyable.
   assert.ok(
-    stateFieldBlock.includes('Decoration.replace('),
-    'expected Decoration.replace() for replacement hunks'
+    stateFieldBlock.includes('Decoration.mark('),
+    'expected Decoration.mark() for old text range (selectability)'
+  );
+  assert.ok(
+    stateFieldBlock.includes('ageaf-inline-diff-mark-old'),
+    'expected ageaf-inline-diff-mark-old class on mark decoration'
   );
 
-  // 2. Decoration.widget with block: true is only in the else branch (insertion path),
-  //    NOT alongside Decoration.mark
+  // 2. Decoration.widget with block: true is used for both replacement and
+  //    insertion paths (proposed new text).
   assert.ok(
     stateFieldBlock.includes('Decoration.widget('),
-    'expected Decoration.widget() for insertion hunks'
+    'expected Decoration.widget() for proposed text'
   );
 
-  // 3. Decoration.mark({ class: 'ageaf-inline-diff-old-mark' }) does NOT appear
-  //    in the StateField update block (removed)
+  // 3. Decoration.replace() should NOT be used — it makes the widget atomic
+  //    and prevents text selection inside it.
   assert.ok(
-    !stateFieldBlock.includes('Decoration.mark('),
-    'Decoration.mark should not appear in StateField update — old marks replaced by Decoration.replace'
-  );
-  assert.ok(
-    !stateFieldBlock.includes('ageaf-inline-diff-old-mark'),
-    'ageaf-inline-diff-old-mark class should not appear in StateField update'
+    !stateFieldBlock.includes('Decoration.replace('),
+    'Decoration.replace should not appear — it prevents text selection'
   );
 });
