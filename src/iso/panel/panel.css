@@ -1293,6 +1293,79 @@
   margin-bottom: 0.25em;
 }
 
+/* Inline code blocks — rendered in the message flow, not extracted to the end.
+   The original quote UI had two layers (outer .ageaf-message__quote with padding: 8px
+   + inner .ageaf-message__quote-block).  We use a single container, so offsets are
+   increased to match the original visual insets. */
+.ageaf-inline-code {
+  margin: 8px 0;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(12, 17, 14, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  color: rgba(233, 242, 236, 0.82);
+  font-size: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.ageaf-inline-code__lang {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  z-index: 2;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(57, 185, 138, 0.15);
+  border: 1px solid rgba(57, 185, 138, 0.3);
+  color: rgba(57, 185, 138, 1);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
+
+.ageaf-inline-code__copy {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(9, 14, 11, 0.92);
+  color: rgba(233, 242, 236, 0.9);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.ageaf-inline-code__copy:hover {
+  background: rgba(57, 185, 138, 0.15);
+  border-color: rgba(57, 185, 138, 0.45);
+}
+
+.ageaf-inline-code__copy .ageaf-message__copy-icon,
+.ageaf-inline-code__copy .ageaf-message__copy-check {
+  width: 14px;
+  height: 14px;
+}
+
+/* Reserve top space for the language pill / copy button, and right space for the copy button.
+   Original: outer padding 8px + inner padding-top 28px = 36px from outer edge. */
+.ageaf-inline-code>.ageaf-code-block {
+  padding-top: 36px;
+  padding-right: 40px;
+}
+
+.ageaf-inline-code>pre {
+  margin: 0;
+}
+
 .ageaf-message__quote {
   margin-top: 8px;
   padding: 8px;
@@ -1324,6 +1397,22 @@
   overflow: hidden;
 }
 
+/* When rendered inline in the message flow (not inside the extracted-quote container) */
+.ageaf-message__content>.ageaf-message__quote-block {
+  margin: 8px 0;
+}
+
+/* The outer quote-block wrapper provides the border and background;
+   strip the duplicate from the inner PRE so the badge and copy button
+   sit inside the visible card edge. */
+.ageaf-message__quote-block pre {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+}
+
 .ageaf-message__quote-lang {
   position: absolute;
   top: 6px;
@@ -1350,8 +1439,15 @@
 /* For code blocks, keep the top "header" space for the language pill, but let the code control left padding. */
 .ageaf-message__quote-content:has(.ageaf-code-block) {
   padding: 0;
-  padding-top: 28px;
-  padding-right: 32px;
+}
+
+/* Override the bloated redesign padding on the inner code block when inside a quote-block.
+   The wrapper uses a lot of space for the badge/copy button, so the code block itself
+   should be tighter. The top padding allows the code to start below the badge. */
+.ageaf-message__quote-block pre code {
+  padding: 32px 16px 12px 16px !important;
+  background: transparent !important;
+  border: none !important;
 }
 
 .ageaf-message__quote-block p:last-child {

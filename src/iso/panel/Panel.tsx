@@ -2045,6 +2045,15 @@ const Panel = () => {
           return false;
         }
 
+        // Preserve unchanged inline quote-block wrappers
+        if (
+          fromEl.classList.contains('ageaf-message__quote-block') &&
+          toEl.classList.contains('ageaf-message__quote-block') &&
+          fromEl.isEqualNode(toEl)
+        ) {
+          return false;
+        }
+
         return true;
       },
     });
@@ -3765,16 +3774,51 @@ const Panel = () => {
     return container.innerHTML;
   };
 
+  const wrapPreWithQuoteBlock = (pre: HTMLElement, copyIndex: number) => {
+    const languageLabel = pre.getAttribute('data-language-label') || '';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'ageaf-message__quote-block';
+
+    if (languageLabel) {
+      const pill = document.createElement('div');
+      pill.className = 'ageaf-message__quote-lang';
+      pill.textContent = languageLabel;
+      wrapper.appendChild(pill);
+    }
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'ageaf-message__copy';
+    copyBtn.type = 'button';
+    copyBtn.setAttribute('aria-label', 'Copy code');
+    copyBtn.title = 'Copy code';
+    copyBtn.setAttribute('data-inline-copy', String(copyIndex));
+    copyBtn.innerHTML =
+      '<svg class="ageaf-message__copy-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">' +
+      '<rect x="6.5" y="3.5" width="10" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+      '<rect x="3.5" y="6.5" width="10" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+      '</svg>';
+    wrapper.appendChild(copyBtn);
+
+    const content = document.createElement('div');
+    content.className = 'ageaf-message__quote-content';
+    content.appendChild(pre.cloneNode(true));
+    wrapper.appendChild(content);
+
+    return wrapper;
+  };
+
   const extractQuotesFromHtml = (html: string) => {
     if (typeof document === 'undefined') {
-      return { mainHtml: html, quotes: [] as QuoteData[], interrupted: false };
+      return { mainHtml: html, quotes: [] as QuoteData[], inlineCodeCopyTexts: [] as string[], interrupted: false };
     }
 
     const container = document.createElement('div');
     container.innerHTML = html;
     const mainContainer = document.createElement('div');
     const quotes: QuoteData[] = [];
+    const inlineCodeCopyTexts: string[] = [];
     let interrupted = false;
+    let inlineCopyIndex = 0;
     const nodes = Array.from(container.childNodes);
 
     const isWhitespaceText = (node: Node) =>
@@ -3802,15 +3846,13 @@ const Panel = () => {
         }
 
         if (element.tagName === 'PRE') {
-          // Extract language info from data attributes
-          const language = element.getAttribute('data-language') || undefined;
-          const languageLabel =
-            element.getAttribute('data-language-label') || undefined;
-          quotes.push({
-            html: element.outerHTML,
-            language,
-            languageLabel,
-          });
+          // Wrap the PRE inline with the quote-block UI (language pill + copy button)
+          const codeEl = element.querySelector('code');
+          const copyText = codeEl?.textContent ?? element.textContent ?? '';
+          inlineCodeCopyTexts.push(copyText);
+          const wrapped = wrapPreWithQuoteBlock(element, inlineCopyIndex);
+          inlineCopyIndex += 1;
+          mainContainer.appendChild(wrapped);
           continue;
         }
 
@@ -3860,7 +3902,7 @@ const Panel = () => {
       mainContainer.appendChild(node.cloneNode(true));
     }
 
-    return { mainHtml: mainContainer.innerHTML, quotes, interrupted };
+    return { mainHtml: mainContainer.innerHTML, quotes, inlineCodeCopyTexts, interrupted };
   };
 
   const extractCopyTextFromQuoteHtml = (html: string): string => {
@@ -3939,11 +3981,6 @@ const Panel = () => {
       const token = tokens[i];
       if (token.type === 'blockquote_open' && token.level === 0 && token.map) {
         pushLines(token.map[0], token.map[1]);
-        continue;
-      }
-
-      if (token.type === 'fence' && token.level === 0) {
-        copies.push(token.content);
         continue;
       }
 
@@ -4786,6 +4823,7 @@ const Panel = () => {
     const {
       mainHtml: rawMainHtml,
       quotes,
+      inlineCodeCopyTexts,
       interrupted,
     } = extractQuotesFromHtml(renderMarkdown(contentToRender));
     const mainHtml = decorateMentionsHtml(
@@ -4805,29 +4843,92 @@ const Panel = () => {
         })
         : quotes;
 
+    // Check if all inline code blocks match the patch text (redundant)
+    const allInlineCodesMatchPatch =
+      latestPatchText != null &&
+      inlineCodeCopyTexts.length > 0 &&
+      inlineCodeCopyTexts.every(
+        (text) => normalizeForCompare(text) === normalizeForCompare(latestPatchText)
+      );
+
+    // Strip the main HTML of inline code blocks that duplicate the patch text
+    // to avoid showing redundant content alongside the review card.
+    const strippedMainHtml = (() => {
+      if (!allInlineCodesMatchPatch || message.role !== 'assistant') return mainHtml;
+      if (typeof document === 'undefined') return mainHtml;
+      const temp = document.createElement('div');
+      temp.innerHTML = mainHtml;
+      const blocks = temp.querySelectorAll('.ageaf-message__quote-block');
+      blocks.forEach((block) => block.remove());
+      return temp.innerHTML;
+    })();
+    const hasStrippedMain = strippedMainHtml.trim().length > 0;
+
     // If the assistant message is just the proposed patch text (as a LaTeX/code fence),
     // it's redundant with the review card, so skip rendering the message entirely.
     const isRedundantPatchOnlyAssistantMessage =
       message.role === 'assistant' &&
       latestPatchText != null &&
-      !hasMain &&
-      quotes.length > 0 &&
+      allInlineCodesMatchPatch &&
+      !hasStrippedMain &&
       filteredQuotes.length === 0 &&
       !fileAttachmentsBlock &&
       !imageAttachmentsBlock;
     if (isRedundantPatchOnlyAssistantMessage) return null;
+
+    // Use stripped HTML if we're deduplicating, otherwise use full HTML
+    const finalMainHtml = (allInlineCodesMatchPatch && message.role === 'assistant') ? strippedMainHtml : mainHtml;
+    const hasFinalMain = finalMainHtml.trim().length > 0;
 
     return (
       <>
         {fileAttachmentsBlock}
         {documentAttachmentsBlock}
         {imageAttachmentsBlock}
-        {hasMain ? (
+        {hasFinalMain ? (
           <div
             class="ageaf-message__content"
-            dangerouslySetInnerHTML={{ __html: mainHtml }}
+            dangerouslySetInnerHTML={{ __html: finalMainHtml }}
             onClick={(event) => {
               const target = event.target as HTMLElement | null;
+
+              // Handle inline code copy button
+              const inlineCopyBtn = target?.closest?.(
+                '[data-inline-copy]'
+              ) as HTMLElement | null;
+              if (inlineCopyBtn) {
+                event.preventDefault();
+                event.stopPropagation();
+                const block = inlineCopyBtn.closest('.ageaf-message__quote-block') as HTMLElement | null;
+                const codeEl = block?.querySelector('code');
+                const copyText = codeEl?.textContent ?? '';
+                if (!copyText) return;
+                const copyId = `${message.id}-inline-${inlineCopyBtn.getAttribute('data-inline-copy')}`;
+                void (async () => {
+                  const success = await copyToClipboard(copyText);
+                  if (!success) return;
+                  // Swap to check icon for 3s, then revert (button is inside injected HTML)
+                  const existingTimer = latexCopyTimersRef.current.get(inlineCopyBtn);
+                  if (existingTimer != null) {
+                    window.clearTimeout(existingTimer);
+                  }
+                  inlineCopyBtn.innerHTML =
+                    '<svg class="ageaf-message__copy-check" viewBox="0 0 20 20" aria-hidden="true" focusable="false">' +
+                    '<polyline points="4,10 9,15 16,5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+                    '</svg>';
+                  const timeoutId = window.setTimeout(() => {
+                    inlineCopyBtn.innerHTML =
+                      '<svg class="ageaf-message__copy-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">' +
+                      '<rect x="6.5" y="3.5" width="10" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+                      '<rect x="3.5" y="6.5" width="10" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+                      '</svg>';
+                    latexCopyTimersRef.current.delete(inlineCopyBtn);
+                  }, 3000);
+                  latexCopyTimersRef.current.set(inlineCopyBtn, timeoutId);
+                  markCopied(copyId);
+                })();
+                return;
+              }
 
               // Handle diagram download button
               const dlButton = target?.closest?.(
@@ -8008,9 +8109,9 @@ const Panel = () => {
         ...entry,
         path: normalizedPath,
         name: entry.name || basename(normalizedPath),
-          ext: normalizedExt,
-        });
-      };
+        ext: normalizedExt,
+      });
+    };
 
     const activeFile = getActiveFilename();
     const activeFileId = getActiveFileId();
