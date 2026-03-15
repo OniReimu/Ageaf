@@ -6,6 +6,8 @@ import {
 } from '../../attachments/documentAttachments.js';
 import { buildReplaceRangePatchesFromFileUpdates } from '../../patch/fileUpdate.js';
 import { runPiText, evictPiSession as evictAgent, type PiRuntimeConfig } from './agent.js';
+import type { ProjectFile } from './toolBackends/projectContext.js';
+import { PROJECT_TOOL_CATALOG } from './toolBackends/projectContext.js';
 import { buildPiSystemPrompt } from './prompt.js';
 import { loadSkillsManifest, buildSkillsGuidance, findSkillByName, loadSkillMarkdown } from './skills.js';
 import { getPiPreferences } from './preferences.js';
@@ -38,6 +40,7 @@ export type PiJobPayload = {
     customSystemPrompt?: string;
     surroundingContextLimit?: number;
   };
+  projectFiles?: unknown;
 };
 
 function getUserMessage(context: unknown): string | undefined {
@@ -106,6 +109,18 @@ function getContextForPrompt(
   return Object.keys(base).length > 0 ? base : null;
 }
 
+function getProjectFiles(payload: PiJobPayload): ProjectFile[] {
+  const raw = payload.projectFiles;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (entry: unknown): entry is ProjectFile =>
+      !!entry &&
+      typeof entry === 'object' &&
+      typeof (entry as any).path === 'string' &&
+      typeof (entry as any).content === 'string'
+  );
+}
+
 function isShortGreeting(message?: string): boolean {
   if (!message) return false;
   const normalized = message.trim().toLowerCase();
@@ -141,7 +156,7 @@ export async function runPiJob(
     payload.context && typeof payload.context === 'object'
       ? { ...(payload.context as Record<string, unknown>), message: messageWithAttachments }
       : { message: messageWithAttachments };
-  const surroundingContextLimit = payload.userSettings?.surroundingContextLimit ?? 0;
+  const surroundingContextLimit = payload.userSettings?.surroundingContextLimit ?? 5000;
   const contextForPrompt = getContextForPrompt(contextWithAttachments, surroundingContextLimit);
   const greetingMode = isShortGreeting(message);
   const displayName = payload.userSettings?.displayName?.trim();
@@ -151,11 +166,32 @@ export async function runPiJob(
     typeof contextForPrompt.selection === 'string' &&
     (contextForPrompt.selection as string).trim().length > 0;
 
+  // Extract project files for context-aware search tools
+  const projectFiles = getProjectFiles(payload);
+  const hasProjectFiles = projectFiles.length > 0;
+
   // Build compact tools guidance (tool schemas are already registered with the agent)
   const catalog = getToolCatalog();
-  const activeToolNames = catalog.map((t) => t.name);
-  const toolsGuidance = catalog.length > 0
-    ? `Tools available: ${catalog.map((t) => t.name).join(', ')}. Use these when relevant — never say you lack web search or URL access.`
+  const fullCatalog = hasProjectFiles
+    ? [...catalog, ...PROJECT_TOOL_CATALOG]
+    : catalog;
+  const activeToolNames = fullCatalog.map((t) => t.name);
+  const projectToolsGuidance = hasProjectFiles
+    ? [
+        '\nProject search tools (IMPORTANT):',
+        '- You have access to project-level search tools: list_project_files, grep_project, read_lines.',
+        '- When the user asks about a formula, symbol, notation, or concept and you don\'t have enough context to answer:',
+        '  1. Use grep_project to search for the symbol/term across all project files.',
+        '  2. Use read_lines to read the relevant section once you know the file and line.',
+        '  3. Use list_project_files if you need to see the project structure.',
+        '- Search for \\newcommand, \\def, or notation tables to find macro/symbol definitions.',
+        '- Search for \\label, \\ref to trace cross-references.',
+        '- Search across \\input-referenced files when definitions might be in other .tex files.',
+        '- DO NOT say "I don\'t have enough context" — use these tools to find it.',
+      ].join('\n')
+    : '';
+  const toolsGuidance = fullCatalog.length > 0
+    ? `Tools available: ${fullCatalog.map((t) => t.name).join(', ')}. Use these when relevant — never say you lack web search or URL access.${projectToolsGuidance}`
     : '';
 
   // Load skills dynamically
@@ -231,6 +267,7 @@ export async function runPiJob(
       userMessage: rewritePromptText,
       emitEvent: wrappedEmit,
       config: runtimeConfig,
+      projectFiles: hasProjectFiles ? projectFiles : undefined,
     });
 
     const doneStatus = (doneEvent.data as any)?.status;
@@ -312,6 +349,7 @@ export async function runPiJob(
       emitEvent: wrappedEmit,
       config: runtimeConfig,
       overleafMessage: hasOverleafFileBlocks ? messageWithAttachments : undefined,
+      projectFiles: hasProjectFiles ? projectFiles : undefined,
     });
 
     const doneStatus = (doneEvent.data as any)?.status;
@@ -372,6 +410,7 @@ export async function runPiJob(
     emitEvent: wrappedEmit,
     config: runtimeConfig,
     overleafMessage: hasOverleafFileBlocks ? messageWithAttachments : undefined,
+    projectFiles: hasProjectFiles ? projectFiles : undefined,
   });
 
   const doneStatus = (doneEvent.data as any)?.status;

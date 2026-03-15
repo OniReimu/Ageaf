@@ -6597,6 +6597,39 @@ const Panel = () => {
           codexRuntimeModel?.defaultReasoningEffort ??
           null
           : null;
+      // Fetch all text-based project files for context-aware search tools
+      const projectFilesForContext = await (async () => {
+        const TEXT_EXTS = new Set(['.tex', '.bib', '.sty', '.cls', '.bst']);
+        const MAX_PROJECT_FILES = 50;
+        const MAX_TOTAL_BYTES = 2_000_000; // 2 MB cap
+        const entries = projectFilesRef.current.filter(
+          (e) => e.kind !== 'folder' && e.id && e.entityType === 'doc' && TEXT_EXTS.has(e.ext.startsWith('.') ? e.ext.toLowerCase() : `.${e.ext.toLowerCase()}`)
+        ).slice(0, MAX_PROJECT_FILES);
+        if (entries.length === 0) return [];
+        const pid = getOverleafProjectIdFromPathname(window.location.pathname);
+        if (!pid) return [];
+        const results: Array<{ path: string; content: string }> = [];
+        let totalBytes = 0;
+        await mapWithConcurrency(entries, MAX_CONCURRENT_DOWNLOADS, async (entry) => {
+          if (totalBytes >= MAX_TOTAL_BYTES) return;
+          for (const prefix of ['/Project/', '/project/']) {
+            try {
+              const url = `${prefix}${encodeURIComponent(pid)}/doc/${encodeURIComponent(entry.id!)}/download`;
+              const resp = await fetch(url, { credentials: 'include' });
+              if (resp.ok) {
+                const content = await resp.text();
+                if (totalBytes + content.length <= MAX_TOTAL_BYTES) {
+                  totalBytes += content.length;
+                  results.push({ path: entry.path, content });
+                }
+                return;
+              }
+            } catch { /* try next prefix */ }
+          }
+        });
+        return results;
+      })();
+
       const sharedContext = {
         message: finalMessageText,
         selection: selection?.selection ?? '',
@@ -6645,6 +6678,7 @@ const Panel = () => {
           ? `${skillsPrompt}\n\n${options.customSystemPrompt || ''}`
           : options.customSystemPrompt,
         debugCliEvents: options.debugCliEvents,
+        surroundingContextLimit: options.surroundingContextLimit,
       };
 
       const payload =
@@ -6668,6 +6702,7 @@ const Panel = () => {
               maxFiles: 1,
             },
             userSettings: sharedUserSettings,
+            ...(projectFilesForContext.length > 0 ? { projectFiles: projectFilesForContext } : {}),
           }
           : provider === 'codex'
             ? {
@@ -6689,6 +6724,7 @@ const Panel = () => {
                 maxFiles: 1,
               },
               userSettings: sharedUserSettings,
+              ...(projectFilesForContext.length > 0 ? { projectFiles: projectFilesForContext } : {}),
             }
             : {
               provider: 'claude' as const,
@@ -6714,6 +6750,7 @@ const Panel = () => {
                 enableCommandBlocklist: options.enableCommandBlocklist,
                 blockedCommandsUnix: options.blockedCommandsUnix,
               },
+              ...(projectFilesForContext.length > 0 ? { projectFiles: projectFilesForContext } : {}),
             };
 
       const { jobId } = await createJob(options, payload, {
@@ -10998,7 +11035,7 @@ const Panel = () => {
                         type="number"
                         id="ageaf-surrounding-context-limit"
                         class="ageaf-settings__input"
-                        value={settings.surroundingContextLimit ?? 0}
+                        value={settings.surroundingContextLimit ?? 5000}
                         min="0"
                         step="100"
                         onChange={(event) =>
@@ -11012,8 +11049,8 @@ const Panel = () => {
                       />
                       <p class="ageaf-settings__hint">
                         Max characters of surrounding context (before/after
-                        selection) to send to agents. 0 disables it (recommended
-                        for CLI agents).
+                        selection) to send with chat messages. Set to 0 to
+                        disable (e.g. for CLI agents that read files directly).
                       </p>
 
                       <h4 class="ageaf-settings__subhead">Display</h4>
