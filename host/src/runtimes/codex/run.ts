@@ -79,6 +79,8 @@ type CodexImageAttachment = {
   size: number;
 };
 
+type ProjectFile = { path: string; content: string };
+
 type CodexJobPayload = {
   action?: string;
   context?: unknown;
@@ -91,6 +93,7 @@ type CodexJobPayload = {
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
   };
+  projectFiles?: unknown;
 };
 
 function getUserMessage(context: unknown): string | undefined {
@@ -201,6 +204,44 @@ function getContextForPrompt(
   }
 
   return Object.keys(base).length > 0 ? base : null;
+}
+
+function getProjectFiles(payload: CodexJobPayload): ProjectFile[] {
+  const raw = payload.projectFiles;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (entry: unknown): entry is ProjectFile =>
+      !!entry &&
+      typeof entry === 'object' &&
+      typeof (entry as any).path === 'string' &&
+      typeof (entry as any).content === 'string'
+  );
+}
+
+function writeProjectFilesToDisk(
+  projectFiles: ProjectFile[],
+  cwd: string
+): string | null {
+  if (projectFiles.length === 0) return null;
+  const projectDir = path.join(cwd, 'overleaf-project');
+  try {
+    // Clean stale files from previous turns before writing fresh snapshot
+    if (fs.existsSync(projectDir)) {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+    for (const file of projectFiles) {
+      // Sanitize path: resolve and ensure it stays within projectDir
+      const filePath = path.resolve(projectDir, file.path);
+      if (!filePath.startsWith(projectDir + path.sep) && filePath !== projectDir) {
+        continue; // skip paths that escape the sandbox
+      }
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, file.content, 'utf-8');
+    }
+    return projectDir;
+  } catch {
+    return null;
+  }
 }
 
 function ensureAgeafWorkspaceCwd(): string {
@@ -635,7 +676,8 @@ function getCodexCompletionGraceMs() {
 
 function buildPrompt(
   payload: CodexJobPayload,
-  contextForPrompt: Record<string, unknown> | null
+  contextForPrompt: Record<string, unknown> | null,
+  projectDir?: string | null
 ) {
   const action = payload.action ?? 'chat';
   const contextMessage =
@@ -833,6 +875,18 @@ function buildPrompt(
     return sections.join('\n');
   })();
 
+  const projectContextGuidance = projectDir
+    ? [
+        'Project search (IMPORTANT):',
+        `- The Overleaf project files are available on disk at: ${projectDir}`,
+        '- When the user asks about a formula, symbol, notation, or concept and you don\'t have enough context:',
+        '  1. Search for the symbol/term across project files.',
+        '  2. Read the relevant section once located.',
+        '- Search for \\newcommand, \\def, or notation tables to find macro/symbol definitions.',
+        '- DO NOT say "I don\'t have enough context" — search the project files to find it.',
+      ].join('\n')
+    : '';
+
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     'Respond in Markdown, keep it concise.',
@@ -847,6 +901,7 @@ function buildPrompt(
     action === 'notation_draft_fixes' ? notationDraftInstructions : '',
     hasOverleafFileBlocks ? fileUpdateInstructions : '',
     skillsGuidance,
+    projectContextGuidance,
   ].filter(Boolean);
 
   if (custom) {
@@ -974,7 +1029,7 @@ export async function runCodexJob(
     payload.context && typeof payload.context === 'object'
       ? { ...(payload.context as Record<string, unknown>), message: messageWithAttachments }
       : { message: messageWithAttachments };
-  const surroundingContextLimit = payload.userSettings?.surroundingContextLimit ?? 0;
+  const surroundingContextLimit = payload.userSettings?.surroundingContextLimit ?? 5000;
   const contextForPrompt = getContextForPrompt(contextWithAttachments, images, surroundingContextLimit);
 
   // Debug: Log what we're sending to Codex (console only).
@@ -1091,7 +1146,12 @@ export async function runCodexJob(
     emitTrace('Codex thread resumed', { threadId });
   }
 
-  const prompt = buildPrompt(payload, contextForPrompt);
+  // Write project files to disk for CLI tool access
+  const pf = getProjectFiles(payload);
+  const sessionCwd = getCodexSessionCwd(threadId);
+  const projectDir = writeProjectFilesToDisk(pf, sessionCwd);
+
+  const prompt = buildPrompt(payload, contextForPrompt, projectDir);
   const turnTimeoutMs = getCodexTurnTimeoutMs();
   emitTrace('Codex: prepared prompt', {
     action: payload.action ?? 'chat',

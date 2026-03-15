@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import type { JobEvent } from '../../types.js';
 import { buildAttachmentBlock, getAttachmentLimits } from '../../attachments/textAttachments.js';
 import {
@@ -12,6 +15,7 @@ import type { CommandBlocklistConfig } from './safety.js';
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { buildReplaceRangePatchesFromFileUpdates } from '../../patch/fileUpdate.js';
 import { sendCompactCommand } from '../../compaction/sendCompact.js';
+import { getClaudeSessionCwd } from './cwd.js';
 
 type EmitEvent = (event: JobEvent) => void;
 
@@ -33,6 +37,8 @@ type ClaudeUserMessage = {
   content: ClaudeContentBlock[];
 };
 
+type ProjectFile = { path: string; content: string };
+
 type ClaudeJobPayload = {
   action?: string;
   context?: unknown;
@@ -45,6 +51,7 @@ type ClaudeJobPayload = {
     debugCliEvents?: boolean;
     surroundingContextLimit?: number;
   };
+  projectFiles?: unknown;
 };
 
 function getUserMessage(context: unknown): string | undefined {
@@ -208,6 +215,49 @@ function isShortGreeting(message?: string): boolean {
   );
 }
 
+function getProjectFiles(payload: ClaudeJobPayload): ProjectFile[] {
+  const raw = payload.projectFiles;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (entry: unknown): entry is ProjectFile =>
+      !!entry &&
+      typeof entry === 'object' &&
+      typeof (entry as any).path === 'string' &&
+      typeof (entry as any).content === 'string'
+  );
+}
+
+/**
+ * Write project files to the session CWD under an `overleaf-project/` subdirectory.
+ * Returns the directory path if files were written, or null.
+ */
+function writeProjectFilesToDisk(
+  projectFiles: ProjectFile[],
+  runtime?: ClaudeRuntimeConfig
+): string | null {
+  if (projectFiles.length === 0) return null;
+  const cwd = getClaudeSessionCwd(runtime);
+  const projectDir = path.join(cwd, 'overleaf-project');
+  try {
+    // Clean stale files from previous turns before writing fresh snapshot
+    if (fs.existsSync(projectDir)) {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+    for (const file of projectFiles) {
+      // Sanitize path: resolve and ensure it stays within projectDir
+      const filePath = path.resolve(projectDir, file.path);
+      if (!filePath.startsWith(projectDir + path.sep) && filePath !== projectDir) {
+        continue; // skip paths that escape the sandbox
+      }
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, file.content, 'utf-8');
+    }
+    return projectDir;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeDoneStatus(value: unknown): string {
   const raw = typeof value === 'string' ? value.trim().toLowerCase() : 'ok';
   if (raw === 'success' || raw === 'complete') return 'ok';
@@ -292,7 +342,7 @@ export async function runClaudeJob(
     payload.context && typeof payload.context === 'object'
       ? { ...(payload.context as Record<string, unknown>), message: messageWithAttachments }
       : { message: messageWithAttachments };
-  const surroundingContextLimit = payload.userSettings?.surroundingContextLimit ?? 0;
+  const surroundingContextLimit = payload.userSettings?.surroundingContextLimit ?? 5000;
   const contextForPrompt = getContextForPrompt(contextWithAttachments, images, surroundingContextLimit);
   const greetingMode = isShortGreeting(message);
   const displayName = payload.userSettings?.displayName?.trim();
@@ -400,6 +450,22 @@ If asked about the model/runtime, use this note and do not guess.`;
     '- Do not announce skill-loading or mention internal skill frameworks; just apply the skill.',
   ].join('\n');
 
+  // Write project files to disk for CLI tool access
+  const projectFiles = getProjectFiles(payload);
+  const projectDir = writeProjectFilesToDisk(projectFiles, payload.runtime?.claude);
+  const projectContextGuidance = projectDir
+    ? [
+        'Project search (IMPORTANT):',
+        `- The Overleaf project files are available on disk at: ${projectDir}`,
+        '- When the user asks about a formula, symbol, notation, or concept and you don\'t have enough context:',
+        '  1. Use Grep to search for the symbol/term across project files.',
+        '  2. Use Read to read the relevant section once located.',
+        '- Search for \\newcommand, \\def, or notation tables to find macro/symbol definitions.',
+        '- Search for \\label, \\ref to trace cross-references.',
+        '- DO NOT say "I don\'t have enough context" — search the project files to find it.',
+      ].join('\n')
+    : '';
+
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     responseGuidance,
@@ -408,6 +474,7 @@ If asked about the model/runtime, use this note and do not guess.`;
     hasOverleafFileBlocks ? fileUpdateGuidance : '',
     greetingMode ? greetingGuidance : 'If the user message is not a greeting, respond normally but stay concise.',
     skillsGuidance,
+    projectContextGuidance,
   ];
 
   if (customSystemPrompt) {

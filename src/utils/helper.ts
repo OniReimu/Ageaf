@@ -78,6 +78,8 @@ function applyOptionDefaults(input: Options): { options: Options; hadLegacyKeys:
 
   if (!options.skillTrustMode) options.skillTrustMode = 'verified';
 
+  if (options.surroundingContextLimit === undefined) options.surroundingContextLimit = 5000;
+
   return { options, hadLegacyKeys };
 }
 

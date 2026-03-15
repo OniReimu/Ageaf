@@ -12,6 +12,10 @@ import type { AgentMessage } from '@mariozechner/pi-agent-core';
 import type { JobEvent } from '../../types.js';
 import { PiStreamBuffer, extractOverleafFilesFromMessage } from './streamBuffer.js';
 import { getAllAgentTools } from './toolRuntime.js';
+import {
+  createProjectContextTools,
+  type ProjectFile,
+} from './toolBackends/projectContext.js';
 import { addPiUsage } from './context.js';
 
 type EmitEvent = (event: JobEvent) => void;
@@ -29,6 +33,7 @@ export type PiTextRunInput = {
   emitEvent: EmitEvent;
   config?: PiRuntimeConfig;
   overleafMessage?: string;
+  projectFiles?: ProjectFile[];
 };
 
 export type PiRunResult = {
@@ -256,6 +261,14 @@ export async function runPiText(input: PiTextRunInput): Promise<PiRunResult> {
   agent.setSystemPrompt(input.systemPrompt);
   if (thinkingLevel !== 'off') {
     agent.setThinkingLevel(thinkingLevel);
+  }
+
+  // Always reset tools: include project context tools only when project files are present
+  if (input.projectFiles && input.projectFiles.length > 0) {
+    const projectTools = createProjectContextTools(input.projectFiles);
+    agent.setTools([...getAllAgentTools(), ...projectTools]);
+  } else {
+    agent.setTools(getAllAgentTools());
   }
 
   // Set up stream buffer for visible text / patch processing
