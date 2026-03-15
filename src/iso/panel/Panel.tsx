@@ -635,6 +635,7 @@ type ReviewActionHistoryEntry = {
   nextStatus: PatchReviewStatus;
   patchKind: StoredPatchReview['kind'];
   appliedText?: string;
+  editorHistoryMarker?: number;
 };
 
 type ToolRequest = {
@@ -8462,7 +8463,13 @@ const Panel = () => {
   };
 
   const recordReviewAction = (entry: ReviewActionHistoryEntry) => {
-    reviewUndoStackRef.current.push(entry);
+    reviewUndoStackRef.current.push({
+      ...entry,
+      editorHistoryMarker:
+        typeof entry.editorHistoryMarker === 'number'
+          ? entry.editorHistoryMarker
+          : window.ageafBridge?.getEditorHistoryMarker?.() ?? 0,
+    });
     reviewRedoStackRef.current = [];
   };
 
@@ -9191,10 +9198,24 @@ const Panel = () => {
       const isRedo = (key === 'z' && event.shiftKey) || key === 'y';
       if (!isUndo && !isRedo) return;
 
-      const hasReviewHistory = isUndo
-        ? reviewUndoStackRef.current.length > 0
-        : reviewRedoStackRef.current.length > 0;
-      if (!hasReviewHistory) return;
+      const topReviewEntry = isUndo
+        ? reviewUndoStackRef.current[reviewUndoStackRef.current.length - 1]
+        : reviewRedoStackRef.current[reviewRedoStackRef.current.length - 1];
+      if (!topReviewEntry) return;
+
+      if (
+        editorContext &&
+        typeof topReviewEntry.editorHistoryMarker === 'number'
+      ) {
+        const currentEditorHistoryMarker =
+          window.ageafBridge?.getEditorHistoryMarker?.() ??
+          topReviewEntry.editorHistoryMarker;
+        if (
+          currentEditorHistoryMarker !== topReviewEntry.editorHistoryMarker
+        ) {
+          return;
+        }
+      }
 
       event.preventDefault();
       event.stopPropagation();

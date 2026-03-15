@@ -5,7 +5,8 @@ export function applyReplacementAtRange(
   view: ReturnType<typeof getCmView>,
   from: number,
   to: number,
-  nextContent: string
+  nextContent: string,
+  options: { annotations?: any } = {}
 ) {
   const originalContent = view.state.sliceDoc(from, to);
   const changes = [];
@@ -43,7 +44,13 @@ export function applyReplacementAtRange(
   }
 
   const selection = { anchor: from + nextContent.length };
-  view.dispatch({ changes, selection });
+  view.dispatch({
+    changes,
+    selection,
+    ...(typeof options.annotations === 'undefined'
+      ? {}
+      : { annotations: options.annotations }),
+  });
 }
 
 export function onReplaceContent(

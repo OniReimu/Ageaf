@@ -16,6 +16,7 @@ const EDITOR_FILE_NAVIGATE_REQUEST_EVENT = 'ageaf:editor:file-navigate:request';
 const EDITOR_FILE_NAVIGATE_RESPONSE_EVENT = 'ageaf:editor:file-navigate:response';
 const EDITOR_HISTORY_REQUEST_EVENT = 'ageaf:editor:history:request';
 const EDITOR_HISTORY_RESPONSE_EVENT = 'ageaf:editor:history:response';
+const EDITOR_HISTORY_STATE_EVENT = 'ageaf:editor:history:state';
 const PANEL_INSERT_SELECTION_EVENT = 'ageaf:panel:insert-selection';
 const APPLY_REQUEST_TIMEOUT_MS = 12000;
 const selectionRequests = new Map<string, (payload: any) => void>();
@@ -23,6 +24,7 @@ const fileRequests = new Map<string, (payload: any) => void>();
 const applyRequests = new Map<string, (payload: { ok: boolean; error?: string }) => void>();
 const fileNavigateRequests = new Map<string, (payload: { ok: boolean }) => void>();
 const historyRequests = new Map<string, (payload: { ok: boolean; error?: string }) => void>();
+let currentEditorHistoryMarker = 0;
 
 type ApplyReplaceRangeArgs = {
   from: number;
@@ -65,6 +67,7 @@ declare global {
       navigateToFile: (name: string) => Promise<{ ok: boolean }>;
       undoEditor: () => Promise<{ ok: boolean; error?: string }>;
       redoEditor: () => Promise<{ ok: boolean; error?: string }>;
+      getEditorHistoryMarker: () => number;
     };
   }
 }
@@ -112,6 +115,14 @@ function onHistoryResponse(event: Event) {
   if (!handler) return;
   historyRequests.delete(detail.requestId);
   handler({ ok: detail.ok, error: detail.error });
+}
+
+function onHistoryStateUpdate(event: Event) {
+  const detail = (event as CustomEvent<{ marker?: unknown }>).detail;
+  if (typeof detail?.marker !== 'number' || !Number.isFinite(detail.marker)) {
+    return;
+  }
+  currentEditorHistoryMarker = detail.marker;
 }
 
 function requestSelection() {
@@ -373,6 +384,7 @@ window.addEventListener(EDITOR_FILE_RESPONSE_EVENT, onFileContentResponse as Eve
 window.addEventListener(EDITOR_APPLY_RESPONSE_EVENT, onApplyResponse as EventListener);
 window.addEventListener(EDITOR_FILE_NAVIGATE_RESPONSE_EVENT, onFileNavigateResponse as EventListener);
 window.addEventListener(EDITOR_HISTORY_RESPONSE_EVENT, onHistoryResponse as EventListener);
+window.addEventListener(EDITOR_HISTORY_STATE_EVENT, onHistoryStateUpdate as EventListener);
 window.ageafBridge = {
   requestSelection,
   requestFileContent,
@@ -383,6 +395,7 @@ window.ageafBridge = {
   navigateToFile,
   undoEditor,
   redoEditor,
+  getEditorHistoryMarker: () => currentEditorHistoryMarker,
 };
 
 function isPanelTarget(target: EventTarget | null) {

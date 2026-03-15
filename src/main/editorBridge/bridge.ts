@@ -14,6 +14,7 @@ const FILE_NAVIGATE_REQUEST_EVENT = 'ageaf:editor:file-navigate:request';
 const FILE_NAVIGATE_RESPONSE_EVENT = 'ageaf:editor:file-navigate:response';
 const HISTORY_REQUEST_EVENT = 'ageaf:editor:history:request';
 const HISTORY_RESPONSE_EVENT = 'ageaf:editor:history:response';
+const HISTORY_STATE_EVENT = 'ageaf:editor:history:state';
 
 interface SelectionRequest {
   requestId: string;
@@ -101,6 +102,102 @@ interface HistoryResponse {
   requestId: string;
   ok: boolean;
   error?: string;
+}
+
+let reviewChangeInProgress = false;
+const patchedViews = new WeakSet<any>();
+let addToHistoryAnnotationType: any = null;
+let addToHistoryResolved = false;
+let nextHistoryMarker = 0;
+let historyMarkers = [0];
+let historyMarkerIndex = 0;
+
+function getCurrentHistoryMarker() {
+  return historyMarkers[historyMarkerIndex] ?? 0;
+}
+
+function emitHistoryState() {
+  window.dispatchEvent(
+    new CustomEvent(HISTORY_STATE_EVENT, {
+      detail: { marker: getCurrentHistoryMarker() },
+    })
+  );
+}
+
+function resolveAddToHistory(view: any) {
+  if (addToHistoryResolved) return;
+  addToHistoryResolved = true;
+  try {
+    const tr = view.state.update({});
+    const Tx = tr.constructor;
+    if (Tx?.addToHistory?.of) {
+      addToHistoryAnnotationType = Tx.addToHistory;
+    }
+  } catch {
+    // CM6 internals not accessible; accept changes remain in native undo history.
+  }
+}
+
+function getAddToHistoryFalse() {
+  return addToHistoryAnnotationType?.of?.(false);
+}
+
+function installDispatchTracker(view: any) {
+  if (patchedViews.has(view)) return;
+
+  resolveAddToHistory(view);
+
+  const original = view.dispatch.bind(view);
+  view.dispatch = function (...specs: any[]) {
+    const docBefore = view.state.doc;
+    original(...specs);
+    if (view.state.doc === docBefore) return;
+    if (reviewChangeInProgress) return;
+
+    let isUndo = false;
+    let isRedo = false;
+    for (const spec of specs) {
+      if (!spec) continue;
+      const anns = spec.annotations;
+      if (!anns) continue;
+      const list = Array.isArray(anns) ? anns : [anns];
+      for (const ann of list) {
+        const v = ann?.value;
+        if (typeof v !== 'string') continue;
+        if (v.startsWith('undo')) isUndo = true;
+        if (v.startsWith('redo')) isRedo = true;
+      }
+    }
+
+    let changed = false;
+    if (isUndo) {
+      if (historyMarkerIndex > 0) {
+        historyMarkerIndex -= 1;
+        changed = true;
+      }
+    } else if (isRedo) {
+      if (historyMarkerIndex + 1 < historyMarkers.length) {
+        historyMarkerIndex += 1;
+        changed = true;
+      }
+    } else {
+      historyMarkers = historyMarkers.slice(0, historyMarkerIndex + 1);
+      historyMarkers.push(++nextHistoryMarker);
+      historyMarkerIndex = historyMarkers.length - 1;
+      changed = true;
+    }
+
+    if (changed) emitHistoryState();
+  };
+
+  patchedViews.add(view);
+  emitHistoryState();
+}
+
+function getTrackedCmView() {
+  const view = getCmView();
+  installDispatchTracker(view);
+  return view;
 }
 
 function extractFilenameFromLabel(raw: string): string | null {
@@ -236,7 +333,7 @@ async function onFileContentRequest(event: Event) {
   if (!detail?.requestId || !detail?.name) return;
 
   const requested = String(detail.name).trim();
-  const view = getCmView();
+  const view = getTrackedCmView();
   const beforeText = view.state.sliceDoc(0, view.state.doc.length);
   const beforeHash = `${beforeText.length}:${beforeText.slice(0, 64)}:${beforeText.slice(-64)}`;
   const originalName = getActiveTabName();
@@ -287,7 +384,7 @@ function onSelectionRequest(event: Event) {
   const detail = (event as CustomEvent<SelectionRequest>).detail;
   if (!detail?.requestId) return;
 
-  const view = getCmView();
+  const view = getTrackedCmView();
   const state = view.state;
   const { from, to, head } = state.selection.main;
   const activeName = getActiveTabName();
@@ -316,7 +413,7 @@ async function onApplyRequest(event: Event) {
   let error: string | undefined;
 
   try {
-    let view = getCmView();
+    let view = getTrackedCmView();
 
     const withProtectedEditBypass = (fn: () => void) => {
       const key = '__ageafAllowProtectedEdits';
@@ -390,13 +487,31 @@ async function onApplyRequest(event: Event) {
               error = 'Selection changed';
             } else {
               withProtectedEditBypass(() => {
-                applyReplacementAtRange(view, closest.from, closest.to, detail.text);
+                reviewChangeInProgress = true;
+                try {
+                  applyReplacementAtRange(
+                    view,
+                    closest.from,
+                    closest.to,
+                    detail.text,
+                    { annotations: getAddToHistoryFalse() }
+                  );
+                } finally {
+                  reviewChangeInProgress = false;
+                }
               });
             }
           }
         } else {
           withProtectedEditBypass(() => {
-            applyReplacementAtRange(view, detail.from, detail.to, detail.text);
+            reviewChangeInProgress = true;
+            try {
+              applyReplacementAtRange(view, detail.from, detail.to, detail.text, {
+                annotations: getAddToHistoryFalse(),
+              });
+            } finally {
+              reviewChangeInProgress = false;
+            }
           });
         }
       }
@@ -520,7 +635,18 @@ async function onApplyRequest(event: Event) {
                       error = 'Selection changed';
                     } else {
                       withProtectedEditBypass(() => {
-                        applyReplacementAtRange(view, refreshed.from, refreshed.to, detail.text);
+                        reviewChangeInProgress = true;
+                        try {
+                          applyReplacementAtRange(
+                            view,
+                            refreshed.from,
+                            refreshed.to,
+                            detail.text,
+                            { annotations: getAddToHistoryFalse() }
+                          );
+                        } finally {
+                          reviewChangeInProgress = false;
+                        }
                       });
                     }
                   } else if (refreshed.error === 'Expected text not found') {
@@ -533,12 +659,18 @@ async function onApplyRequest(event: Event) {
                 }
               } else {
                 withProtectedEditBypass(() => {
-                  applyReplacementAtRange(
-                    view,
-                    resolved.from as number,
-                    resolved.to as number,
-                    detail.text
-                  );
+                  reviewChangeInProgress = true;
+                  try {
+                    applyReplacementAtRange(
+                      view,
+                      resolved.from as number,
+                      resolved.to as number,
+                      detail.text,
+                      { annotations: getAddToHistoryFalse() }
+                    );
+                  } finally {
+                    reviewChangeInProgress = false;
+                  }
                 });
               }
             } else if (ok && !resolved.ok) {
@@ -575,7 +707,7 @@ function onReplaceSelection(event: Event) {
   const detail = (event as CustomEvent<ApplyPatchRequest>).detail;
   if (!detail?.text) return;
 
-  const view = getCmView();
+  const view = getTrackedCmView();
   const { from, to } = view.state.selection.main;
 
   onReplaceContent(
@@ -589,14 +721,19 @@ function onInsertAtCursor(event: Event) {
   const detail = (event as CustomEvent<ApplyPatchRequest>).detail;
   if (!detail?.text) return;
 
-  const view = getCmView();
+  const view = getTrackedCmView();
   const { head } = view.state.selection.main;
   const selection = { anchor: head + detail.text.length };
 
-  view.dispatch({
-    changes: { from: head, to: head, insert: detail.text },
-    selection,
-  });
+  reviewChangeInProgress = true;
+  try {
+    view.dispatch({
+      changes: { from: head, to: head, insert: detail.text },
+      selection,
+    });
+  } finally {
+    reviewChangeInProgress = false;
+  }
 }
 
 async function onFileNavigateRequest(event: Event) {
@@ -631,7 +768,7 @@ function onHistoryRequest(event: Event) {
       ok = false;
       error = 'Unsupported history direction';
     } else {
-      const view = getCmView();
+      const view = getTrackedCmView();
       const editorDom = view.contentDOM as HTMLElement;
       const activeEl = document.activeElement as HTMLElement | null;
       editorDom.focus();
@@ -680,6 +817,12 @@ function onHistoryRequest(event: Event) {
 }
 
 export function registerEditorBridge() {
+  try {
+    installDispatchTracker(getTrackedCmView());
+    emitHistoryState();
+  } catch {
+    // Editor boot can race bridge registration; lazy init on first request.
+  }
   window.addEventListener(REQUEST_EVENT, onSelectionRequest as EventListener);
   window.addEventListener(FILE_REQUEST_EVENT, onFileContentRequest as EventListener);
   window.addEventListener(APPLY_REQUEST_EVENT, onApplyRequest as EventListener);

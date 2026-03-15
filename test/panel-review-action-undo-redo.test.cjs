@@ -68,6 +68,26 @@ test('Panel shortcut handler supports global non-typing contexts', () => {
   assert.match(contents, /if \(isTypingContext && !editorContext\) return;/);
 });
 
+test('Panel only intercepts review undo shortcuts when review history is next chronologically', () => {
+  const panelPath = path.join(
+    __dirname,
+    '..',
+    'src',
+    'iso',
+    'panel',
+    'Panel.tsx'
+  );
+  const contents = fs.readFileSync(panelPath, 'utf8');
+
+  assert.match(contents, /editorHistoryMarker/);
+  assert.match(contents, /currentEditorHistoryMarker/);
+  assert.match(contents, /const topReviewEntry = isUndo[\s\S]*reviewRedoStackRef\.current\[reviewRedoStackRef\.current\.length - 1\]/m);
+  assert.match(contents, /editorContext &&/);
+  assert.match(contents, /typeof topReviewEntry\.editorHistoryMarker === 'number'/);
+  assert.match(contents, /currentEditorHistoryMarker !== topReviewEntry\.editorHistoryMarker/);
+  assert.match(contents, /return;/);
+});
+
 test('Content script exposes undoEditor/redoEditor bridge methods', () => {
   const scriptPath = path.join(
     __dirname,
@@ -80,8 +100,10 @@ test('Content script exposes undoEditor/redoEditor bridge methods', () => {
 
   assert.match(contents, /EDITOR_HISTORY_REQUEST_EVENT/);
   assert.match(contents, /EDITOR_HISTORY_RESPONSE_EVENT/);
+  assert.match(contents, /EDITOR_HISTORY_STATE_EVENT/);
   assert.match(contents, /undoEditor:\s*\(\)\s*=>\s*Promise<\{ ok: boolean; error\?: string \}>/);
   assert.match(contents, /redoEditor:\s*\(\)\s*=>\s*Promise<\{ ok: boolean; error\?: string \}>/);
+  assert.match(contents, /getEditorHistoryMarker:\s*\(\)\s*=>\s*currentEditorHistoryMarker/);
 });
 
 test('Editor bridge handles undo/redo history requests', () => {
@@ -97,10 +119,17 @@ test('Editor bridge handles undo/redo history requests', () => {
 
   assert.match(contents, /const HISTORY_REQUEST_EVENT = 'ageaf:editor:history:request';/);
   assert.match(contents, /const HISTORY_RESPONSE_EVENT = 'ageaf:editor:history:response';/);
+  assert.match(contents, /const HISTORY_STATE_EVENT = 'ageaf:editor:history:state';/);
   assert.match(contents, /interface HistoryRequest/);
   assert.match(contents, /function onHistoryRequest\(event: Event\)/);
+  assert.match(contents, /v\.startsWith\('undo'\)/);
+  assert.match(contents, /v\.startsWith\('redo'\)/);
   assert.match(
     contents,
     /window\.dispatchEvent\(\s*new CustomEvent\(HISTORY_RESPONSE_EVENT/
+  );
+  assert.match(
+    contents,
+    /window\.dispatchEvent\(\s*new CustomEvent\(HISTORY_STATE_EVENT/
   );
 });
