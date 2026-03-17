@@ -205,14 +205,14 @@ function stripInterruptedByUserSuffix(text: string) {
   return normalized.replace(INTERRUPTED_BY_USER_REGEX, '').trimEnd();
 }
 
-function getPatchIdentityKey(message: StoredMessage) {
+function getPatchIdentityKey(message: { patchReview?: StoredPatchReview }) {
   const review = message.patchReview;
   if (!review) return null;
   if (review.kind === 'replaceRangeInFile') {
-    return `replaceRangeInFile:${review.filePath}:${review.expectedOldText}:${review.text}`;
+    return getPatchFeedbackAnchorKey(review);
   }
   if (review.kind === 'replaceSelection') {
-    return `replaceSelection:${review.from}:${review.to}:${review.selection}:${review.text}`;
+    return getPatchFeedbackAnchorKey(review);
   }
   return `insertAtCursor:${review.text}`;
 }
@@ -220,7 +220,7 @@ function getPatchIdentityKey(message: StoredMessage) {
 function getReplaceRangeIdentityKey(
   review: StoredPatchReview & { kind: 'replaceRangeInFile' }
 ) {
-  return `replaceRangeInFile:${review.filePath}:${review.expectedOldText}:${review.text}`;
+  return getPatchFeedbackAnchorKey(review);
 }
 
 function getPatchFeedbackAnchorKey(
@@ -232,6 +232,28 @@ function getPatchFeedbackAnchorKey(
     return `replaceSelection:${review.fileName ?? ''}:${review.from}:${review.to}:${review.selection}`;
   }
   return `replaceRangeInFile:${review.filePath}:${review.expectedOldText}:${typeof review.from === 'number' ? review.from : ''}:${typeof review.to === 'number' ? review.to : ''}`;
+}
+
+function upsertPatchReviewMessage<T extends { patchReview?: StoredPatchReview }>(
+  messages: T[],
+  patchMessage: T
+) {
+  const patchKey = getPatchIdentityKey(patchMessage);
+  if (!patchKey) return [...messages, patchMessage];
+
+  const existingIndex = messages.findIndex((message) => {
+    if (getPatchIdentityKey(message) !== patchKey) return false;
+    const status = (message.patchReview as any)?.status ?? 'pending';
+    return status === 'pending';
+  });
+
+  if (existingIndex === -1) {
+    return [...messages, patchMessage];
+  }
+
+  const next = [...messages];
+  next[existingIndex] = patchMessage;
+  return next;
 }
 
 function computeLineFromOffset(content: string, from: number) {
@@ -5720,6 +5742,12 @@ const Panel = () => {
           if (sessionState.pendingPatchReviewMessages.length > 0) {
             const existingPatchSet = new Set(
               updatedMessages
+                .filter((message) => {
+                  const patchReview = message.patchReview;
+                  if (!patchReview) return false;
+                  const status = (patchReview as any).status ?? 'pending';
+                  return status === 'pending';
+                })
                 .map((message) => getPatchIdentityKey(message))
                 .filter((key): key is string => typeof key === 'string')
             );
@@ -7481,7 +7509,8 @@ const Panel = () => {
                 sessionState.isSending ||
                 sessionState.pendingDone != null;
               if (jobStillActive) {
-                sessionState.pendingPatchReviewMessages.push(
+                sessionState.pendingPatchReviewMessages = upsertPatchReviewMessage(
+                  sessionState.pendingPatchReviewMessages,
                   patchMessage
                 );
 
@@ -7492,10 +7521,10 @@ const Panel = () => {
                   : null;
                 const baseState = latestState ?? state;
                 const baseConversation = latestConversation ?? conversation;
-                const updatedStored = [
-                  ...baseConversation.messages,
-                  patchMessage,
-                ];
+                const updatedStored = upsertPatchReviewMessage(
+                  baseConversation.messages,
+                  patchMessage
+                );
                 chatStateRef.current = setConversationMessages(
                   baseState,
                   baseConversation.provider,
@@ -7506,10 +7535,9 @@ const Panel = () => {
 
                 // Render card immediately while streaming.
                 if (sessionConversationId === chatConversationIdRef.current) {
-                  setMessages((prev) => [
-                    ...prev,
-                    createMessage(patchMessage),
-                  ]);
+                  setMessages((prev) =>
+                    upsertPatchReviewMessage(prev, createMessage(patchMessage))
+                  );
                 }
 
                 // If done already arrived and tokens drained, finalize now.
@@ -7519,10 +7547,10 @@ const Panel = () => {
             }
 
             // Fallback: job already finished or non-chat action — append directly.
-            const updatedMessages = [
-              ...conversation.messages,
-              patchMessage,
-            ];
+            const updatedMessages = upsertPatchReviewMessage(
+              conversation.messages,
+              patchMessage
+            );
             chatStateRef.current = setConversationMessages(
               state,
               conversation.provider,
