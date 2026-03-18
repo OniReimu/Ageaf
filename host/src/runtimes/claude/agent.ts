@@ -18,7 +18,7 @@ import {
   matchBlockedCommand,
   parseBlockedCommandPatterns,
 } from './safety.js';
-import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
+import { extractAllAgeafPatchFences } from '../../patch/ageafPatchFence.js';
 import { computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
 
 type EmitEvent = (event: JobEvent) => void;
@@ -664,8 +664,8 @@ async function runQuery(
             break;
           }
         } else {
-          const patchFence = extractAgeafPatchFence(resultText);
-          if (patchFence) {
+          const patchFences = extractAllAgeafPatchFences(resultText);
+          for (const patchFence of patchFences) {
             const candidate = extractJsonObject(patchFence);
             const parsed = PatchSchema.safeParse(candidate);
             if (parsed.success) {

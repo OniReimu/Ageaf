@@ -11,7 +11,7 @@ import {
   buildDocumentAttachmentBlock,
   type DocumentAttachmentEntry,
 } from '../../attachments/documentAttachments.js';
-import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
+import { extractAllAgeafPatchFences } from '../../patch/ageafPatchFence.js';
 import { buildReplaceRangePatchesFromFileUpdates, computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
 import { validatePatch } from '../../validate.js';
 import { getCodexAppServer } from './appServer.js';
@@ -1430,8 +1430,8 @@ export async function runCodexJob(
 
   const emitPatchesFromCompletedText = () => {
     if (!patchEmitted) {
-      const fence = extractAgeafPatchFence(fullText);
-      if (fence) {
+      const fences = extractAllAgeafPatchFences(fullText);
+      for (const fence of fences) {
         try {
           const patch = validatePatch(JSON.parse(fence));
           emitEvent({ event: 'patch', data: patch });
