@@ -258,6 +258,157 @@ rl.on("line", (line) => {
         },
       });
 
+      // Emit a web_search_call (Responses API type) with query in action field
+      write({
+        method: "item/started",
+        params: {
+          threadId,
+          item: {
+            id: "tool-ws-1",
+            type: "web_search_call",
+            action: { query: "OpenAI Codex CLI documentation" },
+          },
+        },
+      });
+      // Complete the web search
+      write({
+        method: "item/completed",
+        params: {
+          threadId,
+          item: {
+            id: "tool-ws-1",
+            type: "web_search_call",
+            status: "completed",
+          },
+        },
+      });
+
+      // Emit a web_search_call without query at start (query arrives in completed)
+      write({
+        method: "item/started",
+        params: {
+          threadId,
+          item: {
+            id: "tool-ws-2",
+            type: "web_search_call",
+          },
+        },
+      });
+      write({
+        method: "item/completed",
+        params: {
+          threadId,
+          item: {
+            id: "tool-ws-2",
+            type: "web_search_call",
+            action: { query: "late arriving query" },
+            status: "completed",
+          },
+        },
+      });
+
+      // Emit file_search_call
+      write({
+        method: "item/started",
+        params: {
+          threadId,
+          item: {
+            id: "tool-fs-1",
+            type: "file_search_call",
+            query: "deployment config",
+          },
+        },
+      });
+      write({
+        method: "item/completed",
+        params: { threadId, item: { id: "tool-fs-1", type: "file_search_call" } },
+      });
+
+      // Emit code_interpreter_call
+      write({
+        method: "item/started",
+        params: {
+          threadId,
+          item: {
+            id: "tool-ci-1",
+            type: "code_interpreter_call",
+            code: "print('hello')",
+          },
+        },
+      });
+      write({
+        method: "item/completed",
+        params: { threadId, item: { id: "tool-ci-1", type: "code_interpreter_call" } },
+      });
+
+      // Emit shell_call (Responses API shell)
+      write({
+        method: "item/started",
+        params: {
+          threadId,
+          item: {
+            id: "tool-sh-1",
+            type: "shell_call",
+            command: "ls -la",
+          },
+        },
+      });
+      write({
+        method: "item/completed",
+        params: { threadId, item: { id: "tool-sh-1", type: "shell_call" } },
+      });
+
+      // Emit apply_patch_call
+      write({
+        method: "item/started",
+        params: {
+          threadId,
+          item: {
+            id: "tool-ap-1",
+            type: "apply_patch_call",
+            path: "/src/index.ts",
+          },
+        },
+      });
+      write({
+        method: "item/completed",
+        params: { threadId, item: { id: "tool-ap-1", type: "apply_patch_call" } },
+      });
+
+      // Emit image_generation_call
+      write({
+        method: "item/started",
+        params: {
+          threadId,
+          item: {
+            id: "tool-ig-1",
+            type: "image_generation_call",
+            prompt: "a cat on a rocket",
+          },
+        },
+      });
+      write({
+        method: "item/completed",
+        params: { threadId, item: { id: "tool-ig-1", type: "image_generation_call" } },
+      });
+
+      // Emit computer_call
+      write({
+        method: "item/started",
+        params: {
+          threadId,
+          item: {
+            id: "tool-cc-1",
+            type: "computer_call",
+            action: { type: "screenshot" },
+          },
+        },
+      });
+      write({
+        method: "item/completed",
+        params: { threadId, item: { id: "tool-cc-1", type: "computer_call" } },
+      });
+
       // Emit a Grep tool that won't get an explicit completion (tests turn/completed cleanup)
       write({
         method: "item/started",

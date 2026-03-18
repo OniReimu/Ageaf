@@ -62,10 +62,22 @@ export function extractToolDisplayInfo(
       return clean({ input: str('pattern'), description: str('path') });
 
     case 'WebSearch':
-      return clean({ input: str('query') });
+      return clean({ input: str('query') ?? str('url') });
 
     case 'WebFetch':
       return clean({ input: str('url') });
+
+    case 'FileSearch':
+      return clean({ input: str('query') });
+
+    case 'CodeInterpreter':
+      return clean({ input: str('code') });
+
+    case 'Computer':
+      return clean({ input: str('action'), description: str('type') });
+
+    case 'ImageGeneration':
+      return clean({ input: str('prompt') });
 
     case 'Agent':
       return clean({ input: str('description'), description: str('subagent_type') });
