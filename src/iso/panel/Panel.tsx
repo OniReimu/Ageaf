@@ -2227,6 +2227,12 @@ const Panel = () => {
     options?: { hideHeader?: boolean }
   ) => {
     if (!cot || cot.length === 0) return null;
+    // Trim trailing text items — they duplicate the message content rendered below.
+    let trimmedCot = cot;
+    while (trimmedCot.length > 0 && trimmedCot[trimmedCot.length - 1].type === 'text') {
+      trimmedCot = trimmedCot.slice(0, -1);
+    }
+    if (trimmedCot.length === 0) return null;
     // When we have a stable messageId, let user control expanded/collapsed even during streaming.
     // Otherwise, default to expanded while active (streaming).
     const isExpanded = messageId
@@ -2255,7 +2261,7 @@ const Panel = () => {
         ) : null}
         {isExpanded && (
           <div class="ageaf-message__cot-body">
-            {cot.map((item, idx) => {
+            {trimmedCot.map((item, idx) => {
               if (item.type === 'thinking') {
                 const thinkingKey = `${messageId ?? 'stream'}-${idx}`;
                 const isThinkingExpanded =
