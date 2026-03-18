@@ -177,6 +177,7 @@ export class PiStreamBuffer {
       if (!originalFile) continue;
 
       const canonicalPath = originalFile.filePath;
+      if (this.emittedPatchFiles.has(canonicalPath)) continue;
       const patches = computePerHunkReplacements(canonicalPath, originalFile.content, content);
       for (const patch of patches) {
         this.emitEvent({ event: 'patch', data: patch });

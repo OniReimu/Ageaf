@@ -13,7 +13,7 @@ import {
   type DocumentAttachmentEntry,
 } from '../../attachments/documentAttachments.js';
 import { extractAllAgeafPatchFences } from '../../patch/ageafPatchFence.js';
-import { buildReplaceRangePatchesFromFileUpdates, computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
+import { buildReplaceRangePatchesFromFileUpdates, canonicalizePatchFilePath, computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
 import { validatePatch } from '../../validate.js';
 import { getCodexAppServer } from './appServer.js';
 import { parseCodexTokenUsage } from './tokenUsage.js';
@@ -1240,6 +1240,7 @@ export async function runCodexJob(
       // Use canonical path (from the [Overleaf file:] block) for both patches
       // and dedup, matching what buildReplaceRangePatchesFromFileUpdates uses.
       const canonicalPath = originalFile.filePath;
+      if (emittedPatchFiles.has(canonicalPath)) continue;
       const patches = computePerHunkReplacements(canonicalPath, originalFile.content, content);
       for (const patch of patches) {
         emitEvent({ event: 'patch', data: patch });
@@ -1463,11 +1464,19 @@ export async function runCodexJob(
   };
 
   const emitPatchesFromCompletedText = () => {
-    if (!patchEmitted) {
+    // Process ageaf-patch fences with per-file dedup — skip any replaceRangeInFile
+    // whose canonical filePath was already emitted via FILE_UPDATE streaming.
+    // No blanket patchEmitted gate: fences for other files must still be processed.
+    {
       const fences = extractAllAgeafPatchFences(fullText);
       for (const fence of fences) {
         try {
           const patch = validatePatch(JSON.parse(fence));
+          if (patch.kind === 'replaceRangeInFile' && patch.filePath) {
+            const canonical = canonicalizePatchFilePath(patch.filePath, overleafFiles);
+            if (emittedPatchFiles.has(canonical)) continue;
+            emittedPatchFiles.add(canonical);
+          }
           emitEvent({ event: 'patch', data: patch });
           patchEmitted = true;
         } catch {
