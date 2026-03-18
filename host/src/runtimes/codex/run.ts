@@ -1381,6 +1381,39 @@ export async function runCodexJob(
   let compactionLifecycleSeen = false;
   let activeCompactionToolId: string | null = null;
 
+  // ─── Pending tool tracking for tool_complete lifecycle ───
+  // Maps toolId → toolName so we can emit tool_complete when item/completed arrives.
+  const pendingTools = new Map<string, string>();
+
+  const emitToolComplete = (toolId: string, toolName?: string) => {
+    const resolvedName = toolName ?? pendingTools.get(toolId) ?? 'Tool';
+    pendingTools.delete(toolId);
+    emitEvent({
+      event: 'plan',
+      data: {
+        phase: 'tool_complete',
+        toolId,
+        toolName: resolvedName,
+        message: `Completed ${resolvedName}`,
+      },
+    });
+  };
+
+  const completeAllPendingTools = () => {
+    for (const [toolId, toolName] of pendingTools) {
+      emitEvent({
+        event: 'plan',
+        data: {
+          phase: 'tool_complete',
+          toolId,
+          toolName,
+          message: `Completed ${toolName}`,
+        },
+      });
+    }
+    pendingTools.clear();
+  };
+
   const emitCompactionLifecycle = (
     phase: 'tool_start' | 'compaction_complete' | 'tool_error',
     source?: unknown
@@ -1861,6 +1894,7 @@ export async function runCodexJob(
         // Web search
         if (itemType === 'web_search' || itemType === 'webSearch' || itemType === 'web.run') {
           const query = item?.query ?? item?.input?.query ?? item?.arguments?.query ?? '';
+          pendingTools.set(itemId, 'WebSearch');
           emitEvent({
             event: 'plan',
             data: {
@@ -1881,6 +1915,7 @@ export async function runCodexJob(
           const rawInput = item?.input ?? item?.arguments;
           const normalized = normalizeToolInput(rawInput);
           const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+          pendingTools.set(itemId, toolName);
           emitEvent({
             event: 'plan',
             data: {
@@ -1902,6 +1937,7 @@ export async function runCodexJob(
           const rawInput = item?.arguments ?? item?.input ?? item?.function?.arguments;
           const normalized = normalizeToolInput(rawInput);
           const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+          pendingTools.set(itemId, toolName);
           emitEvent({
             event: 'plan',
             data: {
@@ -1922,6 +1958,7 @@ export async function runCodexJob(
           const command = String(item?.command ?? item?.input ?? '');
           const normalized = normalizeToolInput({ command });
           const display = normalized ? extractToolDisplayInfo('Bash', normalized) : {};
+          pendingTools.set(itemId, 'Bash');
           emitEvent({
             event: 'plan',
             data: {
@@ -1939,6 +1976,7 @@ export async function runCodexJob(
         // File changes
         if (itemType === 'file_change' || itemType === 'fileChange' || itemType === 'FileChange' || itemType === 'apply_patch') {
           const filePath = String(item?.path ?? item?.filePath ?? item?.file ?? '');
+          pendingTools.set(itemId, 'Edit');
           emitEvent({
             event: 'plan',
             data: {
@@ -2061,6 +2099,7 @@ export async function runCodexJob(
         const normalized = normalizeToolInput(rawInput);
         const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
 
+        pendingTools.set(toolId, toolName);
         emitEvent({
           event: 'plan',
           data: {
@@ -2073,6 +2112,20 @@ export async function runCodexJob(
           },
         });
         emitTrace(`Codex: tool started - ${toolName}`);
+        return;
+      }
+
+      // Handle explicit tool completion events
+      if (
+        method === 'item/toolCall/completed' ||
+        method === 'item/commandExecution/completed' ||
+        method === 'item/tool/completed'
+      ) {
+        const toolId = String(params?.itemId ?? params?.id ?? params?.toolCallId ?? '');
+        if (toolId && pendingTools.has(toolId)) {
+          emitToolComplete(toolId);
+          emitTrace(`Codex: tool completed - ${method}`);
+        }
         return;
       }
 
@@ -2123,6 +2176,7 @@ export async function runCodexJob(
           const normalized = normalizeToolInput(rawInput);
           const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
 
+          pendingTools.set(toolId, toolName);
           emitEvent({
             event: 'plan',
             data: {
@@ -2135,6 +2189,21 @@ export async function runCodexJob(
             },
           });
           emitTrace(`Codex: item event captured as tool - ${method}`, { toolName });
+        }
+        return;
+      }
+
+      // Catch-all for item/* completion events not already handled above.
+      if (
+        method.startsWith('item/') &&
+        (method.includes('/completed') || method.includes('/finished'))
+      ) {
+        const completedId = String(
+          params?.itemId ?? params?.id ?? params?.toolCallId ?? ''
+        );
+        if (completedId && pendingTools.has(completedId)) {
+          emitToolComplete(completedId);
+          emitTrace(`Codex: item completed (catch-all) - ${method}`);
         }
         return;
       }
@@ -2157,6 +2226,7 @@ export async function runCodexJob(
       }
 
       if (method === 'turn/completed') {
+        completeAllPendingTools();
         if (!done) {
           queueLateCompletionOutputWindow(method);
         }
@@ -2165,6 +2235,7 @@ export async function runCodexJob(
 
       // Codex CLI variants may signal completion via codex/event/task_completed.
       if (method === 'codex/event/task_completed') {
+        completeAllPendingTools();
         if (!done) {
           queueLateCompletionOutputWindow(method);
         }
@@ -2185,6 +2256,14 @@ export async function runCodexJob(
           itemType === 'compaction'
         ) {
           emitCompactionLifecycle('compaction_complete', item ?? params);
+        }
+
+        // Emit tool_complete for tracked tool items
+        const completedItemId = String(
+          item?.id ?? item?.itemId ?? params?.itemId ?? params?.id ?? ''
+        );
+        if (completedItemId && pendingTools.has(completedItemId)) {
+          emitToolComplete(completedItemId);
         }
         const extractedText = extractAssistantTextFromItem(item);
         if ((!extractedText || !extractedText.trim()) && debugToConsole && itemShapeEmitted < ITEM_SHAPE_LIMIT) {
@@ -2233,6 +2312,19 @@ export async function runCodexJob(
         if (!done) {
           clearCompletionGraceTimer();
           awaitingLateCompletionOutput = false;
+          // Mark all pending tools as failed on error
+          for (const [toolId, toolName] of pendingTools) {
+            emitEvent({
+              event: 'plan',
+              data: {
+                phase: 'tool_error',
+                toolId,
+                toolName,
+                message: `Failed ${toolName}`,
+              },
+            });
+          }
+          pendingTools.clear();
           if (activeCompactionToolId) {
             emitCompactionLifecycle('tool_error', {
               toolId: activeCompactionToolId,
