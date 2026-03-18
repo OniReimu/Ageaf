@@ -2336,6 +2336,7 @@ const Panel = () => {
               const toolKey = `${messageId ?? 'stream'}-${idx}`;
               const isToolExpanded = expandedToolItems.has(toolKey);
               const hasDetail = !!(item.description || item.message);
+              const hasExpandable = hasDetail || !!item.input;
               const context = formatToolContext(item.toolName, item.input, item.description);
               return (
                 <div
@@ -2345,7 +2346,7 @@ const Panel = () => {
                   <div
                     class="ageaf-cot-tool__header"
                     onClick={() => {
-                      if (!hasDetail) return;
+                      if (!hasExpandable) return;
                       setExpandedToolItems((prev) => {
                         const next = new Set(prev);
                         next.has(toolKey) ? next.delete(toolKey) : next.add(toolKey);
@@ -2354,24 +2355,24 @@ const Panel = () => {
                     }}
                   >
                     <span class="ageaf-cot-tool__icon">
-                      {item.phase === 'started' ? (TOOL_ICONS[item.toolName] ?? '🔧') : item.phase === 'failed' ? '❌' : '✅'}
+                      {getToolIcon(item.toolName, item.phase)}
                     </span>
                     <span class="ageaf-cot-tool__name">
                       {formatToolName(item.toolName)}
                     </span>
                     {context && (
-                      <span class="ageaf-cot-tool__context"> · {context}</span>
+                      <span class="ageaf-cot-tool__context">{context}</span>
                     )}
                     <span class="ageaf-cot-tool__status">
                       <ElapsedTimer startedAt={item.startedAt} completedAt={item.completedAt} />
                       {item.phase === 'started' && <span class="ageaf-cot-tool__spinner" />}
-                      {hasDetail && <span class="ageaf-cot-tool__chevron">▶</span>}
+                      {hasExpandable && <span class="ageaf-cot-tool__chevron">▶</span>}
                     </span>
                   </div>
-                  {item.input && (
+                  {isToolExpanded && item.input && (
                     <div class="ageaf-cot-tool__input">{item.input}</div>
                   )}
-                  {hasDetail && (
+                  {isToolExpanded && hasDetail && (
                     <div class="ageaf-cot-tool__detail">
                       {item.description ?? item.message}
                     </div>
