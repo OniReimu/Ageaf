@@ -17,6 +17,9 @@ export type CoTToolItem = {
   input?: string;
   phase: 'started' | 'completed' | 'failed';
   message?: string;
+  description?: string;
+  startedAt?: number;
+  completedAt?: number;
 };
 
 export type CoTItem = CoTThinkingItem | CoTToolItem | CoTTextItem;
@@ -256,6 +259,9 @@ function normalizeCoTItem(raw: any): CoTItem | null {
       input: typeof raw.input === 'string' ? raw.input : undefined,
       phase,
       message: typeof raw.message === 'string' ? raw.message : undefined,
+      description: typeof raw.description === 'string' ? raw.description.slice(0, 120) : undefined,
+      startedAt: typeof raw.startedAt === 'number' ? raw.startedAt : undefined,
+      completedAt: typeof raw.completedAt === 'number' ? raw.completedAt : undefined,
     };
   }
   return null;

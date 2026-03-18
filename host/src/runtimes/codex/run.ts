@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { normalizeToolInput, extractToolDisplayInfo, MAX_TOOL_DISPLAY_LEN } from '../../toolDisplayInfo.js';
 import type { JobEvent } from '../../types.js';
 import { buildAttachmentBlock, getAttachmentLimits } from '../../attachments/textAttachments.js';
 import {
@@ -1877,14 +1878,17 @@ export async function runCodexJob(
         // MCP tool calls
         if (itemType === 'mcp_tool_call' || itemType === 'mcpToolCall' || itemType === 'mcp_call' || itemType.startsWith('mcp')) {
           const toolName = String(item?.name ?? item?.toolName ?? item?.tool ?? 'MCP Tool');
-          const toolInput = item?.input ?? item?.arguments;
+          const rawInput = item?.input ?? item?.arguments;
+          const normalized = normalizeToolInput(rawInput);
+          const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
           emitEvent({
             event: 'plan',
             data: {
               phase: 'tool_start',
               toolId: itemId,
               toolName,
-              ...(toolInput ? { input: typeof toolInput === 'string' ? toolInput : JSON.stringify(toolInput) } : {}),
+              ...(display.input ? { input: display.input } : {}),
+              ...(display.description ? { description: display.description } : {}),
               message: `Running ${toolName}...`,
             },
           });
@@ -1895,14 +1899,17 @@ export async function runCodexJob(
         // Function calls / tool calls
         if (itemType === 'function_call' || itemType === 'functionCall' || itemType === 'tool_call' || itemType === 'toolCall') {
           const toolName = String(item?.name ?? item?.function?.name ?? item?.toolName ?? 'Tool');
-          const toolInput = item?.arguments ?? item?.input ?? item?.function?.arguments;
+          const rawInput = item?.arguments ?? item?.input ?? item?.function?.arguments;
+          const normalized = normalizeToolInput(rawInput);
+          const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
           emitEvent({
             event: 'plan',
             data: {
               phase: 'tool_start',
               toolId: itemId,
               toolName,
-              ...(toolInput ? { input: typeof toolInput === 'string' ? toolInput : JSON.stringify(toolInput) } : {}),
+              ...(display.input ? { input: display.input } : {}),
+              ...(display.description ? { description: display.description } : {}),
               message: `Running ${toolName}...`,
             },
           });
@@ -1913,17 +1920,19 @@ export async function runCodexJob(
         // Command execution / shell
         if (itemType === 'command_execution' || itemType === 'commandExecution' || itemType === 'shell' || itemType === 'CommandExecution') {
           const command = String(item?.command ?? item?.input ?? '');
+          const normalized = normalizeToolInput({ command });
+          const display = normalized ? extractToolDisplayInfo('Bash', normalized) : {};
           emitEvent({
             event: 'plan',
             data: {
               phase: 'tool_start',
               toolId: itemId,
               toolName: 'Bash',
-              ...(command ? { input: command.slice(0, 100) } : {}),
+              ...(display.input ? { input: display.input } : {}),
               message: 'Running command...',
             },
           });
-          emitTrace('Codex: command execution', { command: command.slice(0, 100) });
+          emitTrace('Codex: command execution', { command: command.slice(0, MAX_TOOL_DISPLAY_LEN) });
           return true;
         }
 
@@ -2048,9 +2057,9 @@ export async function runCodexJob(
       ) {
         const toolId = String(params?.itemId ?? params?.id ?? params?.toolCallId ?? '');
         const toolName = String(params?.name ?? params?.toolName ?? params?.command ?? 'Tool');
-        const toolInput = params?.input
-          ? (typeof params.input === 'string' ? params.input : JSON.stringify(params.input))
-          : (typeof params?.command === 'string' ? params.command : undefined);
+        const rawInput = params?.input ?? (typeof params?.command === 'string' ? { command: params.command } : undefined);
+        const normalized = normalizeToolInput(rawInput);
+        const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
 
         emitEvent({
           event: 'plan',
@@ -2058,7 +2067,8 @@ export async function runCodexJob(
             phase: 'tool_start',
             toolId,
             toolName,
-            ...(toolInput ? { input: toolInput } : {}),
+            ...(display.input ? { input: display.input } : {}),
+            ...(display.description ? { description: display.description } : {}),
             message: `Running ${toolName}...`,
           },
         });
@@ -2109,9 +2119,9 @@ export async function runCodexJob(
             method.split('/').pop() ??
             'Tool'
           );
-          const toolInput = params?.input
-            ? (typeof params.input === 'string' ? params.input : JSON.stringify(params.input))
-            : (params?.query ? String(params.query) : undefined);
+          const rawInput = params?.input ?? (params?.query ? { query: params.query } : undefined);
+          const normalized = normalizeToolInput(rawInput);
+          const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
 
           emitEvent({
             event: 'plan',
@@ -2119,7 +2129,8 @@ export async function runCodexJob(
               phase: 'tool_start',
               toolId,
               toolName,
-              ...(toolInput ? { input: toolInput } : {}),
+              ...(display.input ? { input: display.input } : {}),
+              ...(display.description ? { description: display.description } : {}),
               message: `Running ${toolName}...`,
             },
           });

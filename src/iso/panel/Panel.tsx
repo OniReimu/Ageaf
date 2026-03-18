@@ -409,6 +409,21 @@ const TOOL_ICONS: Record<string, string> = {
   text_editor: '📝',
   mcp: '🔌',
   Compacting: '🔄',
+  Agent: '🤖',
+  Skill: '⚡',
+  ToolSearch: '🔎',
+  LSP: '📐',
+  TaskCreate: '📋',
+  TaskUpdate: '📋',
+  TaskGet: '📋',
+  TaskList: '📋',
+  TaskStop: '📋',
+  CronCreate: '⏰',
+  CronDelete: '⏰',
+  CronList: '⏰',
+  NotebookEdit: '📓',
+  EnterWorktree: '🌳',
+  ExitWorktree: '🌳',
 };
 
 function getToolIcon(toolName: string, phase: string): string {
@@ -430,11 +445,59 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   text_editor: 'Text editor',
   mcp: 'MCP tool',
   Compacting: 'Compacting context',
+  Agent: 'Sub-agent',
+  Skill: 'Skill',
+  ToolSearch: 'Discover tools',
+  LSP: 'Language server',
+  TaskCreate: 'Create task',
+  TaskUpdate: 'Update task',
+  TaskGet: 'Get task',
+  TaskList: 'List tasks',
+  TaskStop: 'Stop task',
+  NotebookEdit: 'Edit notebook',
+  EnterWorktree: 'Enter worktree',
+  ExitWorktree: 'Exit worktree',
+  CronCreate: 'Create cron',
+  CronDelete: 'Delete cron',
+  CronList: 'List crons',
 };
 
 function formatToolName(toolName: string): string {
   return TOOL_DISPLAY_NAMES[toolName] ?? toolName;
 }
+
+/** Extract short context string for the tool header " · context" display. */
+function formatToolContext(toolName: string, input?: string, description?: string): string | null {
+  if (!input && !description) return null;
+  // For file tools, show basename
+  if ((toolName === 'Read' || toolName === 'Write' || toolName === 'Edit') && input) {
+    const parts = input.split('/');
+    return parts[parts.length - 1] || input;
+  }
+  // For Bash, prefer description
+  if (toolName === 'Bash' && description) return description;
+  // For Agent, use input (which is the description field from Agent tool)
+  if (toolName === 'Agent' && input) return input;
+  // Default: use input or description
+  const text = input ?? description ?? '';
+  return text.length > 40 ? text.slice(0, 40) + '...' : text;
+}
+
+/** Elapsed time component that ticks every second while tool is running. */
+const ElapsedTimer = ({ startedAt, completedAt }: { startedAt?: number; completedAt?: number }) => {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (completedAt || !startedAt) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [startedAt, completedAt]);
+  if (!startedAt) return null;
+  const elapsed = ((completedAt ?? now) - startedAt) / 1000;
+  let display: string;
+  if (elapsed < 60) display = `${elapsed < 10 ? elapsed.toFixed(1) : Math.floor(elapsed)}s`;
+  else display = `${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`;
+  return <span class="ageaf-cot-tool__elapsed">{display}</span>;
+};
 
 /**
  * Helper to close any unclosed code fences in partial streaming text.
@@ -1003,6 +1066,7 @@ const Panel = () => {
     phase: 'started' | 'completed' | 'failed';
     message: string;
     input?: string;
+    description?: string;
     timestamp: number;
   };
   const [activeTools, setActiveTools] = useState<
@@ -1206,6 +1270,7 @@ const Panel = () => {
     const last = cot[cot.length - 1];
     if (last && last.type === 'tool' && last.phase === 'started') {
       last.phase = 'completed';
+      last.completedAt = Date.now();
       return true;
     }
     return false;
@@ -2128,6 +2193,9 @@ const Panel = () => {
     Set<string>
   >(() => new Set());
 
+  // Track expanded tool items for detail view
+  const [expandedToolItems, setExpandedToolItems] = useState<Set<string>>(() => new Set());
+
   const toggleThinkingItemExpanded = (key: string) => {
     setExpandedThinkingItems((prev) => {
       const next = new Set(prev);
@@ -2257,18 +2325,48 @@ const Panel = () => {
                 );
               }
               // Tool
-              const icon = getToolIcon(item.toolName, item.phase);
+              const toolKey = `${messageId ?? 'stream'}-${idx}`;
+              const isToolExpanded = expandedToolItems.has(toolKey);
+              const hasDetail = !!(item.description || item.message);
+              const context = formatToolContext(item.toolName, item.input, item.description);
               return (
                 <div
                   key={idx}
-                  class={`ageaf-cot-tool ageaf-cot-tool--${item.phase}`}
+                  class={`ageaf-cot-tool ageaf-cot-tool--${item.phase}${isToolExpanded ? ' is-expanded' : ''}`}
                 >
-                  <span class="ageaf-cot-tool-icon">{icon}</span>
-                  <span class="ageaf-cot-tool-name">
-                    {formatToolName(item.toolName)}
-                  </span>
+                  <div
+                    class="ageaf-cot-tool__header"
+                    onClick={() => {
+                      if (!hasDetail) return;
+                      setExpandedToolItems((prev) => {
+                        const next = new Set(prev);
+                        next.has(toolKey) ? next.delete(toolKey) : next.add(toolKey);
+                        return next;
+                      });
+                    }}
+                  >
+                    <span class="ageaf-cot-tool__icon">
+                      {item.phase === 'started' ? (TOOL_ICONS[item.toolName] ?? '🔧') : item.phase === 'failed' ? '❌' : '✅'}
+                    </span>
+                    <span class="ageaf-cot-tool__name">
+                      {formatToolName(item.toolName)}
+                    </span>
+                    {context && (
+                      <span class="ageaf-cot-tool__context"> · {context}</span>
+                    )}
+                    <span class="ageaf-cot-tool__status">
+                      <ElapsedTimer startedAt={item.startedAt} completedAt={item.completedAt} />
+                      {item.phase === 'started' && <span class="ageaf-cot-tool__spinner" />}
+                      {hasDetail && <span class="ageaf-cot-tool__chevron">▶</span>}
+                    </span>
+                  </div>
                   {item.input && (
-                    <span class="ageaf-cot-tool-input">{item.input}</span>
+                    <div class="ageaf-cot-tool__input">{item.input}</div>
+                  )}
+                  {hasDetail && (
+                    <div class="ageaf-cot-tool__detail">
+                      {item.description ?? item.message}
+                    </div>
                   )}
                 </div>
               );
@@ -2284,25 +2382,28 @@ const Panel = () => {
 
     return (
       <div class="ageaf-tool-indicators">
-        {Array.from(activeTools.values()).map((tool) => (
-          <div
-            key={tool.toolId}
-            class={`ageaf - tool - indicator ageaf - tool - indicator--${tool.phase} `}
-          >
-            <span class="ageaf-tool-indicator__icon">
-              {getToolIcon(tool.toolName, tool.phase)}
-            </span>
-            <span class="ageaf-tool-indicator__name">
-              {formatToolName(tool.toolName)}
-            </span>
-            {tool.input && (
-              <span class="ageaf-tool-indicator__input">{tool.input}</span>
-            )}
-            {tool.phase === 'started' && (
-              <span class="ageaf-tool-indicator__spinner" />
-            )}
-          </div>
-        ))}
+        {Array.from(activeTools.values()).map((tool) => {
+          const context = formatToolContext(tool.toolName, tool.input, tool.description);
+          return (
+            <div
+              key={tool.toolId}
+              class={`ageaf-tool-indicator ageaf-tool-indicator--${tool.phase}`}
+            >
+              <span class="ageaf-tool-indicator__icon">
+                {getToolIcon(tool.toolName, tool.phase)}
+              </span>
+              <span class="ageaf-tool-indicator__name">
+                {formatToolName(tool.toolName)}
+              </span>
+              {context && (
+                <span class="ageaf-tool-indicator__input"> · {context}</span>
+              )}
+              {tool.phase === 'started' && (
+                <span class="ageaf-tool-indicator__spinner" />
+              )}
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -7076,14 +7177,65 @@ const Panel = () => {
 
             // Track tool execution states for visibility.
             const isToolStartPhase = phase === 'tool_start';
+            const isToolUpdatePhase = phase === 'tool_update';
             const isToolCompletePhase =
               phase === 'tool_complete' || phase === 'compaction_complete';
             const isToolErrorPhase = phase === 'tool_error';
+
+            // Handle tool_update: merge input/description into existing CoT item
+            if (isToolUpdatePhase) {
+              const toolInput = (event.data as any)?.input;
+              const description = (event.data as any)?.description;
+              const currentCoT = streamingCoTRef.current;
+
+              // Primary: match by toolId
+              let target = toolId ? currentCoT.find(
+                (item): item is CoTToolItem =>
+                  item.type === 'tool' && item.toolId === toolId
+              ) : undefined;
+
+              // Fallback: last started tool with same name and no input
+              if (!target && toolName) {
+                for (let i = currentCoT.length - 1; i >= 0; i--) {
+                  const item = currentCoT[i];
+                  if (item.type === 'tool' && item.toolName === toolName && item.phase === 'started' && !item.input) {
+                    target = item as CoTToolItem;
+                    break;
+                  }
+                }
+              }
+
+              if (target) {
+                if (toolInput && !target.input) target.input = toolInput;
+                if (description && !target.description) target.description = description;
+              }
+
+              // Also update activeTools map
+              if (toolId) {
+                setActiveTools((prev) => {
+                  const existing = prev.get(toolId);
+                  if (!existing) return prev;
+                  const next = new Map(prev);
+                  next.set(toolId, {
+                    ...existing,
+                    ...(toolInput && !existing.input ? { input: toolInput } : {}),
+                    ...(description && !existing.description ? { description } : {}),
+                  });
+                  return next;
+                });
+              }
+
+              if (sessionConversationId === chatConversationIdRef.current) {
+                setStreamingCoT([...currentCoT]);
+              }
+            }
+
             if (
               toolId &&
               (isToolStartPhase || isToolCompletePhase || isToolErrorPhase)
             ) {
               const toolInput = (event.data as any)?.input;
+              const description = (event.data as any)?.description;
               const currentCoT = streamingCoTRef.current;
 
               if (isToolStartPhase) {
@@ -7096,8 +7248,12 @@ const Panel = () => {
                 if (existingCoTTool) {
                   existingCoTTool.toolName = toolName ?? existingCoTTool.toolName;
                   existingCoTTool.phase = 'started';
+                  existingCoTTool.startedAt = Date.now();
                   if (toolInput && !existingCoTTool.input) {
                     existingCoTTool.input = toolInput;
+                  }
+                  if (description && !existingCoTTool.description) {
+                    existingCoTTool.description = description;
                   }
                   existingCoTTool.message =
                     message ??
@@ -7110,6 +7266,8 @@ const Panel = () => {
                     input: toolInput,
                     phase: 'started',
                     message: `Running ${toolName ?? 'tool'}...`,
+                    description,
+                    startedAt: Date.now(),
                   });
                 }
 
@@ -7125,6 +7283,7 @@ const Panel = () => {
                     phase: 'started',
                     message: message ?? `Running ${toolName ?? 'tool'}`,
                     input: toolInput,
+                    description,
                     timestamp: Date.now(),
                   });
                   return next;
@@ -7169,6 +7328,7 @@ const Panel = () => {
                 if (existingCoTTool) {
                   existingCoTTool.toolName = toolName ?? existingCoTTool.toolName;
                   existingCoTTool.phase = resolvedPhase;
+                  existingCoTTool.completedAt = Date.now();
                   if (toolInput && !existingCoTTool.input) {
                     existingCoTTool.input = toolInput;
                   }
@@ -7181,6 +7341,7 @@ const Panel = () => {
                     input: toolInput,
                     phase: resolvedPhase,
                     message: message ?? defaultMessage,
+                    completedAt: Date.now(),
                   });
                 }
                 if (sessionConversationId === chatConversationIdRef.current) {

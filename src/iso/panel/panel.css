@@ -3590,12 +3590,10 @@
 
 .ageaf-cot-tool {
   display: flex;
-  align-items: center;
-  padding: 6px 8px;
+  flex-direction: column;
   background: rgba(255, 255, 255, 0.04);
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.06);
-  gap: 8px;
   overflow: hidden;
 }
 
@@ -3613,29 +3611,112 @@
   background: rgba(244, 100, 100, 0.05);
 }
 
-.ageaf-cot-tool-icon {
-  font-size: 14px;
+.ageaf-cot-tool__header {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
 }
 
-.ageaf-cot-tool-status {
-  display: none;
+.ageaf-cot-tool__header:hover {
+  background: rgba(255, 255, 255, 0.04);
 }
 
-.ageaf-cot-tool-name {
+.ageaf-cot-tool__icon {
+  font-size: 13px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.ageaf-cot-tool__name {
   font-weight: 600;
+  font-size: 12px;
   color: var(--ageaf-panel-text);
   flex-shrink: 0;
 }
 
-.ageaf-cot-tool-input {
-  opacity: 0.6;
-  font-family: 'SF Mono', Monaco, monospace;
-  font-size: 11px;
+.ageaf-cot-tool__context {
+  font-weight: 400;
+  font-size: 12px;
+  opacity: 0.5;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
   min-width: 0;
+}
+
+.ageaf-cot-tool__status {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ageaf-cot-tool__elapsed {
+  font-size: 10px;
+  font-family: 'SF Mono', Monaco, monospace;
+  opacity: 0.5;
+}
+
+.ageaf-cot-tool__spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(57, 185, 138, 0.3);
+  border-top-color: rgba(57, 185, 138, 0.9);
+  border-radius: 50%;
+  animation: ageaf-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.ageaf-cot-tool__check {
+  font-size: 12px;
+  color: rgba(57, 185, 138, 0.8);
+}
+
+.ageaf-cot-tool__fail {
+  font-size: 12px;
+  color: rgba(244, 100, 100, 0.8);
+}
+
+.ageaf-cot-tool__chevron {
+  font-size: 8px;
+  opacity: 0.4;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.ageaf-cot-tool.is-expanded .ageaf-cot-tool__chevron {
+  transform: rotate(90deg);
+}
+
+.ageaf-cot-tool__input {
+  padding: 0 8px 6px 32px;
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 11px;
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ageaf-cot-tool__detail {
+  display: none;
+  padding: 4px 8px 6px 32px;
+  font-size: 11px;
+  opacity: 0.5;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ageaf-cot-tool.is-expanded .ageaf-cot-tool__detail {
+  display: block;
 }
 
 .ageaf-cot-text {

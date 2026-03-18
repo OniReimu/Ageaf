@@ -18,6 +18,7 @@ import {
   matchBlockedCommand,
   parseBlockedCommandPatterns,
 } from './safety.js';
+import { extractToolDisplayInfo } from '../../toolDisplayInfo.js';
 import { extractAllAgeafPatchFences } from '../../patch/ageafPatchFence.js';
 import { computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
 
@@ -513,6 +514,9 @@ async function runQuery(
     });
   };
 
+  // Accumulator for input_json_delta chunks keyed by content block index
+  const pendingToolInputs = new Map<number, { toolId: string; toolName: string; chunks: string[]; hadStartInput: boolean }>();
+
   for await (const message of response) {
     const sessionId = extractSessionIdFromMessage(message);
     if (sessionId) {
@@ -572,17 +576,10 @@ async function runQuery(
           };
           const message = toolMessages[toolName] ?? `Running ${toolName}`;
 
-          // Extract displayable input (file path, URL, command, etc.)
-          let inputDisplay: string | undefined;
-          if (typeof toolInput === 'object' && toolInput !== null) {
-            const input = toolInput as Record<string, unknown>;
-            inputDisplay =
-              (typeof input.file_path === 'string' ? input.file_path : undefined) ??
-              (typeof input.path === 'string' ? input.path : undefined) ??
-              (typeof input.url === 'string' ? input.url : undefined) ??
-              (typeof input.command === 'string' ? input.command : undefined) ??
-              (typeof input.query === 'string' ? input.query : undefined) ??
-              (typeof input.pattern === 'string' ? input.pattern : undefined);
+          // Try extracting input from content_block_start (may already be complete)
+          let startDisplay: { input?: string; description?: string } = {};
+          if (typeof toolInput === 'object' && toolInput !== null && Object.keys(toolInput).length > 0) {
+            startDisplay = extractToolDisplayInfo(toolName, toolInput as Record<string, unknown>);
           }
 
           emitEvent({
@@ -591,10 +588,50 @@ async function runQuery(
               message,
               toolId,
               toolName,
-              ...(inputDisplay ? { input: inputDisplay } : {}),
+              ...(startDisplay.input ? { input: startDisplay.input } : {}),
+              ...(startDisplay.description ? { description: startDisplay.description } : {}),
               phase: 'tool_start',
             },
           });
+
+          // Register for input_json_delta accumulation (may provide richer input later)
+          // Track whether start already had input so we can skip redundant tool_update
+          if (typeof event.index === 'number' && toolId) {
+            pendingToolInputs.set(event.index, {
+              toolId,
+              toolName,
+              chunks: [],
+              hadStartInput: !!(startDisplay.input || startDisplay.description),
+            });
+          }
+        }
+
+        // Accumulate input_json_delta chunks for tool input
+        if (event?.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
+          const entry = pendingToolInputs.get(event.index);
+          if (entry) entry.chunks.push(event.delta.partial_json ?? '');
+        }
+
+        // On content_block_stop, parse accumulated input and emit tool_update
+        if (event?.type === 'content_block_stop') {
+          const entry = pendingToolInputs.get(event.index);
+          if (entry) {
+            pendingToolInputs.delete(event.index);
+            // Only emit tool_update if we got delta chunks and start didn't already have input
+            if (entry.chunks.length > 0) {
+              try {
+                const parsed = JSON.parse(entry.chunks.join(''));
+                const display = extractToolDisplayInfo(entry.toolName, parsed);
+                // Skip if start already emitted the same info
+                if ((display.input || display.description) && !entry.hadStartInput) {
+                  emitEvent({
+                    event: 'plan',
+                    data: { phase: 'tool_update', toolId: entry.toolId, toolName: entry.toolName, ...display },
+                  });
+                }
+              } catch { /* malformed input — silently skip, tool_start already emitted */ }
+            }
+          }
         }
 
 
@@ -631,6 +668,7 @@ async function runQuery(
         break;
       }
       case 'result': {
+        pendingToolInputs.clear();
         const resultMessage = message as { subtype?: string; result?: string; structured_output?: unknown };
         resultText = resultMessage.result ?? '';
         flushVisible();
