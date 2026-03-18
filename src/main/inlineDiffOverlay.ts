@@ -568,15 +568,12 @@ function ensureReviewBar() {
     const item = reviewBarItems[idx];
     if (!item) return;
     try {
-      const coords = view.coordsAtPos(item.from);
-      if (!coords) return;
       const scrollDOM = view.scrollDOM as HTMLElement;
-      const hostRect = scrollDOM.getBoundingClientRect();
-      const targetTop =
-        coords.top -
-        hostRect.top +
-        scrollDOM.scrollTop -
-        scrollDOM.clientHeight * 0.35;
+      // Use lineBlockAt (height-map based) instead of coordsAtPos which
+      // returns null for off-screen positions in CM6 virtual rendering.
+      const block = view.lineBlockAt(item.from);
+      if (!block) return;
+      const targetTop = block.top - scrollDOM.clientHeight * 0.35;
       scrollDOM.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
     } catch {
       // ignore

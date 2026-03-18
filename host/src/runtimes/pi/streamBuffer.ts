@@ -1,5 +1,5 @@
 import type { JobEvent } from '../../types.js';
-import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
+import { extractAllAgeafPatchFences } from '../../patch/ageafPatchFence.js';
 import {
   computePerHunkReplacements,
   extractOverleafFilesFromMessage,
