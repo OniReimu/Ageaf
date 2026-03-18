@@ -492,7 +492,7 @@ function formatToolContext(toolName: string, input?: string, description?: strin
 }
 
 /** Elapsed time component that ticks every second while tool is running. */
-const ElapsedTimer = ({ startedAt, completedAt }: { startedAt?: number; completedAt?: number }) => {
+const ElapsedTimer = ({ startedAt, completedAt, className }: { startedAt?: number; completedAt?: number; className?: string }) => {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (completedAt || !startedAt) return;
@@ -504,7 +504,7 @@ const ElapsedTimer = ({ startedAt, completedAt }: { startedAt?: number; complete
   let display: string;
   if (elapsed < 60) display = `${elapsed < 10 ? elapsed.toFixed(1) : Math.floor(elapsed)}s`;
   else display = `${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`;
-  return <span class="ageaf-cot-tool__elapsed">{display}</span>;
+  return <span class={className ?? 'ageaf-cot-tool__elapsed'}>{display}</span>;
 };
 
 /**
@@ -2220,6 +2220,61 @@ const Panel = () => {
     });
   };
 
+  /** Compute the total thinking duration from CoT items (earliest start → latest end). */
+  const computeCoTDuration = (items: CoTItem[]): { startedAt: number | null; completedAt: number | null } => {
+    let earliest: number | null = null;
+    let latest: number | null = null;
+    for (const item of items) {
+      if (item.type === 'tool') {
+        if (item.startedAt && (earliest === null || item.startedAt < earliest)) earliest = item.startedAt;
+        if (item.completedAt && (latest === null || item.completedAt > latest)) latest = item.completedAt;
+      }
+    }
+    return { startedAt: earliest, completedAt: latest };
+  };
+
+  /**
+   * Merge consecutive thinking items into groups for cleaner display.
+   * Returns a new array where adjacent thinking items are collapsed into
+   * a single { type: 'thinking-group', items: [...] } entry.
+   */
+  type CoTGroupedItem = CoTItem | { type: 'thinking-group'; items: CoTThinkingItem[] };
+  const groupCoTItems = (items: CoTItem[]): CoTGroupedItem[] => {
+    const result: CoTGroupedItem[] = [];
+    let thinkingBuffer: CoTThinkingItem[] = [];
+    const flushThinking = () => {
+      if (thinkingBuffer.length === 0) return;
+      if (thinkingBuffer.length === 1) {
+        result.push(thinkingBuffer[0]);
+      } else {
+        result.push({ type: 'thinking-group', items: [...thinkingBuffer] });
+      }
+      thinkingBuffer = [];
+    };
+    for (const item of items) {
+      if (item.type === 'thinking') {
+        thinkingBuffer.push(item);
+      } else {
+        flushThinking();
+        result.push(item);
+      }
+    }
+    flushThinking();
+    return result;
+  };
+
+  /** Determine the left accent bar status class for a CoT item. */
+  const getItemAccentClass = (item: CoTGroupedItem, isLast: boolean, active: boolean): string => {
+    if (item.type === 'tool') {
+      if (item.phase === 'started') return 'ageaf-cot-item--active';
+      if (item.phase === 'failed') return 'ageaf-cot-item--failed';
+      return 'ageaf-cot-item--completed';
+    }
+    // Thinking / text: active pulse only on the last item while streaming
+    if (active && isLast) return 'ageaf-cot-item--active';
+    return 'ageaf-cot-item--completed';
+  };
+
   const renderCoTBlock = (
     cot: CoTItem[],
     active: boolean,
@@ -2233,6 +2288,10 @@ const Panel = () => {
       trimmedCot = trimmedCot.slice(0, -1);
     }
     if (trimmedCot.length === 0) return null;
+
+    const grouped = groupCoTItems(trimmedCot);
+    const duration = computeCoTDuration(trimmedCot);
+
     // When we have a stable messageId, let user control expanded/collapsed even during streaming.
     // Otherwise, default to expanded while active (streaming).
     const isExpanded = messageId
@@ -2247,6 +2306,38 @@ const Panel = () => {
       if (messageId) toggleThinkingExpanded(messageId);
     };
 
+    const renderThinkingItem = (item: CoTThinkingItem, idx: number) => {
+      const thinkingKey = `${messageId ?? 'stream'}-${idx}`;
+      const isThinkingExpanded = expandedThinkingItems.has(thinkingKey);
+      const onToggleThinking = (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleThinkingItemExpanded(thinkingKey);
+      };
+      const preview = item.content.split('\n')[0].slice(0, 100);
+      return (
+        <div
+          key={idx}
+          class={`ageaf-cot-thinking ${isThinkingExpanded ? 'is-expanded' : ''}`}
+          onClick={onToggleThinking}
+        >
+          <span class="ageaf-cot-thinking-icon">🧠</span>
+          {isThinkingExpanded ? (
+            <span class="ageaf-cot-thinking-content">
+              {item.content}
+            </span>
+          ) : (
+            <span class="ageaf-cot-thinking-preview">
+              {preview}
+            </span>
+          )}
+          <span class="ageaf-cot-thinking-toggle">
+            {isThinkingExpanded ? '▼' : '▶'}
+          </span>
+        </div>
+      );
+    };
+
     return (
       <div class={`ageaf-message__cot ${active ? 'is-active' : ''}`}>
         {!hideHeader ? (
@@ -2256,88 +2347,73 @@ const Panel = () => {
             type="button"
           >
             <span class="ageaf-cot-arrow">{isExpanded ? '▼' : '▶'}</span>
-            <span class="ageaf-cot-label">Thought Process</span>
+            <span class="ageaf-cot-label">
+              {active ? 'Thinking' : 'Thought process'}
+            </span>
+            {(duration.startedAt || active) && (
+              <ElapsedTimer className="ageaf-cot-duration" startedAt={duration.startedAt ?? undefined} completedAt={active ? undefined : (duration.completedAt ?? undefined)} />
+            )}
           </button>
         ) : null}
         {isExpanded && (
           <div class="ageaf-message__cot-body">
-            {trimmedCot.map((item, idx) => {
-              if (item.type === 'thinking') {
-                const thinkingKey = `${messageId ?? 'stream'}-${idx}`;
-                const isThinkingExpanded =
-                  expandedThinkingItems.has(thinkingKey);
-                const onToggleThinking = (e: MouseEvent) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  toggleThinkingItemExpanded(thinkingKey);
-                };
-                // Get first line or first ~80 chars for preview
-                const preview =
-                  item.content.split('\n')[0].slice(0, 80) +
-                  (item.content.length > 80 || item.content.includes('\n')
-                    ? '…'
-                    : '');
+            {grouped.map((item, idx) => {
+              const accentClass = getItemAccentClass(item, idx === grouped.length - 1, active);
+
+              if (item.type === 'thinking-group') {
                 return (
-                  <div
-                    key={idx}
-                    class={`ageaf-cot-thinking ${isThinkingExpanded ? 'is-expanded' : ''}`}
-                    onClick={onToggleThinking}
-                  >
-                    <span class="ageaf-cot-thinking-icon">🧠</span>
-                    {isThinkingExpanded ? (
-                      <span class="ageaf-cot-thinking-content">
-                        {item.content}
-                      </span>
-                    ) : (
-                      <span class="ageaf-cot-thinking-preview">
-                        {preview}
-                      </span>
-                    )}
-                    <span class="ageaf-cot-thinking-toggle">
-                      {isThinkingExpanded ? '▼' : '▶'}
-                    </span>
+                  <div key={idx} class={`ageaf-cot-item ${accentClass}`}>
+                    <div class="ageaf-cot-thinking-group">
+                      {item.items.map((ti, tiIdx) => renderThinkingItem(ti, idx * 1000 + tiIdx))}
+                    </div>
                   </div>
                 );
               }
+
+              if (item.type === 'thinking') {
+                return (
+                  <div key={idx} class={`ageaf-cot-item ${accentClass}`}>
+                    {renderThinkingItem(item, idx)}
+                  </div>
+                );
+              }
+
               // Text
               if (item.type === 'text') {
                 const trimmed = item.content.trim();
                 if (!trimmed) return null;
                 const textKey = `${messageId ?? 'stream'}-${idx}`;
-                const isTextExpanded =
-                  expandedThinkingItems.has(textKey);
+                const isTextExpanded = expandedThinkingItems.has(textKey);
                 const onToggleText = (e: MouseEvent) => {
                   e.preventDefault();
                   e.stopPropagation();
                   toggleThinkingItemExpanded(textKey);
                 };
-                const textPreview =
-                  trimmed.split('\n')[0].slice(0, 80) +
-                  (trimmed.length > 80 || trimmed.includes('\n')
-                    ? '…'
-                    : '');
+                const textPreview = trimmed.split('\n')[0].slice(0, 100);
                 return (
-                  <div
-                    key={idx}
-                    class={`ageaf-cot-text ${isTextExpanded ? 'is-expanded' : ''}`}
-                    onClick={onToggleText}
-                  >
-                    <span class="ageaf-cot-text-icon">💬</span>
-                    {isTextExpanded ? (
-                      <span class="ageaf-cot-text-content">
-                        {trimmed}
+                  <div key={idx} class={`ageaf-cot-item ${accentClass}`}>
+                    <div
+                      class={`ageaf-cot-text ${isTextExpanded ? 'is-expanded' : ''}`}
+                      onClick={onToggleText}
+                    >
+                      <span class="ageaf-cot-text-icon">💬</span>
+                      {isTextExpanded ? (
+                        <span class="ageaf-cot-text-content">
+                          {trimmed}
+                        </span>
+                      ) : (
+                        <span class="ageaf-cot-text-preview">
+                          {textPreview}
+                        </span>
+                      )}
+                      <span class="ageaf-cot-text-toggle">
+                        {isTextExpanded ? '▼' : '▶'}
                       </span>
-                    ) : (
-                      <span class="ageaf-cot-text-preview">
-                        {textPreview}
-                      </span>
-                    )}
-                    <span class="ageaf-cot-text-toggle">
-                      {isTextExpanded ? '▼' : '▶'}
-                    </span>
+                    </div>
                   </div>
                 );
               }
+
               // Tool
               const toolKey = `${messageId ?? 'stream'}-${idx}`;
               const isToolExpanded = expandedToolItems.has(toolKey);
@@ -2345,44 +2421,45 @@ const Panel = () => {
               const hasExpandable = hasDetail || !!item.input;
               const context = formatToolContext(item.toolName, item.input, item.description);
               return (
-                <div
-                  key={idx}
-                  class={`ageaf-cot-tool ageaf-cot-tool--${item.phase}${isToolExpanded ? ' is-expanded' : ''}`}
-                >
+                <div key={idx} class={`ageaf-cot-item ${accentClass}`}>
                   <div
-                    class="ageaf-cot-tool__header"
-                    onClick={() => {
-                      if (!hasExpandable) return;
-                      setExpandedToolItems((prev) => {
-                        const next = new Set(prev);
-                        next.has(toolKey) ? next.delete(toolKey) : next.add(toolKey);
-                        return next;
-                      });
-                    }}
+                    class={`ageaf-cot-tool ageaf-cot-tool--${item.phase}${isToolExpanded ? ' is-expanded' : ''}`}
                   >
-                    <span class="ageaf-cot-tool__icon">
-                      {getToolIcon(item.toolName, item.phase)}
-                    </span>
-                    <span class="ageaf-cot-tool__name">
-                      {formatToolName(item.toolName)}
-                    </span>
-                    {context && (
-                      <span class="ageaf-cot-tool__context">{context}</span>
-                    )}
-                    <span class="ageaf-cot-tool__status">
-                      <ElapsedTimer startedAt={item.startedAt} completedAt={item.completedAt} />
-                      {item.phase === 'started' && <span class="ageaf-cot-tool__spinner" />}
-                      {hasExpandable && <span class="ageaf-cot-tool__chevron">▶</span>}
-                    </span>
-                  </div>
-                  {isToolExpanded && item.input && (
-                    <div class="ageaf-cot-tool__input">{item.input}</div>
-                  )}
-                  {isToolExpanded && hasDetail && (
-                    <div class="ageaf-cot-tool__detail">
-                      {item.description ?? item.message}
+                    <div
+                      class="ageaf-cot-tool__header"
+                      onClick={() => {
+                        if (!hasExpandable) return;
+                        setExpandedToolItems((prev) => {
+                          const next = new Set(prev);
+                          next.has(toolKey) ? next.delete(toolKey) : next.add(toolKey);
+                          return next;
+                        });
+                      }}
+                    >
+                      <span class="ageaf-cot-tool__icon">
+                        {getToolIcon(item.toolName, item.phase)}
+                      </span>
+                      <span class="ageaf-cot-tool__name">
+                        {formatToolName(item.toolName)}
+                      </span>
+                      {context && (
+                        <span class="ageaf-cot-tool__context">{context}</span>
+                      )}
+                      <span class="ageaf-cot-tool__status">
+                        <ElapsedTimer startedAt={item.startedAt} completedAt={item.completedAt} />
+                        {item.phase === 'started' && <span class="ageaf-cot-tool__spinner" />}
+                        {hasExpandable && <span class="ageaf-cot-tool__chevron">▶</span>}
+                      </span>
                     </div>
-                  )}
+                    {isToolExpanded && item.input && (
+                      <div class="ageaf-cot-tool__input">{item.input}</div>
+                    )}
+                    {isToolExpanded && hasDetail && (
+                      <div class="ageaf-cot-tool__detail">
+                        {item.description ?? item.message}
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}
