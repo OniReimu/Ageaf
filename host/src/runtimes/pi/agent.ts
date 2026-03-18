@@ -9,6 +9,7 @@ import type { Model, AssistantMessage, Message, Usage } from '@mariozechner/pi-a
 import { getCustomProviderApiKey, getCustomModels, getCustomProviders } from './customProviders.js';
 import type { AgentMessage } from '@mariozechner/pi-agent-core';
 
+import { normalizeToolInput, extractToolDisplayInfo } from '../../toolDisplayInfo.js';
 import type { JobEvent } from '../../types.js';
 import { PiStreamBuffer, extractOverleafFilesFromMessage } from './streamBuffer.js';
 import { getAllAgentTools } from './toolRuntime.js';
@@ -285,6 +286,9 @@ export async function runPiText(input: PiTextRunInput): Promise<PiRunResult> {
     agent.abort();
   }, timeoutMs);
 
+  // Dedup queue: toolcall_start pushes, tool_execution_start pops matching entry
+  const piPendingToolCalls: Array<{ toolName: string; toolId: string }> = [];
+
   let unsubscribe: (() => void) | undefined;
   try {
     // Subscribe to agent events
@@ -302,12 +306,27 @@ export async function runPiText(input: PiTextRunInput): Promise<PiRunResult> {
           } else if (ame.type === 'toolcall_start') {
             const partial = ame.partial;
             const toolContent = partial.content[ame.contentIndex];
-            const toolName = toolContent && 'name' in toolContent ? toolContent.name : 'unknown';
+            const toolName = toolContent && 'name' in toolContent ? (toolContent as any).name : 'unknown';
+            // Use ToolCall.id as canonical toolId — matches tool_execution_start.toolCallId
+            const toolId: string = (toolContent && 'id' in toolContent ? (toolContent as any).id : undefined)
+              ?? 'pi-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+
+            // Push to dedup queue keyed by toolId (not toolName) for exact matching
+            piPendingToolCalls.push({ toolName, toolId });
+
+            // Extract input from toolContent arguments if available
+            const rawInput = toolContent && 'arguments' in toolContent ? (toolContent as any).arguments : undefined;
+            const normalized = normalizeToolInput(rawInput);
+            const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+
             input.emitEvent({
               event: 'plan',
               data: {
                 message: `Running ${toolName}`,
+                toolId,
                 toolName,
+                ...(display.input ? { input: display.input } : {}),
+                ...(display.description ? { description: display.description } : {}),
                 phase: 'tool_start',
               },
             });
@@ -318,10 +337,23 @@ export async function runPiText(input: PiTextRunInput): Promise<PiRunResult> {
         }
 
         case 'tool_execution_start': {
+          // Dedup: match by toolCallId (exact) against the queue's toolId
+          const execToolCallId = (event as any).toolCallId as string | undefined;
+          const idx = execToolCallId
+            ? piPendingToolCalls.findIndex(e => e.toolId === execToolCallId)
+            : -1;
+          if (idx >= 0) {
+            piPendingToolCalls.splice(idx, 1);
+            // Already emitted from toolcall_start — skip
+            break;
+          }
+          // Fallback: toolcall_start didn't fire, emit tool_start
+          const syntheticId = execToolCallId ?? ('pi-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8));
           input.emitEvent({
             event: 'plan',
             data: {
               message: `Running ${event.toolName}`,
+              toolId: syntheticId,
               toolName: event.toolName,
               phase: 'tool_start',
             },
@@ -330,6 +362,7 @@ export async function runPiText(input: PiTextRunInput): Promise<PiRunResult> {
         }
 
         case 'turn_end': {
+          piPendingToolCalls.length = 0; // Clear stale entries across turns
           // Emit usage from the assistant message
           const msg = event.message as AssistantMessage;
           if (msg && msg.role === 'assistant' && msg.usage) {
