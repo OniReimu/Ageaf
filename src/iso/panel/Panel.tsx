@@ -3158,7 +3158,7 @@ const Panel = () => {
     const textNode = node as Text;
     const anchorOffset = range.endOffset;
     const before = textNode.data.slice(0, anchorOffset);
-    const match = before.match(/(^|[\s\(\[\{])@([A-Za-z0-9._/-]*)$/);
+    const match = before.match(/(^|\W)@([A-Za-z0-9._/-]*)$/);
     if (!match) return null;
     const query = match[2] ?? '';
     const start = anchorOffset - (query.length + 1);
@@ -3254,7 +3254,7 @@ const Panel = () => {
     const textNode = node as Text;
     const anchorOffset = range.endOffset;
     const before = textNode.data.slice(0, anchorOffset);
-    const match = before.match(/(^|[\s\(\[\{])\/([A-Za-z0-9._-]*)$/);
+    const match = before.match(/(^|\W)\/([A-Za-z0-9._-]*)$/);
     if (!match) return null;
     const query = match[2] ?? '';
     if (isReservedSlashCommand(query)) return null;
@@ -3325,7 +3325,7 @@ const Panel = () => {
   ): Promise<{ skillsPrompt: string; strippedText: string; autoContextPatterns: string[] }> => {
     // Extract skill directives from text (e.g., /langchain, /vllm)
     // Pattern: (start OR whitespace/bracket) + "/" + (allowed chars)
-    const pattern = /(^|[\s([{])\/\s*([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
+    const pattern = /(^|\W)\/\s*([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
     const matches = text.matchAll(pattern);
     const directiveNames: string[] = [];
     const seen = new Set<string>();
