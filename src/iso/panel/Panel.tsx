@@ -424,6 +424,10 @@ const TOOL_ICONS: Record<string, string> = {
   NotebookEdit: '📓',
   EnterWorktree: '🌳',
   ExitWorktree: '🌳',
+  FileSearch: '🔎',
+  CodeInterpreter: '💻',
+  Computer: '🖥️',
+  ImageGeneration: '🎨',
 };
 
 function getToolIcon(toolName: string, phase: string): string {
@@ -460,6 +464,10 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   CronCreate: 'Create cron',
   CronDelete: 'Delete cron',
   CronList: 'List crons',
+  FileSearch: 'File search',
+  CodeInterpreter: 'Code interpreter',
+  Computer: 'Computer use',
+  ImageGeneration: 'Generate image',
 };
 
 function formatToolName(toolName: string): string {

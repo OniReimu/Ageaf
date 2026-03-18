@@ -1889,116 +1889,255 @@ export async function runCodexJob(
         return;
       }
 
-      // Helper function to process Codex items and emit plan events
+      // ─── Helper: emit a tool_start plan event and register in pendingTools ───
+      const emitToolStart = (
+        toolId: string,
+        toolName: string,
+        opts?: { input?: string; description?: string; message?: string },
+      ) => {
+        pendingTools.set(toolId, toolName);
+        emitEvent({
+          event: 'plan',
+          data: {
+            phase: 'tool_start',
+            toolId,
+            toolName,
+            ...(opts?.input ? { input: opts.input } : {}),
+            ...(opts?.description ? { description: opts.description } : {}),
+            message: opts?.message ?? `Running ${toolName}...`,
+          },
+        });
+      };
+
+      // ─── Process Codex items and emit plan events ───
+      // Covers all OpenAI Responses API item types + legacy Codex CLI variants.
       const processCodexItem = (item: any, itemType: string, itemId: string) => {
-        // Web search
-        if (itemType === 'web_search' || itemType === 'webSearch' || itemType === 'web.run') {
-          const query = item?.query ?? item?.input?.query ?? item?.arguments?.query ?? '';
-          pendingTools.set(itemId, 'WebSearch');
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName: 'WebSearch',
-              ...(query ? { input: String(query) } : {}),
-              message: 'Searching the web...',
-            },
-          });
-          emitTrace('Codex: web search', { query });
-          return true;
-        }
+        switch (itemType) {
+          // ── Web search (Responses API: web_search_call) ──
+          case 'web_search_call':
+          case 'web_search':
+          case 'webSearch':
+          case 'web.run':
+          case 'web_search_result': {
+            // Action sub-types: search (query), open_page (url), find_in_page (query)
+            const actionType = String(item?.action?.type ?? '');
+            const query = String(
+              item?.query ??
+              item?.action?.query ??
+              item?.search_query ??
+              item?.input?.query ??
+              item?.arguments?.query ??
+              ''
+            );
+            const url = String(item?.action?.url ?? '');
+            let input = query;
+            let message = 'Searching the web...';
+            if (actionType === 'open_page' && url) {
+              input = url;
+              message = 'Opening page...';
+            } else if (actionType === 'find_in_page' && query) {
+              message = `Finding in page: ${query.slice(0, 60)}`;
+            } else if (query) {
+              message = `Searching: ${query.slice(0, 80)}`;
+            }
+            emitToolStart(itemId, 'WebSearch', { input: input || undefined, message });
+            emitTrace('Codex: web search', { query, actionType });
+            return true;
+          }
 
-        // MCP tool calls
-        if (itemType === 'mcp_tool_call' || itemType === 'mcpToolCall' || itemType === 'mcp_call' || itemType.startsWith('mcp')) {
-          const toolName = String(item?.name ?? item?.toolName ?? item?.tool ?? 'MCP Tool');
-          const rawInput = item?.input ?? item?.arguments;
-          const normalized = normalizeToolInput(rawInput);
-          const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
-          pendingTools.set(itemId, toolName);
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName,
-              ...(display.input ? { input: display.input } : {}),
-              ...(display.description ? { description: display.description } : {}),
-              message: `Running ${toolName}...`,
-            },
-          });
-          emitTrace('Codex: MCP tool call', { toolName });
-          return true;
-        }
+          // ── File search (Responses API: file_search_call) ──
+          case 'file_search_call':
+          case 'file_search': {
+            const query = String(
+              item?.query ??
+              item?.input?.query ??
+              item?.arguments?.query ??
+              ''
+            );
+            emitToolStart(itemId, 'FileSearch', {
+              input: query || undefined,
+              message: query ? `Searching files: ${query.slice(0, 60)}` : 'Searching files...',
+            });
+            emitTrace('Codex: file search', { query });
+            return true;
+          }
 
-        // Function calls / tool calls
-        if (itemType === 'function_call' || itemType === 'functionCall' || itemType === 'tool_call' || itemType === 'toolCall') {
-          const toolName = String(item?.name ?? item?.function?.name ?? item?.toolName ?? 'Tool');
-          const rawInput = item?.arguments ?? item?.input ?? item?.function?.arguments;
-          const normalized = normalizeToolInput(rawInput);
-          const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
-          pendingTools.set(itemId, toolName);
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName,
-              ...(display.input ? { input: display.input } : {}),
-              ...(display.description ? { description: display.description } : {}),
-              message: `Running ${toolName}...`,
-            },
-          });
-          emitTrace('Codex: function call', { toolName });
-          return true;
-        }
+          // ── Code interpreter (Responses API: code_interpreter_call) ──
+          case 'code_interpreter_call':
+          case 'code_interpreter': {
+            const code = String(item?.code ?? item?.input ?? '');
+            emitToolStart(itemId, 'CodeInterpreter', {
+              input: code ? code.slice(0, MAX_TOOL_DISPLAY_LEN) : undefined,
+              message: 'Running code...',
+            });
+            emitTrace('Codex: code interpreter');
+            return true;
+          }
 
-        // Command execution / shell
-        if (itemType === 'command_execution' || itemType === 'commandExecution' || itemType === 'shell' || itemType === 'CommandExecution') {
-          const command = String(item?.command ?? item?.input ?? '');
-          const normalized = normalizeToolInput({ command });
-          const display = normalized ? extractToolDisplayInfo('Bash', normalized) : {};
-          pendingTools.set(itemId, 'Bash');
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName: 'Bash',
-              ...(display.input ? { input: display.input } : {}),
+          // ── Computer use (Responses API: computer_call) ──
+          case 'computer_call':
+          case 'computer': {
+            const actionType = String(item?.action?.type ?? item?.action ?? '');
+            emitToolStart(itemId, 'Computer', {
+              input: actionType || undefined,
+              message: actionType ? `Computer: ${actionType}` : 'Using computer...',
+            });
+            emitTrace('Codex: computer use', { action: actionType });
+            return true;
+          }
+
+          // ── Shell / command execution ──
+          // Responses API: shell_call, local_shell_call
+          // Legacy: command_execution, commandExecution, CommandExecution, shell
+          case 'shell_call':
+          case 'local_shell_call':
+          case 'command_execution':
+          case 'commandExecution':
+          case 'CommandExecution':
+          case 'shell': {
+            const command = String(
+              item?.command ?? item?.input?.command ?? item?.input ?? ''
+            );
+            const normalized = normalizeToolInput({ command });
+            const display = normalized ? extractToolDisplayInfo('Bash', normalized) : {};
+            emitToolStart(itemId, 'Bash', {
+              input: display.input,
+              description: display.description,
               message: 'Running command...',
-            },
-          });
-          emitTrace('Codex: command execution', { command: command.slice(0, MAX_TOOL_DISPLAY_LEN) });
-          return true;
-        }
+            });
+            emitTrace('Codex: shell', { command: command.slice(0, MAX_TOOL_DISPLAY_LEN) });
+            return true;
+          }
 
-        // File changes
-        if (itemType === 'file_change' || itemType === 'fileChange' || itemType === 'FileChange' || itemType === 'apply_patch') {
-          const filePath = String(item?.path ?? item?.filePath ?? item?.file ?? '');
-          pendingTools.set(itemId, 'Edit');
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName: 'Edit',
-              ...(filePath ? { input: filePath } : {}),
+          // ── Apply patch / file changes ──
+          // Responses API: apply_patch_call
+          // Legacy: file_change, fileChange, FileChange, apply_patch
+          case 'apply_patch_call':
+          case 'apply_patch':
+          case 'file_change':
+          case 'fileChange':
+          case 'FileChange': {
+            const filePath = String(item?.path ?? item?.filePath ?? item?.file ?? '');
+            // apply_patch_call has operations[] with create_file/update_file/delete_file
+            const ops = item?.operations ?? item?.patch?.operations;
+            let desc: string | undefined;
+            if (Array.isArray(ops) && ops.length > 0) {
+              const paths = ops
+                .map((op: any) => String(op?.path ?? op?.file ?? ''))
+                .filter(Boolean)
+                .slice(0, 3);
+              if (paths.length > 0) desc = paths.join(', ');
+            }
+            emitToolStart(itemId, 'Edit', {
+              input: filePath || desc || undefined,
               message: 'Editing file...',
-            },
-          });
-          return true;
-        }
+            });
+            return true;
+          }
 
-        // Context compaction (ALWAYS show - critical operation)
-        if (itemType === 'contextCompaction' || itemType === 'context_compaction' || itemType === 'compaction') {
-          emitCompactionLifecycle('tool_start', { itemId });
-          // Also emit as trace for visibility
-          emitEvent({ event: 'trace', data: { message: 'Context compaction in progress' } });
-          return true;
-        }
+          // ── Image generation (Responses API: image_generation_call) ──
+          case 'image_generation_call':
+          case 'image_generation': {
+            const prompt = String(item?.prompt ?? item?.input?.prompt ?? '');
+            emitToolStart(itemId, 'ImageGeneration', {
+              input: prompt ? prompt.slice(0, MAX_TOOL_DISPLAY_LEN) : undefined,
+              message: 'Generating image...',
+            });
+            emitTrace('Codex: image generation');
+            return true;
+          }
 
-        return false;
+          // ── Tool search (Responses API: tool_search_call) ──
+          case 'tool_search_call':
+          case 'tool_search': {
+            const query = String(item?.query ?? item?.input?.query ?? '');
+            emitToolStart(itemId, 'ToolSearch', {
+              input: query || undefined,
+              message: query ? `Searching tools: ${query.slice(0, 60)}` : 'Searching tools...',
+            });
+            emitTrace('Codex: tool search', { query });
+            return true;
+          }
+
+          // ── MCP tool calls (Responses API: mcp_call, mcp_list_tools) ──
+          case 'mcp_call':
+          case 'mcp_tool_call':
+          case 'mcpToolCall':
+          case 'mcp_list_tools': {
+            const toolName = String(item?.name ?? item?.toolName ?? item?.tool ?? 'MCP Tool');
+            const rawInput = item?.input ?? item?.arguments;
+            const normalized = normalizeToolInput(rawInput);
+            const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+            emitToolStart(itemId, toolName, {
+              input: display.input,
+              description: display.description,
+            });
+            emitTrace('Codex: MCP tool call', { toolName });
+            return true;
+          }
+
+          // ── Custom tool call (Responses API: custom_tool_call) ──
+          case 'custom_tool_call': {
+            const toolName = String(item?.name ?? item?.toolName ?? 'Custom Tool');
+            const rawInput = item?.input ?? item?.arguments;
+            const normalized = normalizeToolInput(rawInput);
+            const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+            emitToolStart(itemId, toolName, {
+              input: display.input,
+              description: display.description,
+            });
+            emitTrace('Codex: custom tool', { toolName });
+            return true;
+          }
+
+          // ── Function calls / tool calls (legacy) ──
+          case 'function_call':
+          case 'functionCall':
+          case 'tool_call':
+          case 'toolCall': {
+            const toolName = String(item?.name ?? item?.function?.name ?? item?.toolName ?? 'Tool');
+            const rawInput = item?.arguments ?? item?.input ?? item?.function?.arguments;
+            const normalized = normalizeToolInput(rawInput);
+            const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+            emitToolStart(itemId, toolName, {
+              input: display.input,
+              description: display.description,
+            });
+            emitTrace('Codex: function call', { toolName });
+            return true;
+          }
+
+          // ── Context compaction (ALWAYS show - critical operation) ──
+          case 'contextCompaction':
+          case 'context_compaction':
+          case 'compaction': {
+            emitCompactionLifecycle('tool_start', { itemId });
+            emitEvent({ event: 'trace', data: { message: 'Context compaction in progress' } });
+            return true;
+          }
+
+          // ── Non-tool items we explicitly skip (no tool card) ──
+          case 'reasoning':
+          case 'message':
+          case 'mcp_approval_request':
+            return false;
+
+          default:
+            // Check mcp prefix (some MCP types we haven't listed)
+            if (itemType.startsWith('mcp')) {
+              const toolName = String(item?.name ?? item?.toolName ?? item?.tool ?? 'MCP Tool');
+              const rawInput = item?.input ?? item?.arguments;
+              const normalized = normalizeToolInput(rawInput);
+              const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+              emitToolStart(itemId, toolName, {
+                input: display.input,
+                description: display.description,
+              });
+              emitTrace('Codex: MCP tool (prefix match)', { toolName, itemType });
+              return true;
+            }
+            return false;
+        }
       };
 
       // Handle reasoning summary deltas (streamed thinking)
@@ -2194,7 +2333,9 @@ export async function runCodexJob(
       }
 
       // Catch-all for item/* completion events not already handled above.
+      // Exclude 'item/completed' itself — it has a dedicated handler below.
       if (
+        method !== 'item/completed' &&
         method.startsWith('item/') &&
         (method.includes('/completed') || method.includes('/finished'))
       ) {
@@ -2258,11 +2399,36 @@ export async function runCodexJob(
           emitCompactionLifecycle('compaction_complete', item ?? params);
         }
 
-        // Emit tool_complete for tracked tool items
+        // Emit tool_update with enriched data if available, then tool_complete.
         const completedItemId = String(
           item?.id ?? item?.itemId ?? params?.itemId ?? params?.id ?? ''
         );
         if (completedItemId && pendingTools.has(completedItemId)) {
+          // For web search completions, try to extract query/results that weren't available at start.
+          const completedType = String(item?.type ?? '').trim();
+          if (
+            completedType === 'web_search_call' ||
+            completedType === 'web_search' ||
+            completedType === 'web_search_result'
+          ) {
+            const lateQuery = String(
+              item?.query ??
+              item?.action?.query ??
+              item?.search_query ??
+              ''
+            );
+            if (lateQuery) {
+              emitEvent({
+                event: 'plan',
+                data: {
+                  phase: 'tool_update',
+                  toolId: completedItemId,
+                  toolName: 'WebSearch',
+                  input: lateQuery,
+                },
+              });
+            }
+          }
           emitToolComplete(completedItemId);
         }
         const extractedText = extractAssistantTextFromItem(item);
