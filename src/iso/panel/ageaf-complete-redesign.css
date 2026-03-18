@@ -182,17 +182,9 @@ body[data-ageaf-theme="light"] .ageaf-diff-modal__backdrop,
   background: var(--ageaf-modal-backdrop);
 }
 
-/* Thinking block (CoT) in Light Mode */
-.ageaf-panel.light .ageaf-cot-thinking:hover {
-  background: rgba(0, 0, 0, 0.04);
-}
-
+/* CoT in Light Mode */
 .ageaf-panel.light .ageaf-message__cot-header {
   color: var(--ageaf-text-secondary);
-}
-
-.ageaf-panel.light .ageaf-message__cot-body {
-  border-left-color: rgba(57, 185, 138, 0.3);
 }
 
 /* Tool indicator backgrounds in Light Mode */
@@ -968,7 +960,7 @@ body[data-ageaf-theme="light"] .ageaf-grouped-patch__separator {
 .ageaf-message__cot-header {
   display: flex;
   align-items: center;
-  gap: var(--ageaf-space-sm);
+  gap: 6px;
   padding: 4px 2px;
   border: none;
   cursor: pointer;
@@ -993,15 +985,19 @@ body[data-ageaf-theme="light"] .ageaf-grouped-patch__separator {
 }
 
 .ageaf-cot-label {
-  flex: 1;
   font-size: 11px;
   letter-spacing: 0.02em;
 }
 
+.ageaf-cot-duration {
+  font-size: 10px;
+  font-family: var(--ageaf-font-mono, 'SF Mono', Monaco, monospace);
+  opacity: 0.5;
+}
+
 .ageaf-message__cot-body {
-  padding: 4px 0 4px 12px;
-  border-left: 2px solid rgba(57, 185, 138, 0.2);
-  margin-left: 4px;
+  padding: 2px 0;
+  margin-left: 2px;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -1018,7 +1014,7 @@ body[data-ageaf-theme="light"] .ageaf-grouped-patch__separator {
 .ageaf-cot-thinking-icon {
   font-size: 11px;
   flex-shrink: 0;
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .ageaf-cot-thinking-content {

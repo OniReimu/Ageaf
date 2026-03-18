@@ -3495,10 +3495,11 @@
   cursor: pointer;
   display: flex;
   align-items: center;
+  gap: 6px;
   color: var(--ageaf-panel-muted);
   font-size: 11px;
   font-family: inherit;
-  transition: opacity 0.1s ease;
+  transition: opacity 0.15s ease-out;
   opacity: 0.7;
 }
 
@@ -3511,7 +3512,6 @@
 }
 
 .ageaf-cot-arrow {
-  margin-right: 6px;
   font-size: 9px;
   opacity: 0.6;
 }
@@ -3520,16 +3520,62 @@
   font-weight: 500;
 }
 
+.ageaf-cot-duration {
+  font-size: 10px;
+  font-family: 'SF Mono', Monaco, monospace;
+  opacity: 0.5;
+}
+
 .ageaf-message__cot-body {
-  padding: 4px 0 4px 12px;
-  border-left: 2px solid rgba(57, 185, 138, 0.2);
-  margin-left: 4px;
+  padding: 2px 0;
+  margin-left: 2px;
   font-size: 12px;
   display: flex;
   flex-direction: column;
   gap: 1px;
 }
 
+/* ── Per-item left accent bar ── */
+.ageaf-cot-item {
+  border-left: 2px solid rgba(255, 255, 255, 0.08);
+  padding-left: 10px;
+  transition: border-color 0.2s ease-out;
+}
+
+.ageaf-cot-item--active {
+  border-left-color: rgba(57, 185, 138, 0.6);
+  animation: ageaf-cot-pulse 2s ease-in-out infinite;
+}
+
+.ageaf-cot-item--completed {
+  border-left-color: rgba(57, 185, 138, 0.2);
+}
+
+.ageaf-cot-item--failed {
+  border-left-color: rgba(244, 100, 100, 0.5);
+}
+
+@keyframes ageaf-cot-pulse {
+  0%, 100% { border-left-color: rgba(57, 185, 138, 0.6); }
+  50% { border-left-color: rgba(57, 185, 138, 0.25); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ageaf-cot-item--active {
+    animation: none;
+    border-left-color: rgba(57, 185, 138, 0.5);
+  }
+}
+
+/* ── Gradient fade for truncated text ── */
+.ageaf-cot-fade {
+  overflow: hidden;
+  white-space: nowrap;
+  -webkit-mask-image: linear-gradient(90deg, #000 75%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 75%, transparent 100%);
+}
+
+/* ── Thinking items ── */
 .ageaf-cot-thinking {
   display: flex;
   align-items: center;
@@ -3539,7 +3585,7 @@
   cursor: pointer;
   padding: 3px 6px;
   border-radius: 4px;
-  transition: background 0.1s ease;
+  transition: background 0.15s ease-out;
 }
 
 .ageaf-cot-thinking:hover {
@@ -3553,7 +3599,7 @@
 .ageaf-cot-thinking-icon {
   font-size: 11px;
   flex-shrink: 0;
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .ageaf-cot-thinking.is-expanded .ageaf-cot-thinking-icon {
@@ -3564,10 +3610,11 @@
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
   opacity: 0.6;
+  -webkit-mask-image: linear-gradient(90deg, #000 75%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 75%, transparent 100%);
 }
 
 .ageaf-cot-thinking-content {
@@ -3585,6 +3632,27 @@
   margin-left: 4px;
 }
 
+/* Merged thinking group */
+.ageaf-cot-thinking-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.ageaf-cot-thinking-group .ageaf-cot-thinking {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.ageaf-cot-thinking-group .ageaf-cot-thinking:first-child {
+  padding-top: 3px;
+}
+
+.ageaf-cot-thinking-group .ageaf-cot-thinking:last-child {
+  padding-bottom: 3px;
+}
+
+/* ── Tool items ── */
 .ageaf-cot-tool {
   display: flex;
   flex-direction: column;
@@ -3593,7 +3661,7 @@
 }
 
 .ageaf-cot-tool--started {
-  background: rgba(57, 185, 138, 0.04);
+  background: rgba(57, 185, 138, 0.03);
 }
 
 .ageaf-cot-tool--completed {
@@ -3601,7 +3669,7 @@
 }
 
 .ageaf-cot-tool--failed {
-  background: rgba(244, 100, 100, 0.04);
+  background: rgba(244, 100, 100, 0.03);
 }
 
 .ageaf-cot-tool__header {
@@ -3637,10 +3705,11 @@
   font-size: 11px;
   opacity: 0.45;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
   min-width: 0;
+  -webkit-mask-image: linear-gradient(90deg, #000 70%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 70%, transparent 100%);
 }
 
 .ageaf-cot-tool__status {
@@ -3680,7 +3749,7 @@
 .ageaf-cot-tool__chevron {
   font-size: 7px;
   opacity: 0.35;
-  transition: transform 0.15s;
+  transition: transform 0.15s ease-out;
   flex-shrink: 0;
 }
 
@@ -3694,8 +3763,9 @@
   font-size: 10px;
   opacity: 0.4;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  -webkit-mask-image: linear-gradient(90deg, #000 80%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 80%, transparent 100%);
 }
 
 .ageaf-cot-tool__detail {
@@ -3708,6 +3778,7 @@
   word-break: break-word;
 }
 
+/* ── Text items ── */
 .ageaf-cot-text {
   display: flex;
   align-items: center;
@@ -3718,7 +3789,7 @@
   cursor: pointer;
   font-size: 11px;
   color: var(--ageaf-panel-text);
-  transition: background 0.1s ease;
+  transition: background 0.15s ease-out;
 }
 
 .ageaf-cot-text:hover {
@@ -3732,7 +3803,7 @@
 .ageaf-cot-text-icon {
   font-size: 11px;
   flex-shrink: 0;
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .ageaf-cot-text.is-expanded .ageaf-cot-text-icon {
@@ -3743,10 +3814,11 @@
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
   opacity: 0.6;
+  -webkit-mask-image: linear-gradient(90deg, #000 75%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 75%, transparent 100%);
 }
 
 .ageaf-cot-text-content {
@@ -3762,6 +3834,43 @@
   opacity: 0.4;
   flex-shrink: 0;
   margin-left: 4px;
+}
+
+/* ── Light mode overrides ── */
+.ageaf-panel.light .ageaf-cot-item {
+  border-left-color: rgba(0, 0, 0, 0.08);
+}
+
+.ageaf-panel.light .ageaf-cot-item--active {
+  border-left-color: rgba(57, 185, 138, 0.5);
+  animation-name: ageaf-cot-pulse-light;
+}
+
+.ageaf-panel.light .ageaf-cot-item--completed {
+  border-left-color: rgba(57, 185, 138, 0.25);
+}
+
+.ageaf-panel.light .ageaf-cot-item--failed {
+  border-left-color: rgba(220, 60, 60, 0.5);
+}
+
+@keyframes ageaf-cot-pulse-light {
+  0%, 100% { border-left-color: rgba(57, 185, 138, 0.5); }
+  50% { border-left-color: rgba(57, 185, 138, 0.15); }
+}
+
+.ageaf-panel.light .ageaf-cot-thinking:hover,
+.ageaf-panel.light .ageaf-cot-text:hover,
+.ageaf-panel.light .ageaf-cot-tool__header:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.ageaf-panel.light .ageaf-cot-tool--started {
+  background: rgba(57, 185, 138, 0.04);
+}
+
+.ageaf-panel.light .ageaf-cot-tool--failed {
+  background: rgba(220, 60, 60, 0.04);
 }
 
 /* Ageaf Landing Page */
