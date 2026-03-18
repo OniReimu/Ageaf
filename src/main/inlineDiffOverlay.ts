@@ -630,10 +630,12 @@ function ensureReviewBar() {
     if (!view || !reviewBarFileKey || reviewBarItems.length === 0) return;
     bulkActionInProgress = true;
     try {
+      // Accept must run bottom-up so earlier edits do not shift offsets for later hunks.
+      const sortedItems = [...reviewBarItems].sort((a, b) =>
+        action === 'accept' ? b.from - a.from : a.from - b.from
+      );
       const ids = [...new Set(
-        [...reviewBarItems]
-          .sort((a, b) => a.from - b.from)
-          .map((x) => x.messageId)
+        sortedItems.map((x) => x.messageId)
       )];
       for (const id of ids) {
         if (!overlayById.has(String(id))) continue;

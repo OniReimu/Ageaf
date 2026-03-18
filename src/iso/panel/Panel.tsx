@@ -7610,35 +7610,33 @@ const Panel = () => {
             if (patch.kind === 'replaceSelection') {
               const snapshot = selectionSnapshotsRef.current.get(jobId) ?? null;
               selectionSnapshotsRef.current.delete(jobId);
-              if (snapshot) {
-                storedPatchReviewMessage = {
-                  role: 'system',
-                  content: '',
-                  patchReview: {
-                    kind: 'replaceSelection',
-                    selection: snapshot.selection,
-                    from: snapshot.from,
-                    to: snapshot.to,
-                    ...(typeof snapshot.lineFrom === 'number'
-                      ? { lineFrom: snapshot.lineFrom }
-                      : {}),
-                    ...(typeof snapshot.lineTo === 'number'
-                      ? { lineTo: snapshot.lineTo }
-                      : {}),
-                    text: patch.text,
-                    status: 'pending',
-                    ...(snapshot.fileName
-                      ? { fileName: snapshot.fileName }
-                      : {}),
-                  },
-                };
-              } else {
-                storedPatchReviewMessage = {
-                  role: 'system',
-                  content:
-                    'Rewrite selection proposal (missing selection snapshot; cannot apply automatically).',
-                };
+              // Guard: discard replaceSelection patches without a valid selection
+              // snapshot — they can't be applied and would produce ghost review cards.
+              if (!snapshot || !(snapshot.to > snapshot.from) || !snapshot.selection?.trim()) {
+                console.trace('[ageaf] discarding replaceSelection patch: no valid selection snapshot');
+                return;
               }
+              storedPatchReviewMessage = {
+                role: 'system',
+                content: '',
+                patchReview: {
+                  kind: 'replaceSelection',
+                  selection: snapshot.selection,
+                  from: snapshot.from,
+                  to: snapshot.to,
+                  ...(typeof snapshot.lineFrom === 'number'
+                    ? { lineFrom: snapshot.lineFrom }
+                    : {}),
+                  ...(typeof snapshot.lineTo === 'number'
+                    ? { lineTo: snapshot.lineTo }
+                    : {}),
+                  text: patch.text,
+                  status: 'pending',
+                  ...(snapshot.fileName
+                    ? { fileName: snapshot.fileName }
+                    : {}),
+                },
+              };
             } else if (patch.kind === 'replaceRangeInFile') {
               storedPatchReviewMessage = {
                 role: 'system',

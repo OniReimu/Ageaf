@@ -65,3 +65,26 @@ test('Inline diff review bar labels are file-scoped', () => {
   assert.doesNotMatch(contents, /undoAll\.textContent = 'Undo All';/);
   assert.doesNotMatch(contents, /acceptAll\.textContent = 'Accept All';/);
 });
+
+test('Inline diff file-level accept applies hunks from bottom to top', () => {
+  const overlayPath = path.join(
+    __dirname,
+    '..',
+    'src',
+    'main',
+    'inlineDiffOverlay.ts'
+  );
+  const contents = fs.readFileSync(overlayPath, 'utf8');
+
+  const runBulkStart = contents.indexOf("const runBulk = async (action: 'accept' | 'reject') => {");
+  assert.ok(runBulkStart >= 0, 'expected runBulk definition');
+  const runBulkEnd = contents.indexOf('};', runBulkStart);
+  assert.ok(runBulkEnd >= 0, 'expected runBulk end');
+  const runBulk = contents.slice(runBulkStart, runBulkEnd);
+
+  assert.match(
+    runBulk,
+    /action === 'accept' \? b\.from - a\.from : a\.from - b\.from/,
+    'expected accept to sort descending by from to avoid offset shift'
+  );
+});

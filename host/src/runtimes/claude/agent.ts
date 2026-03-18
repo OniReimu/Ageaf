@@ -20,7 +20,7 @@ import {
 } from './safety.js';
 import { extractToolDisplayInfo } from '../../toolDisplayInfo.js';
 import { extractAllAgeafPatchFences } from '../../patch/ageafPatchFence.js';
-import { computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
+import { canonicalizePatchFilePath, computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
 
 type EmitEvent = (event: JobEvent) => void;
 type ClaudeQueryRunner = (input: Parameters<typeof sdkQuery>[0]) => ReturnType<typeof sdkQuery>;
@@ -439,6 +439,7 @@ async function runQuery(
       // Use canonical path (from the [Overleaf file:] block) for both patches
       // and dedup, matching what buildReplaceRangePatchesFromFileUpdates uses.
       const canonicalPath = originalFile.filePath;
+      if (emittedPatchFiles.has(canonicalPath)) continue;
       const patches = computePerHunkReplacements(canonicalPath, originalFile.content, content);
       for (const patch of patches) {
         emitEvent({ event: 'patch', data: patch });
@@ -702,12 +703,18 @@ async function runQuery(
             break;
           }
         } else {
+          // Process ageaf-patch fences with per-file dedup — skip replaceRangeInFile
+          // patches whose canonical filePath was already emitted via FILE_UPDATE streaming.
           const patchFences = extractAllAgeafPatchFences(resultText);
           for (const patchFence of patchFences) {
             const candidate = extractJsonObject(patchFence);
             const parsed = PatchSchema.safeParse(candidate);
             if (parsed.success) {
               const pd = parsed.data as Patch;
+              if (pd.kind === 'replaceRangeInFile') {
+                const canonical = canonicalizePatchFilePath((pd as any).filePath, overleafFiles);
+                if (emittedPatchFiles.has(canonical)) continue;
+              }
               emitEvent({ event: 'patch', data: pd });
             }
           }
