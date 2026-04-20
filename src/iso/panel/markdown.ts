@@ -328,7 +328,8 @@ renderer.renderer.rules.fence = (tokens, idx) => {
     if (latex && looksLikeMath(latex)) {
       // Fenced blocks often include outer delimiters like \[...\] — strip them before KaTeX.
       const normalized = stripOuterMathDelimiters(latex);
-      const rendered = renderLatex(normalized, true);
+      const forRendering = stripMathOnlyArtifacts(normalized);
+      const rendered = renderLatex(forRendering, true);
       // IMPORTANT: Do NOT use <pre> here — Panel extracts <pre> into the "quote" UI.
       // Render as a normal block so math stays in the main message flow.
       return `<div class="ageaf-latex-fence" data-latex="${escapeHtml(normalized)}">${rendered}</div>\n`;
