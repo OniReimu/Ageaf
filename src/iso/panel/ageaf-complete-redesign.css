@@ -233,6 +233,12 @@ body[data-ageaf-theme="light"] .ageaf-diff-modal__backdrop,
   color: var(--ageaf-text-primary);
 }
 
+.ageaf-panel.light .ageaf-latex-fence {
+  background: var(--ageaf-surface);
+  border-color: var(--ageaf-border);
+  color: var(--ageaf-text-primary);
+}
+
 .ageaf-panel.light .ageaf-message__copy {
   background: var(--ageaf-surface);
   border-color: var(--ageaf-border);
