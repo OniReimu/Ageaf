@@ -262,6 +262,19 @@ function looksLikeMath(source: string): boolean {
   return false;
 }
 
+// Strip equation-environment-only commands that KaTeX can't parse in raw
+// display math (outside \begin{equation}/\begin{align}/...), e.g. `\label{...}`.
+// These appear when users cite a line range from Overleaf that includes the
+// surrounding equation's label/tag directives.
+function stripMathOnlyArtifacts(source: string): string {
+  return source
+    .replace(/\\label\s*\{[^}]*\}/g, '')
+    .replace(/\\nonumber\b/g, '')
+    .replace(/\\notag\b/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+}
+
 function stripOuterMathDelimiters(source: string): string {
   let s = source.trim();
   if (!s) return s;
