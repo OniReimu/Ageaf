@@ -262,12 +262,21 @@ function looksLikeMath(source: string): boolean {
   return false;
 }
 
-// Strip equation-environment-only commands that KaTeX can't parse in raw
-// display math (outside \begin{equation}/\begin{align}/...), e.g. `\label{...}`.
-// These appear when users cite a line range from Overleaf that includes the
-// surrounding equation's label/tag directives.
+// Clean up LaTeX source for a citation preview so KaTeX renders just the math:
+//   - strip `\label{...}`, `\nonumber`, `\notag` (equation-env-only directives
+//     KaTeX can't parse in raw display math)
+//   - convert numbered environments (`equation`, `align`, `gather`, `multline`,
+//     `eqnarray`) to their starred variants so KaTeX doesn't auto-number the
+//     cited equation with `(1)`, `(2)`, etc.
 function stripMathOnlyArtifacts(source: string): string {
-  return source
+  const numberedEnvs = ['equation', 'align', 'gather', 'multline', 'eqnarray'];
+  let out = source;
+  for (const env of numberedEnvs) {
+    const beginRe = new RegExp(`\\\\begin\\s*\\{${env}\\}`, 'g');
+    const endRe = new RegExp(`\\\\end\\s*\\{${env}\\}`, 'g');
+    out = out.replace(beginRe, `\\begin{${env}*}`).replace(endRe, `\\end{${env}*}`);
+  }
+  return out
     .replace(/\\label\s*\{[^}]*\}/g, '')
     .replace(/\\nonumber\b/g, '')
     .replace(/\\notag\b/g, '')
