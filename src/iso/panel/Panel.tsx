@@ -6,6 +6,11 @@ import {
   type ProjectFile,
 } from './latexExpand';
 import { copyToClipboard } from './clipboard';
+import {
+  buildContextPayload,
+  computeContextPolicy,
+  detectContextIntent,
+} from './contextPolicy';
 import { PatchReviewCard, CopyIcon, CheckIcon } from './PatchReviewCard';
 import {
   GroupedPatchReviewCard,
@@ -5592,7 +5597,10 @@ const Panel = () => {
         return;
       }
 
-      const usage = await fetchClaudeRuntimeContextUsage(options);
+      const usage = await fetchClaudeRuntimeContextUsage(
+        options,
+        conversationId ?? undefined
+      );
       if (
         usage.contextWindow ||
         usage.usedTokens > 0 ||
@@ -6878,6 +6886,35 @@ const Panel = () => {
 
       const finalMessageText = strippedText + autoContextBlocks;
       const options = await getOptions();
+      const hasSelection =
+        typeof selection?.selection === 'string' &&
+        selection.selection.trim().length > 0;
+      const sessionUsageRatio =
+        contextUsage?.contextWindow && contextUsage.contextWindow > 0
+          ? contextUsage.usedTokens / contextUsage.contextWindow
+          : null;
+      const contextIntent = detectContextIntent({
+        action,
+        message: finalMessageText,
+        hasSelection,
+      });
+      const contextPolicy = computeContextPolicy({
+        intent: contextIntent,
+        hasSelection,
+        surroundingContextLimit: options.surroundingContextLimit ?? null,
+        sessionUsageRatio,
+      });
+      const contextPayload = buildContextPayload({
+        message: finalMessageText,
+        selection: selection
+          ? {
+            selection: selection.selection,
+            before: selection.before,
+            after: selection.after,
+          }
+          : null,
+        policy: contextPolicy,
+      });
       const runtimeModel =
         currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
       const runtimeThinkingTokens =
@@ -6954,10 +6991,7 @@ const Panel = () => {
       })();
 
       const sharedContext = {
-        message: finalMessageText,
-        selection: selection?.selection ?? '',
-        surroundingBefore: selection?.before ?? '',
-        surroundingAfter: selection?.after ?? '',
+        ...contextPayload,
         ...(messageImages
           ? {
             images: messageImages.map((image) => ({

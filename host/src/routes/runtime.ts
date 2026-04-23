@@ -43,11 +43,18 @@ export function registerRuntime(server: FastifyInstance) {
   });
 
   server.get('/v1/runtime/claude/context', async (request, reply) => {
-    const query = request.query as { sessionScope?: unknown } | undefined;
+    const query = request.query as {
+      sessionScope?: unknown;
+      conversationId?: unknown;
+    } | undefined;
     const requestedScope =
       query && typeof query.sessionScope === 'string'
         ? query.sessionScope.trim().toLowerCase()
         : null;
+    const conversationId =
+      query && typeof query.conversationId === 'string'
+        ? query.conversationId.trim()
+        : '';
     const sessionScope =
       requestedScope === 'home' || requestedScope === 'project'
         ? (requestedScope as 'home' | 'project')
@@ -59,6 +66,7 @@ export function registerRuntime(server: FastifyInstance) {
       ...(lastRuntime ?? {}),
       model: preferences.model ?? lastRuntime?.model,
       loadUserSettings: lastRuntime?.loadUserSettings ?? true,
+      conversationId: conversationId || lastRuntime?.conversationId,
       sessionScope: sessionScope ?? lastRuntime?.sessionScope,
     };
 

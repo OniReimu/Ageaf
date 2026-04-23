@@ -46,7 +46,9 @@ export function httpTransport(options: Options): Transport {
       payload: { model?: string | null; thinkingMode?: string | null }
     ) => httpUpdateClaudeRuntimePreferences(options, payload),
 
-    fetchClaudeRuntimeContextUsage: () => httpFetchClaudeRuntimeContextUsage(options),
+    fetchClaudeRuntimeContextUsage: (
+      conversationId?: string | null
+    ) => httpFetchClaudeRuntimeContextUsage(options, conversationId),
 
     fetchCodexRuntimeContextUsage: (
       payload?: { threadId?: string }

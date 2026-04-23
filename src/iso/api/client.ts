@@ -75,9 +75,10 @@ export async function updateClaudeRuntimePreferences(
 }
 
 export async function fetchClaudeRuntimeContextUsage(
-  options: Options
+  options: Options,
+  conversationId?: string | null
 ): Promise<ClaudeContextUsageResponse> {
-  return createTransport(options).fetchClaudeRuntimeContextUsage();
+  return createTransport(options).fetchClaudeRuntimeContextUsage(conversationId);
 }
 
 export async function fetchCodexRuntimeContextUsage(
