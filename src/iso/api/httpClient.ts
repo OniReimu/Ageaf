@@ -346,13 +346,19 @@ export type ClaudeContextUsageResponse = {
   percentage: number | null;
 };
 
-export async function fetchClaudeRuntimeContextUsage(options: Options) {
+export async function fetchClaudeRuntimeContextUsage(
+  options: Options,
+  conversationId?: string | null
+) {
   if (!options.hostUrl) {
     throw new Error('Host URL not configured');
   }
 
   const url = new URL('/v1/runtime/claude/context', options.hostUrl);
   url.searchParams.set('sessionScope', 'project');
+  if (conversationId) {
+    url.searchParams.set('conversationId', conversationId);
+  }
   const response = await fetch(url.toString());
 
   if (!response.ok) {

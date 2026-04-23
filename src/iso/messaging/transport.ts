@@ -40,7 +40,7 @@ export type Transport = {
     currentThinkingMode: string;
     maxThinkingTokens: number | null;
   }>;
-  fetchClaudeRuntimeContextUsage: () => Promise<ClaudeContextUsageResponse>;
+  fetchClaudeRuntimeContextUsage: (conversationId?: string | null) => Promise<ClaudeContextUsageResponse>;
   fetchCodexRuntimeContextUsage: (payload?: { threadId?: string }) => Promise<CodexContextUsageResponse>;
   fetchPiRuntimeMetadata: () => Promise<PiRuntimeMetadata>;
   updatePiRuntimePreferences: (payload: {

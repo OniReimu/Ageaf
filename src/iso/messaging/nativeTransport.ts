@@ -198,11 +198,14 @@ export function nativeTransport(_options: Options): Transport {
       };
     },
 
-    async fetchClaudeRuntimeContextUsage() {
+    async fetchClaudeRuntimeContextUsage(conversationId?: string | null) {
       const response = await sendNativeRequest({
         id: crypto.randomUUID(),
         kind: 'request',
-        request: { method: 'GET', path: '/v1/runtime/claude/context?sessionScope=project' },
+        request: {
+          method: 'GET',
+          path: `/v1/runtime/claude/context?sessionScope=project${conversationId ? `&conversationId=${encodeURIComponent(conversationId)}` : ''}`,
+        },
       });
       return unwrapNativeResponse(response) as ClaudeContextUsageResponse;
     },

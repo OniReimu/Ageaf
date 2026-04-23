@@ -1,5 +1,28 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+test('GET /v1/runtime/claude/context accepts conversationId and applies it to runtime lookup', () => {
+  const routePath = path.join(__dirname, '..', 'src', 'routes', 'runtime.ts');
+  const contents = fs.readFileSync(routePath, 'utf8');
+
+  assert.match(contents, /conversationId\?: unknown/);
+  assert.match(
+    contents,
+    /typeof query\.conversationId === 'string'/,
+    'expected route to parse conversationId from the query string'
+  );
+  assert.match(
+    contents,
+    /conversationId:\s*conversationId \|\| lastRuntime\?\.conversationId/,
+    'expected route to prefer the explicit conversationId over stale runtime state'
+  );
+});
 
 test('GET /v1/runtime/claude/context returns context usage', async () => {
   const previousMock = process.env.AGEAF_CLAUDE_MOCK;
@@ -74,4 +97,3 @@ test('POST /v1/runtime/codex/context returns context usage', async () => {
     await server.close();
   }
 });
-
