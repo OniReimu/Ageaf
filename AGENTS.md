@@ -33,15 +33,15 @@ to keep iteration fast and avoid breaking the local dev loop.
   2. Go to `chrome://extensions` and click **Reload** on Ageaf.
   3. Refresh the Overleaf tab so the updated content script runs.
 
-## 3. Keep Dependencies in Sync (Two Node Projects)
+## 3. Unified Dependencies (npm workspaces)
 
-This repo has **two** separate dependency trees:
+This repo uses **npm workspaces** to manage dependencies for both the extension and the host server:
 
-1. Root `package.json` / `package-lock.json` (extension build + tests)
-2. `host/package.json` / `host/package-lock.json` (host server + runtime)
+- A single `package-lock.json` at the root manages all dependencies.
+- You only need to run `npm install` once in the root directory.
 
-If you add/update dependencies, update the correct lockfile and restart the relevant
-dev process (`npm run watch` and/or `cd host && npm run dev`).
+If you add/update dependencies, they will be reflected in the root lockfile. Restart the relevant
+dev process (`npm run dev:all` or `./scripts/dev.sh`).
 
 ## 4. Testing
 
