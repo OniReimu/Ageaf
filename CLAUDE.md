@@ -63,6 +63,9 @@ For quick end-to-end verification:
 * Avoid adding a separate `options.html` page unless explicitly required; prefer the
   in-panel settings UI.
 * Keep host endpoints compatible with browser fetch (CORS + preflight + SSE headers).
+* For deeper React/Preact patterns and performance, consult
+  `.claude/skills/react-best-practices/SKILL.md` (Vercel Engineering — 40+ optimization
+  rules across 8 categories) before refactoring components or addressing perf issues.
 
 ## 6. Useful Commands Recap
 

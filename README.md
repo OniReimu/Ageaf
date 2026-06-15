@@ -118,7 +118,7 @@ BYOK supports **1,000+ models** across 20+ providers. Here is a highlight of sup
    - Enable "Developer mode" (toggle in the top-right corner)
    - Click "Load unpacked"
    - Select the `build/` directory from this repository
-   - After making changes, click the reload icon on the extension card in `chrome://extensions`, then refresh your Overleaf tab
+   - After making changes, click the reload icon on the extension card, then refresh your Overleaf tab
 
 ## How to Update Ageaf
 
