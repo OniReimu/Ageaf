@@ -262,6 +262,28 @@ function looksLikeMath(source: string): boolean {
   return false;
 }
 
+// Clean up LaTeX source for a citation preview so KaTeX renders just the math:
+//   - strip `\label{...}`, `\nonumber`, `\notag` (equation-env-only directives
+//     KaTeX can't parse in raw display math)
+//   - convert numbered environments (`equation`, `align`, `gather`, `multline`,
+//     `eqnarray`) to their starred variants so KaTeX doesn't auto-number the
+//     cited equation with `(1)`, `(2)`, etc.
+function stripMathOnlyArtifacts(source: string): string {
+  const numberedEnvs = ['equation', 'align', 'gather', 'multline', 'eqnarray'];
+  let out = source;
+  for (const env of numberedEnvs) {
+    const beginRe = new RegExp(`\\\\begin\\s*\\{${env}\\}`, 'g');
+    const endRe = new RegExp(`\\\\end\\s*\\{${env}\\}`, 'g');
+    out = out.replace(beginRe, `\\begin{${env}*}`).replace(endRe, `\\end{${env}*}`);
+  }
+  return out
+    .replace(/\\label\s*\{[^}]*\}/g, '')
+    .replace(/\\nonumber\b/g, '')
+    .replace(/\\notag\b/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+}
+
 function stripOuterMathDelimiters(source: string): string {
   let s = source.trim();
   if (!s) return s;
@@ -315,7 +337,8 @@ renderer.renderer.rules.fence = (tokens, idx) => {
     if (latex && looksLikeMath(latex)) {
       // Fenced blocks often include outer delimiters like \[...\] — strip them before KaTeX.
       const normalized = stripOuterMathDelimiters(latex);
-      const rendered = renderLatex(normalized, true);
+      const forRendering = stripMathOnlyArtifacts(normalized);
+      const rendered = renderLatex(forRendering, true);
       // IMPORTANT: Do NOT use <pre> here — Panel extracts <pre> into the "quote" UI.
       // Render as a normal block so math stays in the main message flow.
       return `<div class="ageaf-latex-fence" data-latex="${escapeHtml(normalized)}">${rendered}</div>\n`;

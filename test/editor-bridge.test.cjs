@@ -20,3 +20,20 @@ test('Main editor bridge registers Ageaf events', () => {
   assert.match(contents, /ageaf:editor:replace/);
   assert.match(contents, /ageaf:editor:insert/);
 });
+
+test('registerEditorBridge tolerates early tracker bootstrap failure and still registers listeners', () => {
+  const bridgePath = path.join(
+    __dirname,
+    '..',
+    'src',
+    'main',
+    'editorBridge',
+    'bridge.ts'
+  );
+  const contents = fs.readFileSync(bridgePath, 'utf8');
+
+  assert.match(contents, /export function registerEditorBridge\(\)/);
+  assert.match(contents, /try \{\s*installDispatchTracker\(getTrackedCmView\(\)\);\s*emitHistoryState\(\);/m);
+  assert.match(contents, /\} catch \{\s*\/\/ Editor boot can race bridge registration; lazy init on first request\./m);
+  assert.match(contents, /window\.addEventListener\(REQUEST_EVENT, onSelectionRequest as EventListener\);/);
+});

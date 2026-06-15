@@ -52,6 +52,7 @@ let overlayCompartment: any = null;
 let overlayField: any = null;
 let overlayEffect: any = null;
 let overlayWidgetView: any = null;
+let lastWidgetPayloadSignature: string | null = null;
 let overlayInstalledViews: WeakSet<any> | null = null;
 let lastInstallAttemptAt = 0;
 let overlayGuardExtension: any = null;
@@ -93,6 +94,7 @@ let reviewBarItems: Array<{ messageId: string; from: number }> = [];
 let reviewBarFileKey: string | null = null;
 let reviewBarFocusedByFile: Map<string, string> = new Map();
 let bulkActionInProgress = false;
+let lastSelectionClearVersion = -1;
 
 function isDebugEnabled() {
   try {
@@ -130,10 +132,15 @@ function getCurrentProjectId() {
   return getProjectIdFromPathname(window.location.pathname);
 }
 
+const STYLE_VERSION = '4';
+
 function ensureInlineDiffStyles() {
-  if (document.getElementById(STYLE_ID)) return;
+  const existing = document.getElementById(STYLE_ID);
+  if (existing?.getAttribute('data-v') === STYLE_VERSION) return;
+  existing?.remove();
   const style = document.createElement('style');
   style.id = STYLE_ID;
+  style.setAttribute('data-v', STYLE_VERSION);
   style.textContent = `
     .ageaf-inline-diff-overlay {
       position: absolute;
@@ -176,16 +183,17 @@ function ensureInlineDiffStyles() {
       all: unset;
       cursor: pointer;
       font-family: 'Work Sans', -apple-system, sans-serif;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
-      padding: 5px 10px;
-      min-height: 28px;
-      border-radius: 6px;
+      padding: 2px 8px;
+      min-height: 20px;
+      border-radius: 4px;
       background: rgba(57, 185, 138, 0.2);
       color: #0a2318;
       border: 1px solid rgba(57, 185, 138, 0.4);
       transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
       box-sizing: border-box;
+      white-space: nowrap;
     }
 
     .ageaf-inline-diff-btn:hover {
@@ -236,10 +244,11 @@ function ensureInlineDiffStyles() {
       border-radius: 0;
       pointer-events: auto;
       box-sizing: border-box;
+      overflow: visible;
     }
 
     .ageaf-inline-diff-addition__text {
-      padding: 6px 8px 48px 8px; /* bottom space for buttons, overridden inline */
+      padding: 6px 8px;
       font-family: inherit;
       font-size: inherit;
       line-height: inherit;
@@ -251,15 +260,48 @@ function ensureInlineDiffStyles() {
       overflow-wrap: anywhere;
       word-break: break-word;
       color: inherit;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
+    textarea.ageaf-inline-diff-addition__text {
+      border: 1px dashed rgba(57, 185, 138, 0.25);
+      border-radius: 4px;
+      outline: none;
+      resize: none;
+      min-height: 32px;
+      display: block;
+      overflow: hidden;
+      height: auto;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    textarea.ageaf-inline-diff-addition__text:hover {
+      border-color: rgba(57, 185, 138, 0.4);
+    }
+
+    textarea.ageaf-inline-diff-addition__text:focus {
+      border-style: solid;
+      border-color: rgba(57, 185, 138, 0.6);
+      box-shadow: 0 0 0 2px rgba(57, 185, 138, 0.15);
     }
 
     .ageaf-inline-diff-addition__actions {
       position: absolute;
-      right: 10px;
-      bottom: 10px;
+      right: 4px;
+      bottom: 0;
+      transform: translateY(100%);
       display: inline-flex;
-      gap: 8px;
+      gap: 4px;
       flex: 0 0 auto;
+      z-index: 2147483647;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border-radius: 6px;
+      padding: 3px 4px;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
+      pointer-events: auto;
     }
 
     .ageaf-inline-diff-widget {
@@ -272,9 +314,11 @@ function ensureInlineDiffStyles() {
       pointer-events: auto;
       box-sizing: border-box;
       position: relative;
+      overflow: visible;
     }
 
     .ageaf-inline-diff-widget__old {
+      position: relative;
       background: rgba(239, 68, 68, 0.14);
       text-decoration: line-through;
       opacity: 0.75;
@@ -286,10 +330,21 @@ function ensureInlineDiffStyles() {
       font-size: inherit;
       line-height: inherit;
       color: inherit;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
+    /* CM6 mark decoration for old (deleted) text — text stays in the document
+       so it remains natively selectable/copyable. */
+    .ageaf-inline-diff-mark-old {
+      background-color: rgba(239, 68, 68, 0.14);
+      text-decoration: line-through;
+      user-select: text !important;
+      -webkit-user-select: text !important;
     }
 
     .ageaf-inline-diff-widget__text {
-      padding: 6px 8px 48px 8px;
+      padding: 6px 8px;
       font-family: inherit;
       font-size: inherit;
       line-height: inherit;
@@ -301,6 +356,8 @@ function ensureInlineDiffStyles() {
       overflow-wrap: anywhere;
       word-break: break-word;
       color: inherit;
+      user-select: text;
+      -webkit-user-select: text;
     }
 
     /* Make the proposed text editable with visual affordance */
@@ -309,7 +366,7 @@ function ensureInlineDiffStyles() {
       border-radius: 4px;
       outline: none;
       resize: none;
-      min-height: 64px;
+      min-height: 32px;
       display: block;
       overflow: hidden; /* auto-sized via JS; avoid internal scrolling */
       height: auto;
@@ -328,11 +385,20 @@ function ensureInlineDiffStyles() {
 
     .ageaf-inline-diff-widget__actions {
       position: absolute;
-      right: 10px;
-      bottom: 10px;
+      right: 4px;
+      bottom: 0;
+      transform: translateY(100%);
       display: inline-flex;
-      gap: 8px;
+      gap: 4px;
       flex: 0 0 auto;
+      z-index: 2147483647;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border-radius: 6px;
+      padding: 3px 4px;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
+      pointer-events: auto;
     }
 
     .ageaf-review-bar {
@@ -502,15 +568,12 @@ function ensureReviewBar() {
     const item = reviewBarItems[idx];
     if (!item) return;
     try {
-      const coords = view.coordsAtPos(item.from);
-      if (!coords) return;
       const scrollDOM = view.scrollDOM as HTMLElement;
-      const hostRect = scrollDOM.getBoundingClientRect();
-      const targetTop =
-        coords.top -
-        hostRect.top +
-        scrollDOM.scrollTop -
-        scrollDOM.clientHeight * 0.35;
+      // Use lineBlockAt (height-map based) instead of coordsAtPos which
+      // returns null for off-screen positions in CM6 virtual rendering.
+      const block = view.lineBlockAt(item.from);
+      if (!block) return;
+      const targetTop = block.top - scrollDOM.clientHeight * 0.35;
       scrollDOM.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
     } catch {
       // ignore
@@ -543,7 +606,7 @@ function ensureReviewBar() {
           ? (CSS as any).escape(messageId)
           : messageId;
       const editor = document.querySelector(
-        `.ageaf-inline-diff-widget[data-message-id="${esc}"] textarea[data-ageaf-proposed-editor="1"]`
+        `.ageaf-inline-diff-widget[data-message-id="${esc}"] textarea[data-ageaf-proposed-editor="1"], .ageaf-inline-diff-addition[data-message-id="${esc}"] textarea[data-ageaf-proposed-editor="1"]`
       ) as HTMLTextAreaElement | null;
       if (editor) detail.text = editor.value;
     }
@@ -567,10 +630,12 @@ function ensureReviewBar() {
     if (!view || !reviewBarFileKey || reviewBarItems.length === 0) return;
     bulkActionInProgress = true;
     try {
+      // Accept must run bottom-up so earlier edits do not shift offsets for later hunks.
+      const sortedItems = [...reviewBarItems].sort((a, b) =>
+        action === 'accept' ? b.from - a.from : a.from - b.from
+      );
       const ids = [...new Set(
-        [...reviewBarItems]
-          .sort((a, b) => a.from - b.from)
-          .map((x) => x.messageId)
+        sortedItems.map((x) => x.messageId)
       )];
       for (const id of ids) {
         if (!overlayById.has(String(id))) continue;
@@ -995,7 +1060,11 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       }
 
       ignoreEvent() {
-        // Let DOM controls inside the widget receive pointer/click events.
+        // Keep events inside widget DOM for native selection/editing behavior.
+        return true;
+      }
+
+      get editable() {
         return true;
       }
 
@@ -1019,6 +1088,10 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
       }
 
       ignoreEvent() {
+        return true;
+      }
+
+      get editable() {
         return true;
       }
 
@@ -1065,18 +1138,29 @@ function initializeCm6Overlay(cm6: Cm6Exports) {
               const rt = Number(entry.replaceTo);
               const hasOldRange = Number.isFinite(rf) && Number.isFinite(rt) && rt > rf;
 
+              // Widget only carries the proposed (new) text; old text stays
+              // in the document via a mark decoration so it remains selectable.
               const widget = new WidgetClass(
-                hasOldRange ? (entry.oldText ?? '') : '',
+                '',
                 entry.text,
                 entry.messageId
               );
 
               if (hasOldRange) {
-                // REPLACEMENT: use Decoration.replace() — widget fills old text's position,
-                // gutter stays aligned. block: true tells CM6 to treat the widget as a
-                // block-level replacement so the gutter line numbers adjust correctly.
+                // REPLACEMENT: mark the old text inline (strikethrough + red bg)
+                // so the user can still select/copy it.  The proposed new text
+                // appears as a block widget right after the marked range.
                 items.push(
-                  Decoration.replace({ widget }).range(rf, rt)
+                  Decoration.mark({
+                    class: 'ageaf-inline-diff-mark-old',
+                  }).range(rf, rt)
+                );
+                items.push(
+                  Decoration.widget({
+                    widget,
+                    block: true,
+                    side: 1,
+                  }).range(rt)
                 );
                 nextRanges.push([rf, rt]);
               } else {
@@ -1209,9 +1293,18 @@ function createWidgetDOM(oldText: string, text: string, messageId: string): HTML
   wrap.className = 'ageaf-inline-diff-widget';
   wrap.setAttribute('data-message-id', messageId);
 
+  // Prevent CM6 from capturing mouse events so the textarea inside the
+  // widget is interactive (focus, selection, editing all work natively).
+  wrap.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+  });
+
   if (oldText) {
     const oldTextEl = document.createElement('div');
     oldTextEl.className = 'ageaf-inline-diff-widget__old';
+    oldTextEl.setAttribute('data-ageaf-old-readonly', '1');
+    oldTextEl.setAttribute('contenteditable', 'false');
+    oldTextEl.setAttribute('aria-readonly', 'true');
     oldTextEl.textContent = oldText;
     wrap.appendChild(oldTextEl);
   }
@@ -1289,13 +1382,38 @@ function createWidgetDOM(oldText: string, text: string, messageId: string): HTML
   return wrap;
 }
 
-function setOverlayWidget(view: any, payload: OverlayWidgetPayload | null) {
+function setOverlayWidget(
+  view: any,
+  payload: OverlayWidgetPayload | OverlayWidgetPayload[] | null
+) {
   if (!cm6Exports || !overlayEffect) return;
+  const list = payload
+    ? (Array.isArray(payload) ? payload : [payload])
+    : [];
+  const nextSignature = list
+    .map((entry) =>
+      [
+        entry.messageId,
+        entry.replaceFrom,
+        entry.replaceTo,
+        entry.from,
+        entry.oldText,
+        entry.text,
+      ].join('\u0001')
+    )
+    .join('\u0002');
+  if (
+    overlayWidgetView === view &&
+    lastWidgetPayloadSignature === nextSignature
+  ) {
+    return;
+  }
 
   view.dispatch({
     effects: overlayEffect.of(payload),
   });
   overlayWidgetView = view;
+  lastWidgetPayloadSignature = nextSignature;
 }
 
 function renderOverlay() {
@@ -1357,6 +1475,20 @@ function renderOverlay() {
     .sort((a, b) => a.from - b.from);
   updateReviewBar(activeNameForBar, barItems);
 
+  // Clear the editor selection highlight once when new overlays appear,
+  // so the blue "rewrite selection" shadow doesn't linger behind the diff.
+  if (resolved.length > 0 && overlaySetVersion !== lastSelectionClearVersion) {
+    lastSelectionClearVersion = overlaySetVersion;
+    try {
+      const sel = view.state.selection;
+      if (sel && sel.main && sel.main.from !== sel.main.to) {
+        view.dispatch({ selection: { anchor: sel.main.to } });
+      }
+    } catch {
+      // ignore — selection clearing is best-effort
+    }
+  }
+
   // If there are no overlays at all, ensure we clear any rendered overlay artifacts and stop.
   if (overlayById.size === 0) {
     // Clear CM6 widget set if previously rendered.
@@ -1364,6 +1496,7 @@ function renderOverlay() {
       setOverlayWidget(overlayWidgetView, null);
       overlayWidgetView = null;
     }
+    lastWidgetPayloadSignature = null;
     // Clear DOM fallback artifacts if any.
     clearOverlayElements();
     clearGap();
@@ -1528,11 +1661,33 @@ function renderOverlay() {
 
     const added = document.createElement('div');
     added.className = 'ageaf-inline-diff-addition';
+    added.setAttribute('data-message-id', overlayState.messageId);
     added.style.left = `${rel.left}px`;
     added.style.top = `${rel.top}px`;
     const availableWidth = Math.max(220, scrollDOM.clientWidth - rel.left - 24);
     added.style.width = `${availableWidth}px`;
     added.style.maxWidth = `${availableWidth}px`;
+
+    const text = document.createElement('textarea');
+    text.className = 'ageaf-inline-diff-addition__text';
+    (text as HTMLTextAreaElement).value = range.newText;
+    text.spellcheck = false;
+    text.setAttribute('aria-label', 'Edit proposed text');
+    text.setAttribute('data-ageaf-proposed-editor', '1');
+    const autosize = () => {
+      try {
+        (text as HTMLTextAreaElement).style.height = 'auto';
+        (text as HTMLTextAreaElement).style.height = `${(text as HTMLTextAreaElement).scrollHeight}px`;
+      } catch {
+        // ignore
+      }
+    };
+    text.addEventListener('input', autosize);
+    requestAnimationFrame(() => autosize());
+    const contentStyle = window.getComputedStyle(contentDOM);
+    text.style.fontFamily = contentStyle.fontFamily;
+    text.style.fontSize = contentStyle.fontSize;
+    text.style.lineHeight = contentStyle.lineHeight;
 
     const actions = document.createElement('div');
     actions.className = 'ageaf-inline-diff-addition__actions';
@@ -1544,7 +1699,11 @@ function renderOverlay() {
     accept.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      emitOverlayAction(overlayState.messageId, 'accept');
+      emitOverlayAction(
+        overlayState.messageId,
+        'accept',
+        (text as HTMLTextAreaElement).value
+      );
     });
 
     const feedback = document.createElement('button');
@@ -1554,7 +1713,11 @@ function renderOverlay() {
     feedback.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      emitOverlayAction(overlayState.messageId, 'feedback', range.newText);
+      emitOverlayAction(
+        overlayState.messageId,
+        'feedback',
+        (text as HTMLTextAreaElement).value
+      );
     });
 
     const reject = document.createElement('button');
@@ -1570,24 +1733,6 @@ function renderOverlay() {
     actions.appendChild(accept);
     actions.appendChild(reject);
     actions.appendChild(feedback);
-
-    const text = document.createElement('div');
-    text.className = 'ageaf-inline-diff-addition__text';
-    text.textContent = range.newText;
-    const contentStyle = window.getComputedStyle(contentDOM);
-    text.style.fontFamily = contentStyle.fontFamily;
-    text.style.fontSize = contentStyle.fontSize;
-    text.style.lineHeight = contentStyle.lineHeight;
-
-    const fontSize = Number.parseFloat(contentStyle.fontSize);
-    const lineHeightValue = Number.parseFloat(contentStyle.lineHeight);
-    const resolvedLineHeight = Number.isFinite(lineHeightValue)
-      ? lineHeightValue
-      : Number.isFinite(fontSize)
-        ? fontSize * 1.3
-        : 16;
-    // 2-3 empty lines for the buttons, inside the green paragraph.
-    text.style.paddingBottom = `${Math.round(resolvedLineHeight * 2.6 + 10)}px`;
 
     added.appendChild(text);
     added.appendChild(actions);
@@ -1674,6 +1819,7 @@ function clearOverlay() {
     setOverlayWidget(overlayWidgetView, null);
     overlayWidgetView = null;
   }
+  lastWidgetPayloadSignature = null;
 
   overlayRoot?.remove();
   overlayRoot = null;

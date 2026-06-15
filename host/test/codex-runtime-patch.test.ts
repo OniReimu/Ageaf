@@ -46,3 +46,43 @@ test('Codex runtime emits patch events from ageaf-patch fences', async () => {
   }
 });
 
+test('Codex replaceRangeInFile fence preserves absolute offsets and lineFrom', async () => {
+  const cliPath = path.join(
+    process.cwd(),
+    'test',
+    'fixtures',
+    'codex-patch-replace-range'
+  );
+  const events: JobEvent[] = [];
+
+  try {
+    await runCodexJob(
+      {
+        action: 'chat',
+        context: { message: 'Apply the file edit patch' },
+        runtime: {
+          codex: {
+            cliPath,
+            envVars: '',
+            approvalPolicy: 'on-request',
+          },
+        },
+      },
+      (event) => events.push(event)
+    );
+
+    const patchEvents = events.filter((event) => event.event === 'patch');
+    assert.equal(patchEvents.length, 1, 'expected exactly one patch event');
+    assert.deepEqual(patchEvents[0]?.data, {
+      kind: 'replaceRangeInFile',
+      filePath: 'main.tex',
+      expectedOldText: '\\title{A}\\n\\author{B}',
+      text: '\\begin{document}\\n\\title{A}\\n\\author{B}',
+      from: 420,
+      to: 440,
+      lineFrom: 43,
+    });
+  } finally {
+    await resetCodexAppServerForTests();
+  }
+});

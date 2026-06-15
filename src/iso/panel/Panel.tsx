@@ -6,6 +6,11 @@ import {
   type ProjectFile,
 } from './latexExpand';
 import { copyToClipboard } from './clipboard';
+import {
+  buildContextPayload,
+  computeContextPolicy,
+  detectContextIntent,
+} from './contextPolicy';
 import { PatchReviewCard, CopyIcon, CheckIcon } from './PatchReviewCard';
 import {
   GroupedPatchReviewCard,
@@ -19,6 +24,9 @@ import {
   fetchClaudeRuntimeMetadata,
   fetchCodexRuntimeContextUsage,
   fetchCodexRuntimeMetadata,
+  fetchPiRuntimeContextUsage,
+  fetchPiRuntimeMetadata,
+  updatePiRuntimePreferences,
   fetchHostHealth,
   openAttachmentDialog,
   respondToJobRequest,
@@ -37,6 +45,8 @@ import { getOptions, invalidateOptionsCache } from '../../utils/helper';
 import {
   LOCAL_STORAGE_KEY_INLINE_OVERLAY,
   LOCAL_STORAGE_KEY_OPTIONS,
+  LOCAL_STORAGE_KEY_DISMISSED_UPDATE_COMMIT_SHA,
+  LOCAL_STORAGE_KEY_LAST_SEEN_REMOTE_COMMIT_SHA,
 } from '../../constants';
 import { Options } from '../../types';
 import { parseMarkdown, renderMarkdown } from './markdown';
@@ -48,6 +58,7 @@ import {
   searchSkills,
   type SkillEntry,
 } from './skills/skillsRegistry';
+import { isReservedSlashCommand } from './skills/reservedSlashCommands';
 import {
   ProviderId,
   StoredConversation,
@@ -80,24 +91,98 @@ import Icons from './ageaf-icons';
 import {
   SettingsIcon,
   RewriteIcon,
+  CheckReferencesIcon,
+  NotationCheckIcon,
   AttachFilesIcon,
   NewChatIconAlt,
   CloseSessionIcon,
   ClearChatIcon,
+  SunIcon,
+  MoonIcon,
 } from './ageaf-icons';
 
 const DEFAULT_WIDTH = 360;
 const MIN_WIDTH = 280;
-const MAX_WIDTH = 560;
+const MAX_WIDTH = 900;
 const DEFAULT_MODEL_VALUE = 'sonnet';
 const DEFAULT_MODEL_LABEL = 'Sonnet';
 const INTERRUPTED_BY_USER_MARKER = 'INTERRUPTED BY USER';
 const DEBUG_DIFF = false;
 const HOW_TO_GUIDES_URL = 'https://github.com/OniReimu/Ageaf/tree/main';
+const GITHUB_REPO_URL = 'https://github.com/OniReimu/Ageaf';
+const GITHUB_COMMITS_API_URL =
+  'https://api.github.com/repos/OniReimu/Ageaf/commits/main';
+const UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const EDITOR_OVERLAY_SHOW_EVENT = 'ageaf:editor:overlay:show';
 const EDITOR_OVERLAY_CLEAR_EVENT = 'ageaf:editor:overlay:clear';
 const EDITOR_OVERLAY_READY_EVENT = 'ageaf:editor:overlay:ready';
 const PANEL_OVERLAY_ACTION_EVENT = 'ageaf:panel:patch-review-action';
+
+type RemoteCommitInfo = {
+  sha: string;
+  shortSha: string;
+  commitUrl: string;
+  summary: string;
+};
+
+async function readLocalStorageString(key: string): Promise<string | null> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return null;
+  try {
+    const data = await chrome.storage.local.get([key]);
+    const value = data?.[key];
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeLocalStorageString(key: string, value: string): Promise<void> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+  try {
+    await chrome.storage.local.set({ [key]: value });
+  } catch {
+    // Best effort persistence only.
+  }
+}
+
+async function fetchLatestGitHubCommit(
+  signal?: AbortSignal
+): Promise<RemoteCommitInfo | null> {
+  const requestInit: RequestInit = {
+    method: 'GET',
+    headers: { Accept: 'application/vnd.github+json' },
+    signal,
+  };
+
+  try {
+    const response = await fetch(GITHUB_COMMITS_API_URL, requestInit);
+    if (!response.ok) return null;
+    const payload = (await response.json()) as {
+      sha?: unknown;
+      html_url?: unknown;
+      commit?: { message?: unknown };
+    };
+    const sha = String(payload.sha ?? '').trim();
+    if (!sha) return null;
+    const message = String(payload.commit?.message ?? '').trim();
+    const summaryLine = message ? message.split('\n')[0].trim() : '';
+    const summary = summaryLine || 'Latest main branch update';
+    const commitUrl =
+      typeof payload.html_url === 'string' && payload.html_url.trim()
+        ? payload.html_url
+        : `${GITHUB_REPO_URL}/commit/${sha}`;
+    return {
+      sha,
+      shortSha: sha.slice(0, 7),
+      commitUrl,
+      summary,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function getIconUrl(path: string) {
   try {
@@ -125,14 +210,14 @@ function stripInterruptedByUserSuffix(text: string) {
   return normalized.replace(INTERRUPTED_BY_USER_REGEX, '').trimEnd();
 }
 
-function getPatchIdentityKey(message: StoredMessage) {
+function getPatchIdentityKey(message: { patchReview?: StoredPatchReview }) {
   const review = message.patchReview;
   if (!review) return null;
   if (review.kind === 'replaceRangeInFile') {
-    return `replaceRangeInFile:${review.filePath}:${review.expectedOldText}:${review.text}`;
+    return getPatchFeedbackAnchorKey(review);
   }
   if (review.kind === 'replaceSelection') {
-    return `replaceSelection:${review.from}:${review.to}:${review.selection}:${review.text}`;
+    return getPatchFeedbackAnchorKey(review);
   }
   return `insertAtCursor:${review.text}`;
 }
@@ -140,7 +225,40 @@ function getPatchIdentityKey(message: StoredMessage) {
 function getReplaceRangeIdentityKey(
   review: StoredPatchReview & { kind: 'replaceRangeInFile' }
 ) {
-  return `replaceRangeInFile:${review.filePath}:${review.expectedOldText}:${review.text}`;
+  return getPatchFeedbackAnchorKey(review);
+}
+
+function getPatchFeedbackAnchorKey(
+  review: StoredPatchReview & {
+    kind: 'replaceSelection' | 'replaceRangeInFile';
+  }
+) {
+  if (review.kind === 'replaceSelection') {
+    return `replaceSelection:${review.fileName ?? ''}:${review.from}:${review.to}:${review.selection}`;
+  }
+  return `replaceRangeInFile:${review.filePath}:${review.expectedOldText}:${typeof review.from === 'number' ? review.from : ''}:${typeof review.to === 'number' ? review.to : ''}`;
+}
+
+function upsertPatchReviewMessage<T extends { patchReview?: StoredPatchReview }>(
+  messages: T[],
+  patchMessage: T
+) {
+  const patchKey = getPatchIdentityKey(patchMessage);
+  if (!patchKey) return [...messages, patchMessage];
+
+  const existingIndex = messages.findIndex((message) => {
+    if (getPatchIdentityKey(message) !== patchKey) return false;
+    const status = (message.patchReview as any)?.status ?? 'pending';
+    return status === 'pending';
+  });
+
+  if (existingIndex === -1) {
+    return [...messages, patchMessage];
+  }
+
+  const next = [...messages];
+  next[existingIndex] = patchMessage;
+  return next;
 }
 
 function computeLineFromOffset(content: string, from: number) {
@@ -209,7 +327,8 @@ function computeFileSummary(messages: Message[]): FileSummaryEntry[] {
 
 /* ── Module-level constants (hoisted from inside Panel) ────────────────── */
 
-const ATTACHMENT_LABEL_REGEX = /^\[Attachment: .+ · \d+ lines\]$/;
+const ATTACHMENT_LABEL_REGEX =
+  /^\[Attachment: .+ · \d+ lines(?: · lines? \d+(?:-\d+)?)?\]$/;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const FILE_ATTACHMENT_EXTENSIONS = [
   '.txt',
@@ -223,7 +342,16 @@ const FILE_ATTACHMENT_EXTENSIONS = [
   '.ini',
   '.log',
   '.tex',
+  '.bib',
 ];
+const NOTATION_SCAN_EXTENSIONS = new Set([
+  '.tex',
+  '.sty',
+  '.cls',
+  '.md',
+]);
+const MAX_NOTATION_SCAN_FILES = 48;
+const MAX_NOTATION_SCAN_BYTES = 2 * 1024 * 1024;
 const MAX_FILE_ATTACHMENTS = 10;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 100 * 1024 * 1024;
@@ -265,10 +393,11 @@ const FILE_ATTACHMENT_EXTENSIONS_REGEX = new RegExp(
 );
 
 const ATTACHMENT_LABEL_INLINE_REGEX =
-  /\[Attachment:\s+(.+?)\s+·\s+(\d+)\s+lines\]/g;
+  /\[Attachment:\s+(.+?)\s+·\s+(\d+)\s+lines(?:\s+·\s+lines?\s+(\d+)(?:-(\d+))?)?\]/g;
 const MENTION_INLINE_REGEX = /@\[(file|folder):([^\]]+)\]/g;
 
-const RING_CIRCUMFERENCE = 2 * Math.PI * 10;
+const ringCircumference = 2 * Math.PI * 10;
+const RING_CIRCUMFERENCE = ringCircumference;
 
 /* ── Shared tool display helpers (used by renderCoTBlock & renderToolIndicators) ─ */
 
@@ -285,6 +414,25 @@ const TOOL_ICONS: Record<string, string> = {
   text_editor: '📝',
   mcp: '🔌',
   Compacting: '🔄',
+  Agent: '🤖',
+  Skill: '⚡',
+  ToolSearch: '🔎',
+  LSP: '📐',
+  TaskCreate: '📋',
+  TaskUpdate: '📋',
+  TaskGet: '📋',
+  TaskList: '📋',
+  TaskStop: '📋',
+  CronCreate: '⏰',
+  CronDelete: '⏰',
+  CronList: '⏰',
+  NotebookEdit: '📓',
+  EnterWorktree: '🌳',
+  ExitWorktree: '🌳',
+  FileSearch: '🔎',
+  CodeInterpreter: '💻',
+  Computer: '🖥️',
+  ImageGeneration: '🎨',
 };
 
 function getToolIcon(toolName: string, phase: string): string {
@@ -306,11 +454,63 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   text_editor: 'Text editor',
   mcp: 'MCP tool',
   Compacting: 'Compacting context',
+  Agent: 'Sub-agent',
+  Skill: 'Skill',
+  ToolSearch: 'Discover tools',
+  LSP: 'Language server',
+  TaskCreate: 'Create task',
+  TaskUpdate: 'Update task',
+  TaskGet: 'Get task',
+  TaskList: 'List tasks',
+  TaskStop: 'Stop task',
+  NotebookEdit: 'Edit notebook',
+  EnterWorktree: 'Enter worktree',
+  ExitWorktree: 'Exit worktree',
+  CronCreate: 'Create cron',
+  CronDelete: 'Delete cron',
+  CronList: 'List crons',
+  FileSearch: 'File search',
+  CodeInterpreter: 'Code interpreter',
+  Computer: 'Computer use',
+  ImageGeneration: 'Generate image',
 };
 
 function formatToolName(toolName: string): string {
   return TOOL_DISPLAY_NAMES[toolName] ?? toolName;
 }
+
+/** Extract short context string for the tool header " · context" display. */
+function formatToolContext(toolName: string, input?: string, description?: string): string | null {
+  if (!input && !description) return null;
+  // For file tools, show basename
+  if ((toolName === 'Read' || toolName === 'Write' || toolName === 'Edit') && input) {
+    const parts = input.split('/');
+    return parts[parts.length - 1] || input;
+  }
+  // For Bash, prefer description
+  if (toolName === 'Bash' && description) return description;
+  // For Agent, use input (which is the description field from Agent tool)
+  if (toolName === 'Agent' && input) return input;
+  // Default: use input or description
+  const text = input ?? description ?? '';
+  return text.length > 40 ? text.slice(0, 40) + '...' : text;
+}
+
+/** Elapsed time component that ticks every second while tool is running. */
+const ElapsedTimer = ({ startedAt, completedAt, className }: { startedAt?: number; completedAt?: number; className?: string }) => {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (completedAt || !startedAt) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [startedAt, completedAt]);
+  if (!startedAt) return null;
+  const elapsed = ((completedAt ?? now) - startedAt) / 1000;
+  let display: string;
+  if (elapsed < 60) display = `${elapsed < 10 ? elapsed.toFixed(1) : Math.floor(elapsed)}s`;
+  else display = `${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`;
+  return <span class={className ?? 'ageaf-cot-tool__elapsed'}>{display}</span>;
+};
 
 /**
  * Helper to close any unclosed code fences in partial streaming text.
@@ -334,7 +534,22 @@ function closeUnfinishedCodeFences(text: string): string {
 const PROVIDER_DISPLAY = {
   claude: { label: 'Anthropic' },
   codex: { label: 'OpenAI' },
+  pi: { label: 'BYOK' },
 } as const;
+
+/** Tips shown in the header ticker, cycling automatically. */
+const TIPS = [
+  '⌘K to focus the input',
+  'Enter to send a message',
+  'Esc to cancel a response',
+  '@ to mention files',
+  '/ to browse workflows',
+  'Select text → Rewrite it',
+  'Attach PDFs & docs',
+  'Switch providers via + menu',
+  'Shift+Enter for new line',
+  'Thinking mode for harder tasks',
+];
 
 /** Maximum number of \\input-referenced files to attach as read-only context. */
 const MAX_INPUT_REFERENCES = 20;
@@ -447,6 +662,7 @@ type Message = {
   id: string;
   role: 'system' | 'assistant' | 'user';
   content: string;
+  displayContent?: string;
   statusLine?: string;
   cot?: CoTItem[];
   thinking?: string[];
@@ -459,6 +675,7 @@ type Message = {
 type FilePatchGroup = {
   filePath: string;
   firstId: string;
+  firstPendingId: string | null;
   ids: string[];
 };
 
@@ -467,6 +684,7 @@ type PatchFeedbackTarget = {
   messageId: string;
   messageIndex: number;
   kind: 'replaceSelection' | 'replaceRangeInFile';
+  anchorKey: string;
 };
 
 type QueuedMessage = {
@@ -477,7 +695,12 @@ type QueuedMessage = {
   patchFeedbackTarget?: PatchFeedbackTarget;
 };
 
-type JobAction = 'chat' | 'rewrite' | 'fix_error';
+type JobAction =
+  | 'chat'
+  | 'rewrite'
+  | 'fix_error'
+  | 'notation_check'
+  | 'notation_draft_fixes';
 
 type Patch =
   | { kind: 'replaceSelection'; text: string }
@@ -499,6 +722,18 @@ type SelectionSnapshot = {
   lineFrom?: number;
   lineTo?: number;
   fileName?: string;
+};
+
+type PatchReviewStatus = 'pending' | 'accepted' | 'rejected';
+
+type ReviewActionHistoryEntry = {
+  messageId: string;
+  action: 'accept' | 'reject';
+  prevStatus: PatchReviewStatus;
+  nextStatus: PatchReviewStatus;
+  patchKind: StoredPatchReview['kind'];
+  appliedText?: string;
+  editorHistoryMarker?: number;
 };
 
 type ToolRequest = {
@@ -577,6 +812,7 @@ type RuntimeModel = {
   value: string;
   displayName: string;
   description: string;
+  provider?: string;
   supportedReasoningEfforts?: Array<{
     reasoningEffort: string;
     description: string;
@@ -635,6 +871,72 @@ const Panel = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const [isLightMode, setIsLightMode] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState<RemoteCommitInfo | null>(
+    null
+  );
+
+  // Sync theme to document body so other injected scripts (like citations) can react to it
+  useEffect(() => {
+    if (isLightMode) {
+      document.body.setAttribute('data-ageaf-theme', 'light');
+    } else {
+      document.body.removeAttribute('data-ageaf-theme');
+    }
+  }, [isLightMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let checkInFlight = false;
+    const controller =
+      typeof AbortController !== 'undefined' ? new AbortController() : null;
+
+    const checkForUpdate = async () => {
+      if (checkInFlight) return;
+      checkInFlight = true;
+      try {
+        const latest = await fetchLatestGitHubCommit(controller?.signal);
+        if (!latest) return;
+
+        const [lastSeenSha, dismissedSha] = await Promise.all([
+          readLocalStorageString(LOCAL_STORAGE_KEY_LAST_SEEN_REMOTE_COMMIT_SHA),
+          readLocalStorageString(LOCAL_STORAGE_KEY_DISMISSED_UPDATE_COMMIT_SHA),
+        ]);
+
+        if (!lastSeenSha) {
+          await writeLocalStorageString(
+            LOCAL_STORAGE_KEY_LAST_SEEN_REMOTE_COMMIT_SHA,
+            latest.sha
+          );
+          return;
+        }
+
+        if (lastSeenSha === latest.sha) return;
+
+        await writeLocalStorageString(
+          LOCAL_STORAGE_KEY_LAST_SEEN_REMOTE_COMMIT_SHA,
+          latest.sha
+        );
+
+        if (dismissedSha === latest.sha) return;
+        if (cancelled) return;
+        setUpdateNotice(latest);
+      } finally {
+        checkInFlight = false;
+      }
+    };
+
+    void checkForUpdate();
+    const intervalId = window.setInterval(() => {
+      void checkForUpdate();
+    }, UPDATE_CHECK_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      controller?.abort();
+      window.clearInterval(intervalId);
+    };
+  }, []);
   const [chatProvider, setChatProvider] = useState<ProviderId>('claude');
   const [sessionIds, setSessionIds] = useState<string[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -651,6 +953,8 @@ const Panel = () => {
   const pendingPatchFeedbackTargetRef = useRef<PatchFeedbackTarget | null>(
     null
   );
+  const reviewUndoStackRef = useRef<ReviewActionHistoryEntry[]>([]);
+  const reviewRedoStackRef = useRef<ReviewActionHistoryEntry[]>([]);
   const [toolRequests, setToolRequests] = useState<ToolRequest[]>([]);
   const [toolRequestInputs, setToolRequestInputs] = useState<
     Record<string, string>
@@ -658,7 +962,7 @@ const Panel = () => {
   const [toolRequestBusy, setToolRequestBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<
-    'connection' | 'authentication' | 'tools' | 'customization' | 'safety'
+    'connection' | 'tools' | 'customization' | 'safety'
   >('connection');
   const [settings, setSettings] = useState<Options | null>(null);
   const [settingsMessage, setSettingsMessage] = useState('');
@@ -677,12 +981,15 @@ const Panel = () => {
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModel[]>([]);
   const [thinkingModes, setThinkingModes] = useState<ThinkingMode[]>([]);
   const [currentModel, setCurrentModel] = useState<string | null>(null);
+  const [runtimeRefreshCounter, setRuntimeRefreshCounter] = useState(0);
+  const lastRefreshCounterRef = useRef(0);
   const [currentThinkingMode, setCurrentThinkingMode] = useState('off');
   const [currentThinkingTokens, setCurrentThinkingTokens] = useState<
     number | null
   >(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [yoloMode, setYoloMode] = useState(true);
+  const [tipIndex, setTipIndex] = useState(0);
   const [copiedItems, setCopiedItems] = useState<Record<string, boolean>>({});
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>(
     []
@@ -731,14 +1038,19 @@ const Panel = () => {
       byId.set(message.id, message);
       const patchReview = message.patchReview;
       if (!patchReview || patchReview.kind !== 'replaceRangeInFile') continue;
+      const status = (patchReview as any).status ?? 'pending';
       const fileKey = patchReview.filePath.toLowerCase();
       const existing = groupMap.get(fileKey);
       if (existing) {
         existing.ids.push(message.id);
+        if (status === 'pending' && !existing.firstPendingId) {
+          existing.firstPendingId = message.id;
+        }
       } else {
         groupMap.set(fileKey, {
           filePath: patchReview.filePath,
           firstId: message.id,
+          firstPendingId: status === 'pending' ? message.id : null,
           ids: [message.id],
         });
       }
@@ -747,8 +1059,9 @@ const Panel = () => {
     const roleMap = new Map<string, 'first' | 'absorbed'>();
     for (const group of groupMap.values()) {
       if (group.ids.length < 2) continue;
+      const visibleId = group.firstPendingId ?? group.firstId;
       for (const id of group.ids) {
-        roleMap.set(id, id === group.firstId ? 'first' : 'absorbed');
+        roleMap.set(id, id === visibleId ? 'first' : 'absorbed');
       }
     }
 
@@ -759,12 +1072,6 @@ const Panel = () => {
     };
   }, [messages]);
 
-  // Ephemeral API keys (in-memory only, never persisted)
-  const [claudeApiKey, setClaudeApiKey] = useState<string>('');
-  const [openaiApiKey, setOpenaiApiKey] = useState<string>('');
-  const [showClaudeKey, setShowClaudeKey] = useState(false);
-  const [showOpenaiKey, setShowOpenaiKey] = useState(false);
-
   // Tool execution visibility tracking
   type ToolExecutionState = {
     toolId: string;
@@ -772,6 +1079,7 @@ const Panel = () => {
     phase: 'started' | 'completed' | 'failed';
     message: string;
     input?: string;
+    description?: string;
     timestamp: number;
   };
   const [activeTools, setActiveTools] = useState<
@@ -780,6 +1088,8 @@ const Panel = () => {
   const lastHostOkAtRef = useRef(0);
   const lastRuntimeOkAtRef = useRef(0);
   const lastCodexMetadataCheckAtRef = useRef(0);
+  const lastSyncedTrustModeRef = useRef<string | null>(null);
+  const lastHostStartedAtRef = useRef<string | null>(null);
   const metadataCacheRef = useRef<{
     claude?: {
       models: RuntimeModel[];
@@ -787,6 +1097,11 @@ const Panel = () => {
       fetchedAt: number;
     };
     codex?: {
+      models: RuntimeModel[];
+      thinkingModes: ThinkingMode[];
+      fetchedAt: number;
+    };
+    pi?: {
       models: RuntimeModel[];
       thinkingModes: ThinkingMode[];
       fetchedAt: number;
@@ -844,6 +1159,9 @@ const Panel = () => {
 
     // Streaming status prefix (plan/tool/trace) to display during thinking timer
     statusPrefix: string | null;
+
+    // Whether this job compacted context and should force usage refresh on finalize.
+    didCompactContext: boolean;
   };
 
   const sessionStates = useRef<Map<string, SessionRuntimeState>>(new Map());
@@ -875,6 +1193,7 @@ const Panel = () => {
     cotSequence: [],
 
     statusPrefix: null,
+    didCompactContext: false,
   });
 
   // Get or create session state
@@ -964,6 +1283,7 @@ const Panel = () => {
     const last = cot[cot.length - 1];
     if (last && last.type === 'tool' && last.phase === 'started') {
       last.phase = 'completed';
+      last.completedAt = Date.now();
       return true;
     }
     return false;
@@ -972,38 +1292,6 @@ const Panel = () => {
   const convertThinkingToCoT = (thinking?: string[]): CoTItem[] => {
     if (!thinking) return [];
     return thinking.map((content) => ({ type: 'thinking', content }));
-  };
-
-  // Detect if user accidentally put API key in env vars field
-  const detectApiKeyInEnvVars = (envVars?: string): boolean => {
-    if (!envVars) return false;
-
-    const lines = envVars.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('#')) continue; // Skip comments
-
-      const match = trimmed.match(/^([^=]+)=(.+)$/);
-      if (!match) continue;
-
-      const [, key, value] = match;
-      const keyUpper = key.trim().toUpperCase();
-
-      // Detect API key patterns
-      if (
-        keyUpper.includes('API_KEY') ||
-        keyUpper.includes('APIKEY') ||
-        keyUpper.includes('SECRET') ||
-        keyUpper.includes('TOKEN')
-      ) {
-        // Check if value looks like an API key (starts with sk-, contains hyphens/long alphanum)
-        if (value.trim().match(/^sk-[a-zA-Z0-9_-]{20,}/) || value.length > 30) {
-          return true;
-        }
-      }
-    }
-
-    return false;
   };
 
   const isSendingRef = useRef(false);
@@ -1036,6 +1324,11 @@ const Panel = () => {
   const latexCopyTimersRef = useRef<Map<HTMLElement, number>>(new Map());
   const chatSaveTimerRef = useRef<number | null>(null);
   const contextRefreshInFlightRef = useRef(false);
+  const contextRefreshPendingRef = useRef<{
+    provider?: ProviderId;
+    conversationId?: string | null;
+    force?: boolean;
+  } | null>(null);
   const lineFromBackfillAttemptedRef = useRef<Set<string>>(new Set());
 
   const providerDisplay =
@@ -1043,7 +1336,9 @@ const Panel = () => {
   const providerIndicatorClass =
     chatProvider === 'codex'
       ? 'ageaf-provider--openai'
-      : 'ageaf-provider--anthropic';
+      : chatProvider === 'pi'
+        ? 'ageaf-provider--pi'
+        : 'ageaf-provider--anthropic';
 
   const getConnectionHealthTooltip = () => {
     let baseMessage = '';
@@ -1051,7 +1346,7 @@ const Panel = () => {
       baseMessage = 'Host not running. Check if the host server is started.';
     } else if (!connectionHealth.runtimeWorking) {
       const cliName =
-        chatProvider === 'codex' ? 'Codex CLI' : 'Claude Code CLI';
+        chatProvider === 'codex' ? 'Codex CLI' : chatProvider === 'pi' ? 'BYOK runtime' : 'Claude Code CLI';
       baseMessage = `${cliName} not working.Check if CLI is installed and you are logged in.`;
     } else {
       baseMessage = 'Connected';
@@ -1104,6 +1399,9 @@ const Panel = () => {
     if (provider === 'codex') {
       return conversation.providerState?.codex?.lastUsage ?? null;
     }
+    if (provider === 'pi') {
+      return conversation.providerState?.pi?.lastUsage ?? null;
+    }
     return conversation.providerState?.claude?.lastUsage ?? null;
   };
 
@@ -1122,12 +1420,13 @@ const Panel = () => {
   };
 
   const getContextUsageThrottleMs = (provider: ProviderId) =>
-    provider === 'claude' ? 15000 : 5000;
+    provider === 'claude' ? 15000 : provider === 'pi' ? 5000 : 5000;
 
   const getOrderedSessionIds = (state: StoredProjectChat) => {
     const claudeConversations = state.providers.claude.conversations ?? [];
     const codexConversations = state.providers.codex.conversations ?? [];
-    return [...claudeConversations, ...codexConversations]
+    const piConversations = state.providers.pi?.conversations ?? [];
+    return [...claudeConversations, ...codexConversations, ...piConversations]
       .sort((a, b) => a.createdAt - b.createdAt)
       .map((conversation) => conversation.id);
   };
@@ -1137,6 +1436,9 @@ const Panel = () => {
       (conversation) => conversation.id === conversationId
     ) ??
     state.providers.codex.conversations.find(
+      (conversation) => conversation.id === conversationId
+    ) ??
+    (state.providers.pi?.conversations ?? []).find(
       (conversation) => conversation.id === conversationId
     ) ??
     null;
@@ -1174,6 +1476,15 @@ const Panel = () => {
         resizeFrameRef.current = null;
       }
     };
+  }, []);
+
+  // Auto-cycle header tips (rule 5.1: tipDirection derived from tipIndex)
+  const tipDirection = tipIndex % 2 === 0 ? 'up' : 'down';
+  useEffect(() => {
+    const id = setInterval(() => {
+      setTipIndex((prev) => (prev + 1) % TIPS.length);
+    }, 8000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
@@ -1254,6 +1565,22 @@ const Panel = () => {
     const hostConnected = isFresh(lastHostOkAtRef.current);
     let runtimeWorking = false;
 
+    // Detect host restart via startedAt — reset trust mode sync so preferences re-sync.
+    // This catches brief restarts (<15s) where hostConnected never goes false.
+    if (healthData?.startedAt && healthData.startedAt !== lastHostStartedAtRef.current) {
+      if (lastHostStartedAtRef.current !== null) {
+        // Host identity changed — force re-sync
+        lastSyncedTrustModeRef.current = null;
+      }
+      lastHostStartedAtRef.current = healthData.startedAt;
+    }
+
+    // Also reset on full disconnect (backward compat with hosts without startedAt)
+    if (!hostConnected) {
+      lastSyncedTrustModeRef.current = null;
+      lastHostStartedAtRef.current = null;
+    }
+
     if (hostConnected) {
       if (chatProvider === 'claude') {
         // IMPORTANT: do NOT call /v1/runtime/claude/metadata here.
@@ -1262,6 +1589,24 @@ const Panel = () => {
         const configured = Boolean(healthData?.claude?.configured);
         if (configured) {
           lastRuntimeOkAtRef.current = now;
+        }
+        runtimeWorking = configured || isFresh(lastRuntimeOkAtRef.current);
+      } else if (chatProvider === 'pi') {
+        // Pi: lightweight check via /v1/health signal, same pattern as Claude
+        const configured = Boolean(healthData?.pi?.configured);
+        if (configured) {
+          lastRuntimeOkAtRef.current = now;
+
+          // Sync skillTrustMode to host (value-tracked: re-syncs on host restart or value change)
+          const persistedTrustMode = options.skillTrustMode ?? 'verified';
+          if (persistedTrustMode !== lastSyncedTrustModeRef.current) {
+            try {
+              await updatePiRuntimePreferences(options, { skillTrustMode: persistedTrustMode });
+              lastSyncedTrustModeRef.current = persistedTrustMode;
+            } catch {
+              // Leave as-is — next health check retries
+            }
+          }
         }
         runtimeWorking = configured || isFresh(lastRuntimeOkAtRef.current);
       } else {
@@ -1358,15 +1703,27 @@ const Panel = () => {
   useEffect(() => {
     let cancelled = false;
 
+    // When triggered by a manual refresh (counter changed), invalidate cached
+    // metadata so loadRuntime re-fetches from the host. Only fires on the click
+    // that bumped the counter, not on subsequent provider changes.
+    if (runtimeRefreshCounter !== lastRefreshCounterRef.current) {
+      lastRefreshCounterRef.current = runtimeRefreshCounter;
+      if (chatProvider === 'pi') delete metadataCacheRef.current.pi;
+      else if (chatProvider === 'codex') delete metadataCacheRef.current.codex;
+      else delete metadataCacheRef.current.claude;
+    }
+
     const loadRuntime = async () => {
       const options = await getOptions();
       if (cancelled) return;
       setSettings(options);
       setSettingsMessage('');
       setYoloMode(
-        chatProvider === 'codex'
-          ? (options.openaiApprovalPolicy ?? 'never') === 'never'
-          : options.claudeYoloMode ?? true
+        chatProvider === 'pi'
+          ? true
+          : chatProvider === 'codex'
+            ? (options.openaiApprovalPolicy ?? 'never') === 'never'
+            : options.claudeYoloMode ?? true
       );
 
       const conversationId = chatConversationIdRef.current;
@@ -1379,7 +1736,13 @@ const Panel = () => {
         getCachedStoredUsage(conversation, chatProvider)
       );
 
-      if (chatProvider === 'codex') {
+      if (chatProvider === 'pi') {
+        setRuntimeModels([]);
+        setThinkingModes(FALLBACK_THINKING_MODES);
+        setCurrentThinkingMode(options.piThinkingLevel ?? 'off');
+        setCurrentThinkingTokens(null);
+        setCurrentModel(options.piModel ?? null);
+      } else if (chatProvider === 'codex') {
         setRuntimeModels([]);
         setThinkingModes(
           FALLBACK_THINKING_MODES.map((mode) => ({
@@ -1403,6 +1766,71 @@ const Panel = () => {
       }
 
       try {
+        if (chatProvider === 'pi') {
+          // Check cache first
+          const cached = metadataCacheRef.current.pi;
+          const now = Date.now();
+          const cacheAge = cached ? now - cached.fetchedAt : Infinity;
+          const CACHE_TTL = 1 * 60 * 1000;
+
+          let models: RuntimeModel[];
+          let thinkingModes: ThinkingMode[];
+          let metadata: any = null;
+
+          if (cached && cacheAge < CACHE_TTL) {
+            models = cached.models;
+            thinkingModes = cached.thinkingModes;
+          } else {
+            metadata = await fetchPiRuntimeMetadata(options);
+            if (cancelled) return;
+            models = (metadata.models ?? []).map((m: any) => ({
+              value: m.value,
+              displayName: m.displayName ?? m.value,
+              provider: m.provider,
+              isDefault: false,
+            }));
+            thinkingModes = (metadata.thinkingLevels ?? []).map((level: any) => {
+              const rawId = level.id ?? level.value ?? level;
+              return {
+                id: rawId === 'xhigh' ? 'ultra' : rawId,
+                label: typeof level === 'string' ? level : level.label ?? level.id ?? level.value,
+                maxThinkingTokens: null,
+              };
+            });
+            if (thinkingModes.length === 0) {
+              thinkingModes = FALLBACK_THINKING_MODES;
+            }
+
+            metadataCacheRef.current.pi = {
+              models,
+              thinkingModes,
+              fetchedAt: now,
+            };
+          }
+
+          setRuntimeModels(models);
+          setThinkingModes(thinkingModes);
+          setCurrentModel(
+            metadata
+              ? metadata.currentModel ?? options.piModel ?? models[0]?.value ?? null
+              : options.piModel ?? models[0]?.value ?? null
+          );
+          {
+            const rawLevel = metadata
+              ? metadata.currentThinkingLevel ?? options.piThinkingLevel ?? 'off'
+              : options.piThinkingLevel ?? 'off';
+            setCurrentThinkingMode(rawLevel === 'xhigh' ? 'ultra' : rawLevel);
+          }
+          setCurrentThinkingTokens(null);
+          setYoloMode(true); // Pi is always YOLO
+
+          lastHostOkAtRef.current = now;
+          lastRuntimeOkAtRef.current = now;
+          setConnectionHealth({ hostConnected: true, runtimeWorking: true });
+          void refreshContextUsage({ provider: 'pi', conversationId });
+          return;
+        }
+
         if (chatProvider === 'codex') {
           // Check cache first - 1 minute TTL for faster model discovery
           const cached = metadataCacheRef.current.codex;
@@ -1564,6 +1992,15 @@ const Panel = () => {
         void refreshContextUsage({ provider: 'claude', conversationId });
       } catch {
         if (cancelled) return;
+        if (chatProvider === 'pi') {
+          setRuntimeModels([]);
+          setThinkingModes(FALLBACK_THINKING_MODES);
+          setCurrentThinkingMode(options.piThinkingLevel ?? 'off');
+          setCurrentThinkingTokens(null);
+          setCurrentModel(options.piModel ?? null);
+          setYoloMode(true);
+          return;
+        }
         setRuntimeModels(chatProvider === 'claude' ? CLAUDE_FALLBACK_MODELS : []);
         if (chatProvider === 'codex') {
           setThinkingModes(
@@ -1591,7 +2028,7 @@ const Panel = () => {
     return () => {
       cancelled = true;
     };
-  }, [chatProvider]);
+  }, [chatProvider, runtimeRefreshCounter]);
 
   // Periodically check connection health
   useEffect(() => {
@@ -1709,6 +2146,15 @@ const Panel = () => {
           return false;
         }
 
+        // Preserve unchanged inline quote-block wrappers
+        if (
+          fromEl.classList.contains('ageaf-message__quote-block') &&
+          toEl.classList.contains('ageaf-message__quote-block') &&
+          fromEl.isEqualNode(toEl)
+        ) {
+          return false;
+        }
+
         return true;
       },
     });
@@ -1760,6 +2206,9 @@ const Panel = () => {
     Set<string>
   >(() => new Set());
 
+  // Track expanded tool items for detail view
+  const [expandedToolItems, setExpandedToolItems] = useState<Set<string>>(() => new Set());
+
   const toggleThinkingItemExpanded = (key: string) => {
     setExpandedThinkingItems((prev) => {
       const next = new Set(prev);
@@ -1776,6 +2225,61 @@ const Panel = () => {
     });
   };
 
+  /** Compute the total thinking duration from CoT items (earliest start → latest end). */
+  const computeCoTDuration = (items: CoTItem[]): { startedAt: number | null; completedAt: number | null } => {
+    let earliest: number | null = null;
+    let latest: number | null = null;
+    for (const item of items) {
+      if (item.type === 'tool') {
+        if (item.startedAt && (earliest === null || item.startedAt < earliest)) earliest = item.startedAt;
+        if (item.completedAt && (latest === null || item.completedAt > latest)) latest = item.completedAt;
+      }
+    }
+    return { startedAt: earliest, completedAt: latest };
+  };
+
+  /**
+   * Merge consecutive thinking items into groups for cleaner display.
+   * Returns a new array where adjacent thinking items are collapsed into
+   * a single { type: 'thinking-group', items: [...] } entry.
+   */
+  type CoTGroupedItem = CoTItem | { type: 'thinking-group'; items: CoTThinkingItem[] };
+  const groupCoTItems = (items: CoTItem[]): CoTGroupedItem[] => {
+    const result: CoTGroupedItem[] = [];
+    let thinkingBuffer: CoTThinkingItem[] = [];
+    const flushThinking = () => {
+      if (thinkingBuffer.length === 0) return;
+      if (thinkingBuffer.length === 1) {
+        result.push(thinkingBuffer[0]);
+      } else {
+        result.push({ type: 'thinking-group', items: [...thinkingBuffer] });
+      }
+      thinkingBuffer = [];
+    };
+    for (const item of items) {
+      if (item.type === 'thinking') {
+        thinkingBuffer.push(item);
+      } else {
+        flushThinking();
+        result.push(item);
+      }
+    }
+    flushThinking();
+    return result;
+  };
+
+  /** Determine the left accent bar status class for a CoT item. */
+  const getItemAccentClass = (item: CoTGroupedItem, isLast: boolean, active: boolean): string => {
+    if (item.type === 'tool') {
+      if (item.phase === 'started') return 'ageaf-cot-item--active';
+      if (item.phase === 'failed') return 'ageaf-cot-item--failed';
+      return 'ageaf-cot-item--completed';
+    }
+    // Thinking / text: active pulse only on the last item while streaming
+    if (active && isLast) return 'ageaf-cot-item--active';
+    return 'ageaf-cot-item--completed';
+  };
+
   const renderCoTBlock = (
     cot: CoTItem[],
     active: boolean,
@@ -1783,6 +2287,16 @@ const Panel = () => {
     options?: { hideHeader?: boolean }
   ) => {
     if (!cot || cot.length === 0) return null;
+    // Trim trailing text items — they duplicate the message content rendered below.
+    let trimmedCot = cot;
+    while (trimmedCot.length > 0 && trimmedCot[trimmedCot.length - 1].type === 'text') {
+      trimmedCot = trimmedCot.slice(0, -1);
+    }
+    if (trimmedCot.length === 0) return null;
+
+    const grouped = groupCoTItems(trimmedCot);
+    const duration = computeCoTDuration(trimmedCot);
+
     // When we have a stable messageId, let user control expanded/collapsed even during streaming.
     // Otherwise, default to expanded while active (streaming).
     const isExpanded = messageId
@@ -1797,6 +2311,38 @@ const Panel = () => {
       if (messageId) toggleThinkingExpanded(messageId);
     };
 
+    const renderThinkingItem = (item: CoTThinkingItem, idx: number) => {
+      const thinkingKey = `${messageId ?? 'stream'}-${idx}`;
+      const isThinkingExpanded = expandedThinkingItems.has(thinkingKey);
+      const onToggleThinking = (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleThinkingItemExpanded(thinkingKey);
+      };
+      const preview = item.content.split('\n')[0].slice(0, 100);
+      return (
+        <div
+          key={idx}
+          class={`ageaf-cot-thinking ${isThinkingExpanded ? 'is-expanded' : ''}`}
+          onClick={onToggleThinking}
+        >
+          <span class="ageaf-cot-thinking-icon">🧠</span>
+          {isThinkingExpanded ? (
+            <span class="ageaf-cot-thinking-content">
+              {item.content}
+            </span>
+          ) : (
+            <span class="ageaf-cot-thinking-preview">
+              {preview}
+            </span>
+          )}
+          <span class="ageaf-cot-thinking-toggle">
+            {isThinkingExpanded ? '▼' : '▶'}
+          </span>
+        </div>
+      );
+    };
+
     return (
       <div class={`ageaf-message__cot ${active ? 'is-active' : ''}`}>
         {!hideHeader ? (
@@ -1806,102 +2352,119 @@ const Panel = () => {
             type="button"
           >
             <span class="ageaf-cot-arrow">{isExpanded ? '▼' : '▶'}</span>
-            <span class="ageaf-cot-label">Thought Process</span>
+            <span class="ageaf-cot-label">
+              {active ? 'Thinking' : 'Thought process'}
+            </span>
+            {(duration.startedAt || active) && (
+              <ElapsedTimer className="ageaf-cot-duration" startedAt={duration.startedAt ?? undefined} completedAt={active ? undefined : (duration.completedAt ?? undefined)} />
+            )}
           </button>
         ) : null}
         {isExpanded && (
           <div class="ageaf-message__cot-body">
-            {cot.map((item, idx) => {
-              if (item.type === 'thinking') {
-                const thinkingKey = `${messageId ?? 'stream'}-${idx}`;
-                const isThinkingExpanded =
-                  expandedThinkingItems.has(thinkingKey);
-                const onToggleThinking = (e: MouseEvent) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  toggleThinkingItemExpanded(thinkingKey);
-                };
-                // Get first line or first ~80 chars for preview
-                const preview =
-                  item.content.split('\n')[0].slice(0, 80) +
-                  (item.content.length > 80 || item.content.includes('\n')
-                    ? '…'
-                    : '');
+            {grouped.map((item, idx) => {
+              const accentClass = getItemAccentClass(item, idx === grouped.length - 1, active);
+
+              if (item.type === 'thinking-group') {
                 return (
-                  <div
-                    key={idx}
-                    class={`ageaf-cot-thinking ${isThinkingExpanded ? 'is-expanded' : ''}`}
-                    onClick={onToggleThinking}
-                  >
-                    <span class="ageaf-cot-thinking-icon">🧠</span>
-                    {isThinkingExpanded ? (
-                      <span class="ageaf-cot-thinking-content">
-                        {item.content}
-                      </span>
-                    ) : (
-                      <span class="ageaf-cot-thinking-preview">
-                        {preview}
-                      </span>
-                    )}
-                    <span class="ageaf-cot-thinking-toggle">
-                      {isThinkingExpanded ? '▼' : '▶'}
-                    </span>
+                  <div key={idx} class={`ageaf-cot-item ${accentClass}`}>
+                    <div class="ageaf-cot-thinking-group">
+                      {item.items.map((ti, tiIdx) => renderThinkingItem(ti, idx * 1000 + tiIdx))}
+                    </div>
                   </div>
                 );
               }
+
+              if (item.type === 'thinking') {
+                return (
+                  <div key={idx} class={`ageaf-cot-item ${accentClass}`}>
+                    {renderThinkingItem(item, idx)}
+                  </div>
+                );
+              }
+
               // Text
               if (item.type === 'text') {
                 const trimmed = item.content.trim();
                 if (!trimmed) return null;
                 const textKey = `${messageId ?? 'stream'}-${idx}`;
-                const isTextExpanded =
-                  expandedThinkingItems.has(textKey);
+                const isTextExpanded = expandedThinkingItems.has(textKey);
                 const onToggleText = (e: MouseEvent) => {
                   e.preventDefault();
                   e.stopPropagation();
                   toggleThinkingItemExpanded(textKey);
                 };
-                const textPreview =
-                  trimmed.split('\n')[0].slice(0, 80) +
-                  (trimmed.length > 80 || trimmed.includes('\n')
-                    ? '…'
-                    : '');
+                const textPreview = trimmed.split('\n')[0].slice(0, 100);
                 return (
-                  <div
-                    key={idx}
-                    class={`ageaf-cot-text ${isTextExpanded ? 'is-expanded' : ''}`}
-                    onClick={onToggleText}
-                  >
-                    <span class="ageaf-cot-text-icon">💬</span>
-                    {isTextExpanded ? (
-                      <span class="ageaf-cot-text-content">
-                        {trimmed}
+                  <div key={idx} class={`ageaf-cot-item ${accentClass}`}>
+                    <div
+                      class={`ageaf-cot-text ${isTextExpanded ? 'is-expanded' : ''}`}
+                      onClick={onToggleText}
+                    >
+                      <span class="ageaf-cot-text-icon">💬</span>
+                      {isTextExpanded ? (
+                        <span class="ageaf-cot-text-content">
+                          {trimmed}
+                        </span>
+                      ) : (
+                        <span class="ageaf-cot-text-preview">
+                          {textPreview}
+                        </span>
+                      )}
+                      <span class="ageaf-cot-text-toggle">
+                        {isTextExpanded ? '▼' : '▶'}
                       </span>
-                    ) : (
-                      <span class="ageaf-cot-text-preview">
-                        {textPreview}
-                      </span>
-                    )}
-                    <span class="ageaf-cot-text-toggle">
-                      {isTextExpanded ? '▼' : '▶'}
-                    </span>
+                    </div>
                   </div>
                 );
               }
+
               // Tool
-              const icon = getToolIcon(item.toolName, item.phase);
+              const toolKey = `${messageId ?? 'stream'}-${idx}`;
+              const isToolExpanded = expandedToolItems.has(toolKey);
+              const hasDetail = !!(item.description || item.message);
+              const hasExpandable = hasDetail || !!item.input;
+              const context = formatToolContext(item.toolName, item.input, item.description);
               return (
-                <div
-                  key={idx}
-                  class={`ageaf-cot-tool ageaf-cot-tool--${item.phase}`}
-                >
-                  <span class="ageaf-cot-tool-icon">{icon}</span>
-                  <span class="ageaf-cot-tool-name">
-                    {formatToolName(item.toolName)}
-                  </span>
-                  {item.input && (
-                    <span class="ageaf-cot-tool-input">{item.input}</span>
-                  )}
+                <div key={idx} class={`ageaf-cot-item ${accentClass}`}>
+                  <div
+                    class={`ageaf-cot-tool ageaf-cot-tool--${item.phase}${isToolExpanded ? ' is-expanded' : ''}`}
+                  >
+                    <div
+                      class="ageaf-cot-tool__header"
+                      onClick={() => {
+                        if (!hasExpandable) return;
+                        setExpandedToolItems((prev) => {
+                          const next = new Set(prev);
+                          next.has(toolKey) ? next.delete(toolKey) : next.add(toolKey);
+                          return next;
+                        });
+                      }}
+                    >
+                      <span class="ageaf-cot-tool__icon">
+                        {getToolIcon(item.toolName, item.phase)}
+                      </span>
+                      <span class="ageaf-cot-tool__name">
+                        {formatToolName(item.toolName)}
+                      </span>
+                      {context && (
+                        <span class="ageaf-cot-tool__context">{context}</span>
+                      )}
+                      <span class="ageaf-cot-tool__status">
+                        <ElapsedTimer startedAt={item.startedAt} completedAt={item.completedAt} />
+                        {item.phase === 'started' && <span class="ageaf-cot-tool__spinner" />}
+                        {hasExpandable && <span class="ageaf-cot-tool__chevron">▶</span>}
+                      </span>
+                    </div>
+                    {isToolExpanded && item.input && (
+                      <div class="ageaf-cot-tool__input">{item.input}</div>
+                    )}
+                    {isToolExpanded && hasDetail && (
+                      <div class="ageaf-cot-tool__detail">
+                        {item.description ?? item.message}
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -1916,25 +2479,28 @@ const Panel = () => {
 
     return (
       <div class="ageaf-tool-indicators">
-        {Array.from(activeTools.values()).map((tool) => (
-          <div
-            key={tool.toolId}
-            class={`ageaf - tool - indicator ageaf - tool - indicator--${tool.phase} `}
-          >
-            <span class="ageaf-tool-indicator__icon">
-              {getToolIcon(tool.toolName, tool.phase)}
-            </span>
-            <span class="ageaf-tool-indicator__name">
-              {formatToolName(tool.toolName)}
-            </span>
-            {tool.input && (
-              <span class="ageaf-tool-indicator__input">{tool.input}</span>
-            )}
-            {tool.phase === 'started' && (
-              <span class="ageaf-tool-indicator__spinner" />
-            )}
-          </div>
-        ))}
+        {Array.from(activeTools.values()).map((tool) => {
+          const context = formatToolContext(tool.toolName, tool.input, tool.description);
+          return (
+            <div
+              key={tool.toolId}
+              class={`ageaf-tool-indicator ageaf-tool-indicator--${tool.phase}`}
+            >
+              <span class="ageaf-tool-indicator__icon">
+                {getToolIcon(tool.toolName, tool.phase)}
+              </span>
+              <span class="ageaf-tool-indicator__name">
+                {formatToolName(tool.toolName)}
+              </span>
+              {context && (
+                <span class="ageaf-tool-indicator__input"> · {context}</span>
+              )}
+              {tool.phase === 'started' && (
+                <span class="ageaf-tool-indicator__spinner" />
+              )}
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -1953,6 +2519,7 @@ const Panel = () => {
     next.map((message) => ({
       role: message.role,
       content: message.content,
+      ...(message.displayContent ? { displayContent: message.displayContent } : {}),
       ...(message.statusLine ? { statusLine: message.statusLine } : {}),
       ...(message.cot ? { cot: message.cot } : {}),
       ...(message.thinking && message.thinking.length > 0
@@ -1962,15 +2529,17 @@ const Panel = () => {
         ? { images: message.images }
         : {}),
       ...(message.attachments && message.attachments.length > 0
-        ? { attachments: message.attachments }
+        ? { attachments: message.attachments.map(({ content, ...rest }) => rest) }
         : {}),
       ...(message.documents && message.documents.length > 0
-        ? { documents: message.documents.map((doc) => ({
+        ? {
+          documents: message.documents.map((doc) => ({
             id: doc.id,
             name: doc.name,
             mediaType: doc.mediaType,
             size: doc.size,
-          })) }
+          }))
+        }
         : {}),
       ...(message.patchReview ? { patchReview: message.patchReview } : {}),
     }));
@@ -2023,7 +2592,6 @@ const Panel = () => {
       ) {
         continue;
       }
-      lineFromBackfillAttemptedRef.current.add(message.id);
       entries.push({
         messageId: message.id,
         filePath: patchReview.filePath,
@@ -2049,6 +2617,22 @@ const Panel = () => {
     void (async () => {
       for (const group of byFile.values()) {
         if (cancelled) return;
+        const activeFilename = getActiveFilename()?.toLowerCase() ?? null;
+        const normalizedFilePath = group.filePath.trim().toLowerCase();
+        const normalizedBaseName =
+          normalizedFilePath.split('/').filter(Boolean).pop() ??
+          normalizedFilePath;
+        if (
+          !activeFilename ||
+          (normalizedFilePath !== activeFilename &&
+            normalizedBaseName !== activeFilename)
+        ) {
+          continue;
+        }
+        for (const entry of group.entries) {
+          lineFromBackfillAttemptedRef.current.add(entry.messageId);
+        }
+
         let response: any = null;
         try {
           response = await bridge.requestFileContent(group.filePath);
@@ -2159,7 +2743,8 @@ const Panel = () => {
     const provider = stored.activeProvider;
     const hasConversations =
       (stored.providers.claude.conversations?.length ?? 0) > 0 ||
-      (stored.providers.codex.conversations?.length ?? 0) > 0;
+      (stored.providers.codex.conversations?.length ?? 0) > 0 ||
+      (stored.providers.pi?.conversations?.length ?? 0) > 0;
 
     if (!hasConversations) {
       chatProjectIdRef.current = projectId;
@@ -2771,7 +3356,7 @@ const Panel = () => {
     const textNode = node as Text;
     const anchorOffset = range.endOffset;
     const before = textNode.data.slice(0, anchorOffset);
-    const match = before.match(/(^|[\s\(\[\{])@([A-Za-z0-9._/-]*)$/);
+    const match = before.match(/(^|\W)@([A-Za-z0-9._/-]*)$/);
     if (!match) return null;
     const query = match[2] ?? '';
     const start = anchorOffset - (query.length + 1);
@@ -2867,9 +3452,10 @@ const Panel = () => {
     const textNode = node as Text;
     const anchorOffset = range.endOffset;
     const before = textNode.data.slice(0, anchorOffset);
-    const match = before.match(/(^|[\s\(\[\{])\/([A-Za-z0-9._-]*)$/);
+    const match = before.match(/(^|\W)\/([A-Za-z0-9._-]*)$/);
     if (!match) return null;
     const query = match[2] ?? '';
+    if (isReservedSlashCommand(query)) return null;
     const start = anchorOffset - (query.length + 1);
     return { query, node: textNode, start, end: anchorOffset };
   };
@@ -2886,6 +3472,12 @@ const Panel = () => {
     try {
       const manifest = await loadSkillsManifest();
       const results = searchSkills(manifest.skills, match.query);
+      if (results.length === 0) {
+        setSkillOpen(false);
+        setSkillResults([]);
+        skillRangeRef.current = null;
+        return;
+      }
       skillRangeRef.current = {
         node: match.node,
         start: match.start,
@@ -2928,26 +3520,29 @@ const Panel = () => {
 
   const processSkillDirectives = async (
     text: string
-  ): Promise<{ skillsPrompt: string; strippedText: string }> => {
+  ): Promise<{ skillsPrompt: string; strippedText: string; autoContextPatterns: string[] }> => {
     // Extract skill directives from text (e.g., /langchain, /vllm)
     // Pattern: (start OR whitespace/bracket) + "/" + (allowed chars)
-    const pattern = /(^|[\s([{])\/\s*([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
+    const pattern = /(^|\W)\/\s*([A-Za-z0-9._-]+)(\s|$|[\s)\]}.,;!?])/g;
     const matches = text.matchAll(pattern);
     const directiveNames: string[] = [];
     const seen = new Set<string>();
 
     for (const match of matches) {
-      const skillName = String(match[2] ?? '')
+      const normalized = String(match[2] ?? '')
         .trim()
         .toLowerCase();
-      if (skillName && !seen.has(skillName)) {
-        directiveNames.push(skillName);
-        seen.add(skillName);
+      if (isReservedSlashCommand(normalized)) {
+        continue;
+      }
+      if (normalized && !seen.has(normalized)) {
+        directiveNames.push(normalized);
+        seen.add(normalized);
       }
     }
 
     if (directiveNames.length === 0) {
-      return { skillsPrompt: '', strippedText: text };
+      return { skillsPrompt: '', strippedText: text, autoContextPatterns: [] };
     }
 
     // Load skills manifest and find matching skills
@@ -2955,6 +3550,7 @@ const Panel = () => {
       const manifest = await loadSkillsManifest();
       const skillContents: string[] = [];
       const resolvedNames = new Set<string>();
+      const autoContextPatterns: string[] = [];
 
       for (const name of directiveNames) {
         const skill = manifest.skills.find(
@@ -2964,6 +3560,9 @@ const Panel = () => {
           const markdown = await loadSkillMarkdown(skill);
           skillContents.push(`# Skill: ${skill.name}\n\n${markdown}`);
           resolvedNames.add(name);
+          if (skill.autoContext) {
+            autoContextPatterns.push(...skill.autoContext);
+          }
         }
       }
 
@@ -3015,18 +3614,19 @@ const Panel = () => {
           return {
             skillsPrompt,
             strippedText: Array.from(unique).join('\n\n'),
+            autoContextPatterns,
           };
         }
       }
 
 
-      return { skillsPrompt, strippedText };
+      return { skillsPrompt, strippedText, autoContextPatterns };
     } catch (err) {
       console.error(
         '[processSkillDirectives] Failed to process skill directives:',
         err
       );
-      return { skillsPrompt: '', strippedText: text };
+      return { skillsPrompt: '', strippedText: text, autoContextPatterns: [] };
     }
   };
 
@@ -3231,7 +3831,7 @@ const Panel = () => {
 
   const createAttachmentChip = (
     filename: string,
-    lineCount: string,
+    lineLabel: string,
     preview?: string
   ) => {
     const iconMetaForFilename = (name: string) => {
@@ -3268,7 +3868,7 @@ const Panel = () => {
     const chip = document.createElement('span');
     chip.className = 'ageaf-panel__chip ageaf-message__attachment-chip';
     chip.setAttribute('contenteditable', 'false');
-    chip.setAttribute('aria-label', `${filename} ${lineCount || ''}`.trim());
+    chip.setAttribute('aria-label', `${filename} ${lineLabel || ''}`.trim());
     if (preview) chip.title = preview;
 
     const icon = document.createElement('span');
@@ -3281,7 +3881,7 @@ const Panel = () => {
 
     const rangeSpan = document.createElement('span');
     rangeSpan.className = 'ageaf-panel__chip-range';
-    rangeSpan.textContent = lineCount || '';
+    rangeSpan.textContent = lineLabel || '';
 
     chip.append(icon, nameSpan, rangeSpan);
     return chip;
@@ -3329,10 +3929,17 @@ const Panel = () => {
         if (before) frag.appendChild(document.createTextNode(before));
         const filename = String(m[1] ?? '').trim() || 'snippet.tex';
         const lineCount = String(m[2] ?? '').trim();
+        const lineFrom = String(m[3] ?? '').trim();
+        const lineTo = String(m[4] ?? '').trim();
+        const lineLabel = lineFrom
+          ? lineTo
+            ? `${lineFrom}-${lineTo}`
+            : lineFrom
+          : lineCount;
         const preview =
           node.parentElement?.getAttribute('data-attachment-preview') ?? '';
         frag.appendChild(
-          createAttachmentChip(filename, lineCount, preview || undefined)
+          createAttachmentChip(filename, lineLabel, preview || undefined)
         );
         lastIndex = idx + m[0].length;
       }
@@ -3388,16 +3995,51 @@ const Panel = () => {
     return container.innerHTML;
   };
 
+  const wrapPreWithQuoteBlock = (pre: HTMLElement, copyIndex: number) => {
+    const languageLabel = pre.getAttribute('data-language-label') || '';
+    const wrapper = document.createElement('div');
+    wrapper.className = 'ageaf-message__quote-block';
+
+    if (languageLabel) {
+      const pill = document.createElement('div');
+      pill.className = 'ageaf-message__quote-lang';
+      pill.textContent = languageLabel;
+      wrapper.appendChild(pill);
+    }
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'ageaf-message__copy';
+    copyBtn.type = 'button';
+    copyBtn.setAttribute('aria-label', 'Copy code');
+    copyBtn.title = 'Copy code';
+    copyBtn.setAttribute('data-inline-copy', String(copyIndex));
+    copyBtn.innerHTML =
+      '<svg class="ageaf-message__copy-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">' +
+      '<rect x="6.5" y="3.5" width="10" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+      '<rect x="3.5" y="6.5" width="10" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+      '</svg>';
+    wrapper.appendChild(copyBtn);
+
+    const content = document.createElement('div');
+    content.className = 'ageaf-message__quote-content';
+    content.appendChild(pre.cloneNode(true));
+    wrapper.appendChild(content);
+
+    return wrapper;
+  };
+
   const extractQuotesFromHtml = (html: string) => {
     if (typeof document === 'undefined') {
-      return { mainHtml: html, quotes: [] as QuoteData[], interrupted: false };
+      return { mainHtml: html, quotes: [] as QuoteData[], inlineCodeCopyTexts: [] as string[], interrupted: false };
     }
 
     const container = document.createElement('div');
     container.innerHTML = html;
     const mainContainer = document.createElement('div');
     const quotes: QuoteData[] = [];
+    const inlineCodeCopyTexts: string[] = [];
     let interrupted = false;
+    let inlineCopyIndex = 0;
     const nodes = Array.from(container.childNodes);
 
     const isWhitespaceText = (node: Node) =>
@@ -3425,15 +4067,13 @@ const Panel = () => {
         }
 
         if (element.tagName === 'PRE') {
-          // Extract language info from data attributes
-          const language = element.getAttribute('data-language') || undefined;
-          const languageLabel =
-            element.getAttribute('data-language-label') || undefined;
-          quotes.push({
-            html: element.outerHTML,
-            language,
-            languageLabel,
-          });
+          // Wrap the PRE inline with the quote-block UI (language pill + copy button)
+          const codeEl = element.querySelector('code');
+          const copyText = codeEl?.textContent ?? element.textContent ?? '';
+          inlineCodeCopyTexts.push(copyText);
+          const wrapped = wrapPreWithQuoteBlock(element, inlineCopyIndex);
+          inlineCopyIndex += 1;
+          mainContainer.appendChild(wrapped);
           continue;
         }
 
@@ -3444,10 +4084,7 @@ const Panel = () => {
             interrupted = true;
             continue;
           }
-          if (
-            text.includes('[Attachment:') &&
-            /\[Attachment:\s+.+?\s+·\s+\d+\s+lines\]/.test(text)
-          ) {
+          if (ATTACHMENT_LABEL_REGEX.test(text)) {
             const nextIndex = findNextElementIndex(i + 1);
             if (nextIndex !== -1) {
               const nextNode = nodes[nextIndex] as HTMLElement;
@@ -3486,7 +4123,7 @@ const Panel = () => {
       mainContainer.appendChild(node.cloneNode(true));
     }
 
-    return { mainHtml: mainContainer.innerHTML, quotes, interrupted };
+    return { mainHtml: mainContainer.innerHTML, quotes, inlineCodeCopyTexts, interrupted };
   };
 
   const extractCopyTextFromQuoteHtml = (html: string): string => {
@@ -3568,11 +4205,6 @@ const Panel = () => {
         continue;
       }
 
-      if (token.type === 'fence' && token.level === 0) {
-        copies.push(token.content);
-        continue;
-      }
-
       if (
         token.type === 'inline' &&
         token.level === 0 &&
@@ -3614,6 +4246,13 @@ const Panel = () => {
         candidate = stripped;
       }
     }
+    const bookPrefix = candidate.match(/^book[_-]?\d+/i);
+    if (bookPrefix) {
+      const stripped = candidate.slice(bookPrefix[0].length);
+      if (/^[A-Za-z0-9]/.test(stripped)) {
+        candidate = stripped;
+      }
+    }
     return candidate;
   };
 
@@ -3647,9 +4286,77 @@ const Panel = () => {
     return null;
   };
 
+  const getActiveFileId = (): string | null => {
+    const selectors = [
+      '[role="tab"][aria-selected="true"]',
+      '.cm-tab.is-active',
+      '.cm-tab[aria-selected="true"]',
+      '.cm-tab--active',
+      '[role="treeitem"][aria-selected="true"]',
+      '.file-tree-item.is-selected',
+      '.file-tree-item.selected',
+    ];
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      if (!el || !(el instanceof HTMLElement)) continue;
+      if (el.closest('#ageaf-panel-root')) continue;
+      const idNode = el.matches?.('[data-file-id]')
+        ? el
+        : (el.querySelector?.('[data-file-id]') as HTMLElement | null);
+      const id = idNode?.getAttribute?.('data-file-id')?.trim();
+      if (id) return id;
+    }
+    return null;
+  };
+
+  /** Check the file tree (not editor tabs) for a selected .bib node. */
+  const getTreeSelectedBibFile = (): { name: string; id: string | null } | null => {
+    const treeSelectors = [
+      '[role="treeitem"][aria-selected="true"]',
+      '.file-tree-item.is-selected',
+      '.file-tree-item.selected',
+      '.file-tree .selected .name',
+    ];
+    for (const selector of treeSelectors) {
+      const el = document.querySelector(selector);
+      if (!el || !(el instanceof HTMLElement)) continue;
+      if (el.closest('#ageaf-panel-root')) continue;
+      const text = (
+        el.getAttribute('aria-label') ??
+        el.getAttribute('title') ??
+        el.textContent ??
+        ''
+      ).trim();
+      const name = normalizeFilenameLabel(text);
+      if (!name || !name.toLowerCase().endsWith('.bib')) continue;
+      const idNode = el.matches?.('[data-file-id]')
+        ? el
+        : (el.querySelector?.('[data-file-id]') as HTMLElement | null);
+      const id = idNode?.getAttribute?.('data-file-id')?.trim() ?? null;
+      return { name, id };
+    }
+    return null;
+  };
+
   const getLineCount = (text: string) => {
     if (!text) return 1;
     return text.split(/\r\n|\r|\n/).length;
+  };
+
+  const getAttachmentLineMetadata = (payload: ChipPayload): string | null => {
+    const { lineFrom, lineTo } = payload;
+    if (
+      typeof lineFrom !== 'number' ||
+      !Number.isFinite(lineFrom) ||
+      typeof lineTo !== 'number' ||
+      !Number.isFinite(lineTo)
+    ) {
+      return null;
+    }
+    const start = Math.floor(Math.min(lineFrom, lineTo));
+    const end = Math.floor(Math.max(lineFrom, lineTo));
+    if (start <= 0 || end <= 0) return null;
+    return start === end ? `line ${start}` : `lines ${start}-${end}`;
   };
 
   const getFenceLanguage = (filename: string) => {
@@ -3678,7 +4385,8 @@ const Panel = () => {
   };
 
   const serializeChipPayload = (payload: ChipPayload) => {
-    const label = `[Attachment: ${payload.filename} · ${payload.lineCount} lines]`;
+    const lineMetadata = getAttachmentLineMetadata(payload);
+    const label = `[Attachment: ${payload.filename} · ${payload.lineCount} lines${lineMetadata ? ` · ${lineMetadata}` : ''}]`;
     const language = getFenceLanguage(payload.filename);
     const fence = getSafeMarkdownFence(payload.text);
     const fenceStart = language ? `${fence}${language}` : fence;
@@ -3748,6 +4456,12 @@ const Panel = () => {
     updateImageAttachments([]);
     updateFileAttachments([]);
     updateDocumentAttachments([]);
+    setMentionOpen(false);
+    setMentionResults([]);
+    mentionRangeRef.current = null;
+    setSkillOpen(false);
+    setSkillResults([]);
+    skillRangeRef.current = null;
     const editor = editorRef.current;
     if (!editor) {
       setEditorEmpty(true);
@@ -3957,7 +4671,19 @@ const Panel = () => {
           try {
             const selection = await bridge.requestSelection();
             const selectedText = selection?.selection ?? '';
-            if (selectedText && selectedText.trim()) {
+            const textNormalized = text
+              .replace(/\r\n/g, '\n')
+              .replace(/\r/g, '\n')
+              .trim();
+            const selectedTextNormalized = selectedText
+              .replace(/\r\n/g, '\n')
+              .replace(/\r/g, '\n')
+              .trim();
+            const matchesClipboardSelection =
+              textNormalized.length > 0 &&
+              selectedTextNormalized.length > 0 &&
+              selectedTextNormalized === textNormalized;
+            if (matchesClipboardSelection) {
               const activeName = normalizeFilenameLabel(selection?.activeName);
               const lineFrom =
                 typeof selection?.lineFrom === 'number'
@@ -3968,7 +4694,7 @@ const Panel = () => {
                   ? selection.lineTo
                   : undefined;
               insertChipFromText(
-                selectedText,
+                text,
                 activeName ?? undefined,
                 lineFrom,
                 lineTo
@@ -3978,11 +4704,11 @@ const Panel = () => {
           } catch {
             // ignore selection errors and fallback to clipboard
           }
-          insertChipFromText(text);
+          insertTextAtCursor(text);
         })();
         return;
       }
-      insertChipFromText(text);
+      insertTextAtCursor(text);
     } else {
       insertTextAtCursor(text);
     }
@@ -4193,6 +4919,7 @@ const Panel = () => {
                   onFeedback={(messageId) =>
                     onFeedbackPatchReviewMessage(messageId)
                   }
+                  isLightMode={isLightMode}
                 />
               );
             }
@@ -4233,6 +4960,7 @@ const Panel = () => {
               hasAnimated: true,
             }))
           }
+          isLightMode={isLightMode}
         />
       );
     }
@@ -4311,11 +5039,14 @@ const Panel = () => {
         .replace(/[ \t]+/g, ' ')
         .replace(/\n{3,}/g, '\n\n');
 
+    const contentToRender = message.displayContent ?? message.content;
+
     const {
       mainHtml: rawMainHtml,
       quotes,
+      inlineCodeCopyTexts,
       interrupted,
-    } = extractQuotesFromHtml(renderMarkdown(message.content));
+    } = extractQuotesFromHtml(renderMarkdown(contentToRender));
     const mainHtml = decorateMentionsHtml(
       decorateAttachmentLabelsHtml(rawMainHtml)
     );
@@ -4333,29 +5064,92 @@ const Panel = () => {
         })
         : quotes;
 
+    // Check if all inline code blocks match the patch text (redundant)
+    const allInlineCodesMatchPatch =
+      latestPatchText != null &&
+      inlineCodeCopyTexts.length > 0 &&
+      inlineCodeCopyTexts.every(
+        (text) => normalizeForCompare(text) === normalizeForCompare(latestPatchText)
+      );
+
+    // Strip the main HTML of inline code blocks that duplicate the patch text
+    // to avoid showing redundant content alongside the review card.
+    const strippedMainHtml = (() => {
+      if (!allInlineCodesMatchPatch || message.role !== 'assistant') return mainHtml;
+      if (typeof document === 'undefined') return mainHtml;
+      const temp = document.createElement('div');
+      temp.innerHTML = mainHtml;
+      const blocks = temp.querySelectorAll('.ageaf-message__quote-block');
+      blocks.forEach((block) => block.remove());
+      return temp.innerHTML;
+    })();
+    const hasStrippedMain = strippedMainHtml.trim().length > 0;
+
     // If the assistant message is just the proposed patch text (as a LaTeX/code fence),
     // it's redundant with the review card, so skip rendering the message entirely.
     const isRedundantPatchOnlyAssistantMessage =
       message.role === 'assistant' &&
       latestPatchText != null &&
-      !hasMain &&
-      quotes.length > 0 &&
+      allInlineCodesMatchPatch &&
+      !hasStrippedMain &&
       filteredQuotes.length === 0 &&
       !fileAttachmentsBlock &&
       !imageAttachmentsBlock;
     if (isRedundantPatchOnlyAssistantMessage) return null;
+
+    // Use stripped HTML if we're deduplicating, otherwise use full HTML
+    const finalMainHtml = (allInlineCodesMatchPatch && message.role === 'assistant') ? strippedMainHtml : mainHtml;
+    const hasFinalMain = finalMainHtml.trim().length > 0;
 
     return (
       <>
         {fileAttachmentsBlock}
         {documentAttachmentsBlock}
         {imageAttachmentsBlock}
-        {hasMain ? (
+        {hasFinalMain ? (
           <div
             class="ageaf-message__content"
-            dangerouslySetInnerHTML={{ __html: mainHtml }}
+            dangerouslySetInnerHTML={{ __html: finalMainHtml }}
             onClick={(event) => {
               const target = event.target as HTMLElement | null;
+
+              // Handle inline code copy button
+              const inlineCopyBtn = target?.closest?.(
+                '[data-inline-copy]'
+              ) as HTMLElement | null;
+              if (inlineCopyBtn) {
+                event.preventDefault();
+                event.stopPropagation();
+                const block = inlineCopyBtn.closest('.ageaf-message__quote-block') as HTMLElement | null;
+                const codeEl = block?.querySelector('code');
+                const copyText = codeEl?.textContent ?? '';
+                if (!copyText) return;
+                const copyId = `${message.id}-inline-${inlineCopyBtn.getAttribute('data-inline-copy')}`;
+                void (async () => {
+                  const success = await copyToClipboard(copyText);
+                  if (!success) return;
+                  // Swap to check icon for 3s, then revert (button is inside injected HTML)
+                  const existingTimer = latexCopyTimersRef.current.get(inlineCopyBtn);
+                  if (existingTimer != null) {
+                    window.clearTimeout(existingTimer);
+                  }
+                  inlineCopyBtn.innerHTML =
+                    '<svg class="ageaf-message__copy-check" viewBox="0 0 20 20" aria-hidden="true" focusable="false">' +
+                    '<polyline points="4,10 9,15 16,5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+                    '</svg>';
+                  const timeoutId = window.setTimeout(() => {
+                    inlineCopyBtn.innerHTML =
+                      '<svg class="ageaf-message__copy-icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">' +
+                      '<rect x="6.5" y="3.5" width="10" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+                      '<rect x="3.5" y="6.5" width="10" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
+                      '</svg>';
+                    latexCopyTimersRef.current.delete(inlineCopyBtn);
+                  }, 3000);
+                  latexCopyTimersRef.current.set(inlineCopyBtn, timeoutId);
+                  markCopied(copyId);
+                })();
+                return;
+              }
 
               // Handle diagram download button
               const dlButton = target?.closest?.(
@@ -4453,7 +5247,13 @@ const Panel = () => {
                         })();
                       }}
                     >
-                      {isCopied ? <CheckIcon /> : <CopyIcon />}
+                      {isCopied ? (
+                        <span class="ageaf-message__copy-check">
+                          <CheckIcon />
+                        </span>
+                      ) : (
+                        <CopyIcon />
+                      )}
                     </button>
                     <div
                       class="ageaf-message__quote-content"
@@ -4498,6 +5298,30 @@ const Panel = () => {
     return ordered.length > 0 ? ordered : runtimeModels;
   };
 
+  const PROVIDER_NAME_MAP: Record<string, string> = {
+    openai: 'OpenAI',
+    anthropic: 'Anthropic',
+    google: 'Google',
+    xai: 'xAI',
+    groq: 'Groq',
+    mistral: 'Mistral',
+    openrouter: 'OpenRouter',
+  };
+
+  const formatProviderName = (provider: string): string =>
+    PROVIDER_NAME_MAP[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
+
+  const getGroupedRuntimeModels = (): Array<{ provider: string; models: RuntimeModel[] }> => {
+    const groups = new Map<string, RuntimeModel[]>();
+    for (const model of runtimeModels) {
+      const key = model.provider ?? 'unknown';
+      const arr = groups.get(key) ?? [];
+      arr.push(model);
+      groups.set(key, arr);
+    }
+    return Array.from(groups, ([provider, models]) => ({ provider, models }));
+  };
+
   const getRuntimeModelLabel = (model: RuntimeModel) => {
     const token =
       getKnownModelToken(model.value) ?? getKnownModelToken(model.displayName);
@@ -4530,6 +5354,9 @@ const Panel = () => {
   };
 
   const getSelectedModelLabel = () => {
+    if (chatProvider === 'pi' && !currentModel) {
+      return 'No model';
+    }
     const resolvedModel = currentModel ?? DEFAULT_MODEL_VALUE;
     const resolvedToken = getKnownModelToken(resolvedModel);
     if (resolvedToken && resolvedToken in MODEL_DISPLAY) {
@@ -4578,11 +5405,53 @@ const Panel = () => {
   const applyRuntimePreferences = async (payload: {
     model?: string | null;
     thinkingMode?: string | null;
+    provider?: string | null;
   }) => {
     const options = settings ?? (await getOptions());
     if (options.transport !== 'native' && !options.hostUrl) return;
 
     try {
+      if (chatProvider === 'pi') {
+        const response = await updatePiRuntimePreferences(options, {
+          provider: payload.provider,
+          model: payload.model,
+          thinkingLevel: payload.thinkingMode === 'ultra' ? 'xhigh' : payload.thinkingMode,
+        });
+        if (response.currentModel !== undefined) {
+          setCurrentModel(response.currentModel);
+        }
+        // Update thinking levels if the response includes per-model capabilities
+        if (Array.isArray(response.thinkingLevels) && response.thinkingLevels.length > 0) {
+          const nextModes: ThinkingMode[] = response.thinkingLevels.map((level: any) => {
+            const rawId = level.id ?? level.value ?? level;
+            return {
+              id: rawId === 'xhigh' ? 'ultra' : rawId,
+              label: typeof level === 'string' ? level : level.label ?? level.id ?? level.value,
+              maxThinkingTokens: null,
+            };
+          });
+          setThinkingModes(nextModes);
+        }
+        // Build a single persist payload to avoid stale-closure race between
+        // separate persistRuntimeOptions calls (model + thinking level).
+        const persistUpdates: Partial<Options> = {};
+        if (payload.provider) {
+          persistUpdates.piProvider = payload.provider;
+        }
+        if (payload.model) {
+          persistUpdates.piModel = payload.model;
+        }
+        if (response.currentThinkingLevel) {
+          const uiLevel =
+            response.currentThinkingLevel === 'xhigh' ? 'ultra' : response.currentThinkingLevel;
+          setCurrentThinkingMode(uiLevel);
+          persistUpdates.piThinkingLevel = uiLevel;
+        }
+        if (Object.keys(persistUpdates).length > 0) {
+          await persistRuntimeOptions(persistUpdates);
+        }
+        return;
+      }
       const response = await updateClaudeRuntimePreferences(options, payload);
       if (response.currentModel !== undefined) {
         setCurrentModel(response.currentModel);
@@ -4625,12 +5494,65 @@ const Panel = () => {
       return;
     }
 
-    if (contextRefreshInFlightRef.current) return;
+    if (contextRefreshInFlightRef.current) {
+      const pending = contextRefreshPendingRef.current;
+      contextRefreshPendingRef.current = {
+        provider: params?.provider ?? pending?.provider ?? provider,
+        conversationId:
+          params?.conversationId ??
+          pending?.conversationId ??
+          conversationId ??
+          null,
+        force: Boolean(params?.force) || Boolean(pending?.force),
+      };
+      return;
+    }
     const options = settings ?? (await getOptions());
     if (options.transport !== 'native' && !options.hostUrl) return;
     contextRefreshInFlightRef.current = true;
 
     try {
+      if (provider === 'pi') {
+        const usage = await fetchPiRuntimeContextUsage(options, conversationId ?? undefined);
+        if (
+          usage.contextWindow ||
+          usage.usedTokens > 0 ||
+          usage.percentage !== null
+        ) {
+          const normalized = normalizeContextUsage({
+            usedTokens: usage.usedTokens,
+            contextWindow: usage.contextWindow,
+            percentage: usage.percentage,
+          });
+          const nextUsage: StoredContextUsage = {
+            usedTokens: normalized.usedTokens,
+            contextWindow: normalized.contextWindow,
+            percentage: normalized.percentage ?? null,
+            updatedAt: Date.now(),
+          };
+          const latestState = chatStateRef.current;
+          if (conversationId && latestState) {
+            chatStateRef.current = setConversationContextUsage(
+              latestState,
+              provider,
+              conversationId,
+              nextUsage
+            );
+            scheduleChatSave();
+          }
+          if (chatConversationIdRef.current === conversationId) {
+            setContextUsage(
+              normalizeContextUsage({
+                usedTokens: nextUsage.usedTokens,
+                contextWindow: nextUsage.contextWindow,
+                percentage: nextUsage.percentage,
+              })
+            );
+          }
+        }
+        return;
+      }
+
       if (provider === 'codex') {
         const threadId = conversation?.providerState?.codex?.threadId;
         const usage = await fetchCodexRuntimeContextUsage(options, {
@@ -4675,7 +5597,10 @@ const Panel = () => {
         return;
       }
 
-      const usage = await fetchClaudeRuntimeContextUsage(options);
+      const usage = await fetchClaudeRuntimeContextUsage(
+        options,
+        conversationId ?? undefined
+      );
       if (
         usage.contextWindow ||
         usage.usedTokens > 0 ||
@@ -4716,11 +5641,25 @@ const Panel = () => {
       // ignore context usage errors
     } finally {
       contextRefreshInFlightRef.current = false;
+      const pendingRefresh = contextRefreshPendingRef.current;
+      contextRefreshPendingRef.current = null;
+      if (pendingRefresh) {
+        void refreshContextUsage(pendingRefresh);
+      }
     }
+  };
+
+  const onRefreshModels = () => {
+    setRuntimeRefreshCounter((c) => c + 1);
   };
 
   const onSelectModel = async (model: string) => {
     setCurrentModel(model);
+    if (chatProvider === 'pi') {
+      await applyRuntimePreferences({ model });
+      void refreshContextUsage();
+      return;
+    }
     if (chatProvider === 'codex') {
       const selectedModel =
         runtimeModels.find((entry) => entry.value === model) ??
@@ -4763,6 +5702,12 @@ const Panel = () => {
     void refreshContextUsage();
   };
 
+  const onSelectPiModel = async (model: RuntimeModel) => {
+    setCurrentModel(model.value);
+    await applyRuntimePreferences({ model: model.value, provider: model.provider });
+    void refreshContextUsage();
+  };
+
   const onSelectThinkingMode = async (modeId: string) => {
     const mode =
       thinkingModes.find((entry) => entry.id === modeId) ??
@@ -4770,6 +5715,10 @@ const Panel = () => {
     const maxThinkingTokens = mode?.maxThinkingTokens ?? null;
     setCurrentThinkingMode(modeId);
     setCurrentThinkingTokens(maxThinkingTokens);
+    if (chatProvider === 'pi') {
+      await applyRuntimePreferences({ thinkingMode: modeId });
+      return;
+    }
     if (chatProvider === 'codex') {
       return;
     }
@@ -4781,6 +5730,7 @@ const Panel = () => {
   };
 
   const onToggleYoloMode = async () => {
+    if (chatProvider === 'pi') return; // Pi is always YOLO — no-op
     const next = !yoloMode;
     setYoloMode(next);
     if (chatProvider === 'codex') {
@@ -4790,109 +5740,6 @@ const Panel = () => {
       return;
     }
     await persistRuntimeOptions({ claudeYoloMode: next });
-  };
-
-  // Helper to merge stored env vars with ephemeral API key
-  const buildEnvVarsWithApiKey = (
-    storedEnvVars: string | undefined,
-    apiKey: string,
-    keyVarName: string
-  ): string => {
-    // If no API key provided in UI, just return stored env vars
-    if (!apiKey) {
-      return storedEnvVars || '';
-    }
-
-    // Merge: API key takes precedence
-    const lines = (storedEnvVars || '').split('\n').filter((line) => {
-      const trimmed = line.trim();
-      // Remove any existing API_KEY lines from stored vars
-      return (
-        !trimmed.startsWith('ANTHROPIC_API_KEY=') &&
-        !trimmed.startsWith('OPENAI_API_KEY=')
-      );
-    });
-
-    // Add API key at the beginning
-    lines.unshift(`${keyVarName}=${apiKey}`);
-
-    return lines.join('\n');
-  };
-
-  const getRuntimeConfig = async () => {
-    const options = await getOptions();
-    if (chatProvider === 'codex') {
-      const conversationId = chatConversationIdRef.current;
-      const state = chatStateRef.current;
-      const conversation =
-        conversationId && state
-          ? findConversation(state, conversationId)
-          : null;
-      const codexThreadId = conversation?.providerState?.codex?.threadId;
-      const codexModelCandidate = currentModel ?? null;
-      const codexRuntimeModel =
-        (codexModelCandidate
-          ? runtimeModels.find((entry) => entry.value === codexModelCandidate)
-          : null) ??
-        runtimeModels.find((entry) => entry.isDefault) ??
-        runtimeModels.find(
-          (entry) => entry.supportedReasoningEfforts !== undefined
-        ) ??
-        runtimeModels[0] ??
-        null;
-      const codexModel =
-        codexRuntimeModel?.supportedReasoningEfforts !== undefined
-          ? codexRuntimeModel.value
-          : null;
-      const codexEffort = codexModel
-        ? getCodexEffortForThinkingMode(
-          currentThinkingMode as ThinkingMode['id'],
-          codexRuntimeModel ?? null
-        ) ??
-        codexRuntimeModel?.defaultReasoningEffort ??
-        null
-        : null;
-      // Build env vars with ephemeral API key if provided
-      const runtimeEnvVars = buildEnvVarsWithApiKey(
-        options.openaiEnvVars,
-        openaiApiKey,
-        'OPENAI_API_KEY'
-      );
-      return {
-        codex: {
-          cliPath: options.openaiCodexCliPath,
-          envVars: runtimeEnvVars,
-          approvalPolicy: options.openaiApprovalPolicy,
-          ...(codexModel ? { model: codexModel } : {}),
-          ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
-          ...(codexThreadId ? { threadId: codexThreadId } : {}),
-        },
-      };
-    } else {
-      const runtimeModel =
-        currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
-      const runtimeThinkingTokens =
-        currentThinkingTokens ?? options.claudeMaxThinkingTokens ?? null;
-      const conversationId = chatConversationIdRef.current;
-      // Build env vars with ephemeral API key if provided
-      const runtimeEnvVars = buildEnvVarsWithApiKey(
-        options.claudeEnvVars,
-        claudeApiKey,
-        'ANTHROPIC_API_KEY'
-      );
-      return {
-        claude: {
-          cliPath: options.claudeCliPath,
-          envVars: runtimeEnvVars,
-          loadUserSettings: options.claudeLoadUserSettings,
-          model: runtimeModel ?? undefined,
-          maxThinkingTokens: runtimeThinkingTokens ?? undefined,
-          sessionScope: 'project' as const,
-          yoloMode,
-          conversationId: conversationId ?? undefined,
-        },
-      };
-    }
   };
 
   const thinkingEnabled = currentThinkingMode !== 'off';
@@ -5096,6 +5943,12 @@ const Panel = () => {
           if (sessionState.pendingPatchReviewMessages.length > 0) {
             const existingPatchSet = new Set(
               updatedMessages
+                .filter((message) => {
+                  const patchReview = message.patchReview;
+                  if (!patchReview) return false;
+                  const status = (patchReview as any).status ?? 'pending';
+                  return status === 'pending';
+                })
                 .map((message) => getPatchIdentityKey(message))
                 .filter((key): key is string => typeof key === 'string')
             );
@@ -5142,7 +5995,13 @@ const Panel = () => {
           setStreamingState(null, false);
 
           if (provider === 'claude') {
-            void refreshContextUsage();
+            const forceContextRefresh = sessionState.didCompactContext;
+            sessionState.didCompactContext = false;
+            void refreshContextUsage({
+              provider,
+              conversationId,
+              force: forceContextRefresh,
+            });
           }
         }
       }
@@ -5372,7 +6231,8 @@ const Panel = () => {
     attachments: FileAttachment[] = [],
     documents: DocumentAttachment[] = [],
     action: JobAction = 'chat',
-    patchFeedbackTarget?: PatchFeedbackTarget
+    patchFeedbackTarget?: PatchFeedbackTarget,
+    displayContent?: string
   ) => {
     const bridge = window.ageafBridge;
     if (!bridge) return;
@@ -5396,11 +6256,14 @@ const Panel = () => {
         patchFeedbackTarget.conversationId === sessionConversationId
         ? patchFeedbackTarget
         : null;
+    const startedWithPatchFeedbackTarget = Boolean(patchFeedbackTargetActive);
+    let patchFeedbackResponseHandled = false;
 
     // Update session state
     sessionState.isSending = true;
     sessionState.interrupted = false;
     sessionState.didReceivePatch = false;
+    sessionState.didCompactContext = false;
     sessionState.activityStartTime = Date.now();
     sessionState.pendingDone = null;
     sessionState.pendingPatchReviewMessages = [];
@@ -5421,6 +6284,7 @@ const Panel = () => {
       createMessage({
         role: 'user',
         content: text,
+        ...(displayContent ? { displayContent } : {}),
         ...(messageImages ? { images: messageImages } : {}),
         ...(messageAttachments ? { attachments: messageAttachments } : {}),
         ...(messageDocuments ? { documents: messageDocuments } : {}),
@@ -5444,7 +6308,7 @@ const Panel = () => {
 
     startThinkingTimer(sessionConversationId);
 
-    const resolveMentionFiles = async (rawText: string) => {
+    const resolveMentionFiles = async (rawText: string): Promise<{ text: string; resolvedPaths: Set<string> }> => {
       const fileRegex = /@\[file:([^\]]+)\]/g;
       const folderRegex = /@\[folder:([^\]]+)\]/g;
       const fileRefs = Array.from(rawText.matchAll(fileRegex))
@@ -5453,7 +6317,7 @@ const Panel = () => {
       const folderRefs = Array.from(rawText.matchAll(folderRegex))
         .map((m) => String(m[1] ?? '').trim())
         .filter(Boolean);
-      if (fileRefs.length === 0 && folderRefs.length === 0) return rawText;
+      if (fileRefs.length === 0 && folderRefs.length === 0) return { text: rawText, resolvedPaths: new Set<string>() };
 
       const MAX_CHARS = 200_000;
       const MAX_FILES_PER_FOLDER = 5;
@@ -5461,6 +6325,7 @@ const Panel = () => {
         window.location.pathname
       );
       const fileContentCache = new Map<string, string>();
+      const resolvedPaths = new Set<string>();
 
       const normalizeMentionRef = (ref: string) => {
         let s = ref.trim();
@@ -5733,6 +6598,7 @@ const Panel = () => {
         const fileResults: Array<{ ref: string; injection: string }> = [];
         for (const { ref, content } of docResults) {
           if (content != null) {
+            resolvedPaths.add(ref);
             // eslint-disable-next-line no-await-in-loop
             fileResults.push({
               ref,
@@ -5743,6 +6609,7 @@ const Panel = () => {
             // eslint-disable-next-line no-await-in-loop
             const bridgeContent = await fetchViaBridge(ref);
             if (bridgeContent != null) {
+              resolvedPaths.add(ref);
               // eslint-disable-next-line no-await-in-loop
               fileResults.push({
                 ref,
@@ -5796,6 +6663,7 @@ const Panel = () => {
           for (const { entry, content } of folderDocResults) {
             const ref = entry.path || entry.name;
             if (content != null) {
+              resolvedPaths.add(ref);
               // eslint-disable-next-line no-await-in-loop
               folderBlock += await resolveFileFromContent(ref, content);
             } else {
@@ -5803,6 +6671,7 @@ const Panel = () => {
               // eslint-disable-next-line no-await-in-loop
               const bridgeContent = await fetchViaBridge(ref);
               if (bridgeContent != null) {
+                resolvedPaths.add(ref);
                 // eslint-disable-next-line no-await-in-loop
                 folderBlock += await resolveFileFromContent(ref, bridgeContent);
               } else {
@@ -5814,12 +6683,12 @@ const Panel = () => {
         const token = `@[folder:${folder}]`;
         nextText = nextText.split(token).join(folderBlock);
       }
-      return nextText;
+      return { text: nextText, resolvedPaths };
     };
 
     try {
       const selection = await bridge.requestSelection();
-      const resolvedMessageText = await resolveMentionFiles(text);
+      const { text: resolvedMessageText, resolvedPaths: mentionResolvedPaths } = await resolveMentionFiles(text);
 
       // Auto-invoke humanizer skill for writing/editing actions
       const autoInvokeHumanizer = (messageText: string): string => {
@@ -5862,11 +6731,190 @@ const Panel = () => {
       };
 
       const messageWithAutoSkills = autoInvokeHumanizer(resolvedMessageText);
-      const { skillsPrompt, strippedText } = await processSkillDirectives(
+      const { skillsPrompt, strippedText, autoContextPatterns } = await processSkillDirectives(
         messageWithAutoSkills
       );
-      const finalMessageText = strippedText;
+
+      // Auto-context: attach project files matching skill patterns
+      let autoContextBlocks = '';
+      if (autoContextPatterns.length > 0) {
+        const MAX_AUTO_CONTEXT_FILES = 20;
+        const MAX_AUTO_CONTEXT_BYTES = 500_000;
+
+        const matchAutoContext = (pattern: string, filename: string): boolean => {
+          if (pattern.startsWith('*.'))
+            return filename.toLowerCase().endsWith(pattern.slice(1).toLowerCase());
+          return filename.toLowerCase() === pattern.toLowerCase();
+        };
+
+        // Source entries from renamed exported detector.
+        const rawEntries = detectProjectFilesFromDom().filter((e) => e.kind !== 'folder');
+
+        // Canonicalize with id-first / exact-path-first dedupe.
+        const rank = (e: OverleafEntry) =>
+          (e.path.includes('/') ? 2 : 0) + (e.id ? 1 : 0);
+
+        const canonical = new Map<string, OverleafEntry>();
+        for (const entry of rawEntries) {
+          const key = entry.id ? `id:${entry.id}` : `path:${entry.path.toLowerCase()}`;
+          const prev = canonical.get(key);
+          if (!prev || rank(entry) > rank(prev)) canonical.set(key, entry);
+        }
+        const allEntries = Array.from(canonical.values());
+
+        const candidates = allEntries.filter((e) =>
+          autoContextPatterns.some((p) => matchAutoContext(p, e.name))
+        );
+
+        // For basename fallback safety: only allow fallback when basename is unique.
+        const basenameCounts = new Map<string, number>();
+        for (const entry of candidates) {
+          const base = entry.name.toLowerCase();
+          basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
+        }
+
+        const acProjectId = getOverleafProjectIdFromPathname(window.location.pathname);
+
+        const acFindDocIdForRef = (ref: string) => {
+          const want = ref.trim().toLowerCase();
+          if (!want) return null;
+          const nodes = Array.from(
+            document.querySelectorAll('[data-file-id][data-file-type="doc"]')
+          );
+          for (const node of nodes) {
+            if (!(node instanceof HTMLElement)) continue;
+            if (node.closest('#ageaf-panel-root')) continue;
+            const treeItem = node.closest('[role="treeitem"]') as HTMLElement | null;
+            const name = (
+              treeItem?.getAttribute('aria-label') ??
+              treeItem?.textContent ??
+              ''
+            ).trim();
+            if (!name) continue;
+            if (name.trim().toLowerCase() !== want) continue;
+            const id = node.getAttribute('data-file-id')?.trim();
+            if (id) return id;
+          }
+          return null;
+        };
+
+        const acFetchDocDownload = async (docId: string) => {
+          if (!acProjectId) throw new Error('Missing project id');
+          const candidates = [
+            `/Project/${encodeURIComponent(acProjectId)}/doc/${encodeURIComponent(docId)}/download`,
+            `/project/${encodeURIComponent(acProjectId)}/doc/${encodeURIComponent(docId)}/download`,
+          ];
+          let lastErr: unknown = null;
+          for (const url of candidates) {
+            try {
+              const resp = await fetch(url, { credentials: 'include' });
+              if (!resp.ok) { lastErr = new Error(`HTTP ${resp.status}`); continue; }
+              return await resp.text();
+            } catch (err) { lastErr = err; }
+          }
+          throw lastErr instanceof Error ? lastErr : new Error('Doc download failed');
+        };
+
+        const acLangForExt = (name: string) => {
+          const ext = getFileExtension(name);
+          if (ext === '.tex') return 'tex';
+          if (ext === '.bib') return 'bibtex';
+          if (ext === '.md') return 'markdown';
+          return 'text';
+        };
+
+        const acWrapFileBlock = (name: string, content: string): string => {
+          const lang = acLangForExt(name);
+          return `\n\n[Overleaf file: ${name}]\n\`\`\`${lang}\n${content}\n\`\`\`\n`;
+        };
+
+        let totalBytes = 0;
+        let filesAdded = 0;
+        const skippedFiles: string[] = [];
+        const ambiguousFallbackSkips: string[] = [];
+
+        for (const entry of candidates) {
+          if (filesAdded >= MAX_AUTO_CONTEXT_FILES) break;
+
+          // Dedupe by canonical path only (never by basename)
+          if (mentionResolvedPaths.has(entry.path)) continue;
+
+          let docId = entry.id;
+
+          // Last resort fallback by basename ONLY if unique among candidates
+          if (!docId) {
+            const base = entry.name.toLowerCase();
+            const uniqueBasename = (basenameCounts.get(base) ?? 0) === 1;
+            if (uniqueBasename) {
+              docId = acFindDocIdForRef(entry.name) ?? undefined;
+            } else {
+              ambiguousFallbackSkips.push(entry.path);
+              continue;
+            }
+          }
+
+          let content: string | null = null;
+          if (acProjectId && docId) {
+            try {
+              content = await acFetchDocDownload(docId);
+            } catch {
+              content = null;
+            }
+          }
+
+          if (content == null) {
+            skippedFiles.push(entry.path);
+            continue;
+          }
+
+          // Byte cap: check AFTER fetch, BEFORE append
+          if (totalBytes + content.length > MAX_AUTO_CONTEXT_BYTES) continue;
+
+          totalBytes += content.length;
+          filesAdded++;
+          autoContextBlocks += acWrapFileBlock(entry.path, content);
+        }
+
+        if (skippedFiles.length > 0) {
+          autoContextBlocks += `\n\n[Auto-context warning: could not fetch ${skippedFiles.length} file(s): ${skippedFiles.join(', ')}]\n`;
+        }
+
+        if (ambiguousFallbackSkips.length > 0) {
+          autoContextBlocks += `\n\n[Auto-context warning: skipped ${ambiguousFallbackSkips.length} file(s) due to ambiguous basename fallback: ${ambiguousFallbackSkips.join(', ')}]\n`;
+        }
+      }
+
+      const finalMessageText = strippedText + autoContextBlocks;
       const options = await getOptions();
+      const hasSelection =
+        typeof selection?.selection === 'string' &&
+        selection.selection.trim().length > 0;
+      const sessionUsageRatio =
+        contextUsage?.contextWindow && contextUsage.contextWindow > 0
+          ? contextUsage.usedTokens / contextUsage.contextWindow
+          : null;
+      const contextIntent = detectContextIntent({
+        action,
+        message: finalMessageText,
+        hasSelection,
+      });
+      const contextPolicy = computeContextPolicy({
+        intent: contextIntent,
+        hasSelection,
+        surroundingContextLimit: options.surroundingContextLimit ?? null,
+        sessionUsageRatio,
+      });
+      const contextPayload = buildContextPayload({
+        message: finalMessageText,
+        selection: selection
+          ? {
+            selection: selection.selection,
+            before: selection.before,
+            after: selection.after,
+          }
+          : null,
+        policy: contextPolicy,
+      });
       const runtimeModel =
         currentModel ?? options.claudeModel ?? DEFAULT_MODEL_VALUE;
       const runtimeThinkingTokens =
@@ -5909,150 +6957,158 @@ const Panel = () => {
           codexRuntimeModel?.defaultReasoningEffort ??
           null
           : null;
-      const payload =
-        provider === 'codex'
-          ? {
-            provider: 'codex' as const,
-            action,
-            runtime: {
-              codex: {
-                cliPath: options.openaiCodexCliPath,
-                envVars: options.openaiEnvVars,
-                approvalPolicy: options.openaiApprovalPolicy,
-                ...(codexModel ? { model: codexModel } : {}),
-                ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
-                ...(codexThreadId ? { threadId: codexThreadId } : {}),
-              },
-            },
-            overleaf: { url: window.location.href },
-            context: {
-              message: finalMessageText,
-              selection: selection?.selection ?? '',
-              surroundingBefore: selection?.before ?? '',
-              surroundingAfter: selection?.after ?? '',
-              ...(messageImages
-                ? {
-                  images: messageImages.map((image) => ({
-                    id: image.id,
-                    name: image.name,
-                    mediaType: image.mediaType,
-                    data: image.data,
-                    size: image.size,
-                  })),
+      // Fetch all text-based project files for context-aware search tools
+      const projectFilesForContext = await (async () => {
+        const TEXT_EXTS = new Set(['.tex', '.bib', '.sty', '.cls', '.bst']);
+        const MAX_PROJECT_FILES = 50;
+        const MAX_TOTAL_BYTES = 2_000_000; // 2 MB cap
+        const entries = projectFilesRef.current.filter(
+          (e) => e.kind !== 'folder' && e.id && e.entityType === 'doc' && TEXT_EXTS.has(e.ext.startsWith('.') ? e.ext.toLowerCase() : `.${e.ext.toLowerCase()}`)
+        ).slice(0, MAX_PROJECT_FILES);
+        if (entries.length === 0) return [];
+        const pid = getOverleafProjectIdFromPathname(window.location.pathname);
+        if (!pid) return [];
+        const results: Array<{ path: string; content: string }> = [];
+        let totalBytes = 0;
+        await mapWithConcurrency(entries, MAX_CONCURRENT_DOWNLOADS, async (entry) => {
+          if (totalBytes >= MAX_TOTAL_BYTES) return;
+          for (const prefix of ['/Project/', '/project/']) {
+            try {
+              const url = `${prefix}${encodeURIComponent(pid)}/doc/${encodeURIComponent(entry.id!)}/download`;
+              const resp = await fetch(url, { credentials: 'include' });
+              if (resp.ok) {
+                const content = await resp.text();
+                if (totalBytes + content.length <= MAX_TOTAL_BYTES) {
+                  totalBytes += content.length;
+                  results.push({ path: entry.path, content });
                 }
-                : {}),
-              ...(messageAttachments
-                ? {
-                  attachments: messageAttachments.map((attachment) => ({
-                    id: attachment.id,
-                    path: attachment.path,
-                    name: attachment.name,
-                    ext: attachment.ext,
-                    sizeBytes: attachment.sizeBytes,
-                    lineCount: attachment.lineCount,
-                    content: attachment.content,
-                  })),
-                }
-                : {}),
-              ...(messageDocuments
-                ? {
-                  documents: messageDocuments.map((doc) => ({
-                    id: doc.id,
-                    name: doc.name,
-                    mediaType: doc.mediaType,
-                    data: doc.data,
-                    path: doc.path,
-                    size: doc.size,
-                  })),
-                }
-                : {}),
-            },
-            policy: {
-              requireApproval: false,
-              allowNetwork: false,
-              maxFiles: 1,
-            },
-            userSettings: {
-              displayName: options.displayName,
-              customSystemPrompt: skillsPrompt
-                ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
-                : options.customSystemPrompt,
-              debugCliEvents: options.debugCliEvents,
-            },
+                return;
+              }
+            } catch { /* try next prefix */ }
           }
-          : {
-            provider: 'claude' as const,
+        });
+        return results;
+      })();
+
+      const sharedContext = {
+        ...contextPayload,
+        ...(messageImages
+          ? {
+            images: messageImages.map((image) => ({
+              id: image.id,
+              name: image.name,
+              mediaType: image.mediaType,
+              data: image.data,
+              size: image.size,
+            })),
+          }
+          : {}),
+        ...(messageAttachments
+          ? {
+            attachments: messageAttachments.map((attachment) => ({
+              id: attachment.id,
+              path: attachment.path,
+              name: attachment.name,
+              ext: attachment.ext,
+              sizeBytes: attachment.sizeBytes,
+              lineCount: attachment.lineCount,
+              content: attachment.content,
+            })),
+          }
+          : {}),
+        ...(messageDocuments
+          ? {
+            documents: messageDocuments.map((doc) => ({
+              id: doc.id,
+              name: doc.name,
+              mediaType: doc.mediaType,
+              data: doc.data,
+              path: doc.path,
+              size: doc.size,
+            })),
+          }
+          : {}),
+      };
+      const sharedUserSettings = {
+        displayName: options.displayName,
+        customSystemPrompt: skillsPrompt
+          ? `${skillsPrompt}\n\n${options.customSystemPrompt || ''}`
+          : options.customSystemPrompt,
+        debugCliEvents: options.debugCliEvents,
+        surroundingContextLimit: options.surroundingContextLimit,
+      };
+
+      const payload =
+        provider === 'pi'
+          ? {
+            provider: 'pi' as const,
             action,
             runtime: {
-              claude: {
-                cliPath: options.claudeCliPath,
-                envVars: options.claudeEnvVars,
-                loadUserSettings: options.claudeLoadUserSettings,
-                model: runtimeModel ?? undefined,
-                maxThinkingTokens: runtimeThinkingTokens ?? undefined,
-                sessionScope: 'project' as const,
-                yoloMode,
+              pi: {
+                provider: options.piProvider ?? undefined,
+                model: currentModel ?? options.piModel ?? undefined,
+                thinkingLevel: (currentThinkingMode === 'ultra' ? 'xhigh' : currentThinkingMode) ?? options.piThinkingLevel ?? 'off',
                 conversationId: sessionConversationId,
               },
             },
             overleaf: { url: window.location.href },
-            context: {
-              message: finalMessageText,
-              selection: selection?.selection ?? '',
-              surroundingBefore: selection?.before ?? '',
-              surroundingAfter: selection?.after ?? '',
-              ...(messageImages
-                ? {
-                  images: messageImages.map((image) => ({
-                    id: image.id,
-                    name: image.name,
-                    mediaType: image.mediaType,
-                    data: image.data,
-                    size: image.size,
-                  })),
-                }
-                : {}),
-              ...(messageAttachments
-                ? {
-                  attachments: messageAttachments.map((attachment) => ({
-                    id: attachment.id,
-                    path: attachment.path,
-                    name: attachment.name,
-                    ext: attachment.ext,
-                    sizeBytes: attachment.sizeBytes,
-                    lineCount: attachment.lineCount,
-                    content: attachment.content,
-                  })),
-                }
-                : {}),
-              ...(messageDocuments
-                ? {
-                  documents: messageDocuments.map((doc) => ({
-                    id: doc.id,
-                    name: doc.name,
-                    mediaType: doc.mediaType,
-                    data: doc.data,
-                    path: doc.path,
-                    size: doc.size,
-                  })),
-                }
-                : {}),
-            },
+            context: sharedContext,
             policy: {
               requireApproval: false,
               allowNetwork: false,
               maxFiles: 1,
             },
-            userSettings: {
-              displayName: options.displayName,
-              customSystemPrompt: skillsPrompt
-                ? `${options.customSystemPrompt || ''}\n\n${skillsPrompt}`
-                : options.customSystemPrompt,
-              enableCommandBlocklist: options.enableCommandBlocklist,
-              blockedCommandsUnix: options.blockedCommandsUnix,
-              debugCliEvents: options.debugCliEvents,
-            },
-          };
+            userSettings: sharedUserSettings,
+            ...(projectFilesForContext.length > 0 ? { projectFiles: projectFilesForContext } : {}),
+          }
+          : provider === 'codex'
+            ? {
+              provider: 'codex' as const,
+              action,
+              runtime: {
+                codex: {
+                  approvalPolicy: options.openaiApprovalPolicy,
+                  ...(codexModel ? { model: codexModel } : {}),
+                  ...(codexEffort ? { reasoningEffort: codexEffort } : {}),
+                  ...(codexThreadId ? { threadId: codexThreadId } : {}),
+                },
+              },
+              overleaf: { url: window.location.href },
+              context: sharedContext,
+              policy: {
+                requireApproval: false,
+                allowNetwork: false,
+                maxFiles: 1,
+              },
+              userSettings: sharedUserSettings,
+              ...(projectFilesForContext.length > 0 ? { projectFiles: projectFilesForContext } : {}),
+            }
+            : {
+              provider: 'claude' as const,
+              action,
+              runtime: {
+                claude: {
+                  model: runtimeModel ?? undefined,
+                  maxThinkingTokens: runtimeThinkingTokens ?? undefined,
+                  sessionScope: 'project' as const,
+                  yoloMode,
+                  conversationId: sessionConversationId,
+                },
+              },
+              overleaf: { url: window.location.href },
+              context: sharedContext,
+              policy: {
+                requireApproval: false,
+                allowNetwork: false,
+                maxFiles: 1,
+              },
+              userSettings: {
+                ...sharedUserSettings,
+                enableCommandBlocklist: options.enableCommandBlocklist,
+                blockedCommandsUnix: options.blockedCommandsUnix,
+              },
+              ...(projectFilesForContext.length > 0 ? { projectFiles: projectFilesForContext } : {}),
+            };
 
       const { jobId } = await createJob(options, payload, {
         signal: abortController.signal,
@@ -6241,69 +7297,213 @@ const Panel = () => {
             const phase = (event.data as any)?.phase;
             const toolId = (event.data as any)?.toolId;
             const toolName = (event.data as any)?.toolName;
+            if (phase === 'compaction_complete') {
+              sessionState.didCompactContext = true;
+            }
 
-            // Track tool execution states for visibility
-            if (phase === 'tool_start' && toolId) {
+            // Track tool execution states for visibility.
+            const isToolStartPhase = phase === 'tool_start';
+            const isToolUpdatePhase = phase === 'tool_update';
+            const isToolCompletePhase =
+              phase === 'tool_complete' || phase === 'compaction_complete';
+            const isToolErrorPhase = phase === 'tool_error';
+
+            // Handle tool_update: merge input/description into existing CoT item
+            if (isToolUpdatePhase) {
               const toolInput = (event.data as any)?.input;
-
-              // CoT Logic
+              const description = (event.data as any)?.description;
               const currentCoT = streamingCoTRef.current;
-              completeLastTool(currentCoT); // Complete previous tool if any
 
-              if (
-                !currentCoT.some(
-                  (i) => i.type === 'tool' && i.toolId === toolId
-                )
-              ) {
-                currentCoT.push({
-                  type: 'tool',
-                  toolId,
-                  toolName: toolName ?? 'Tool',
-                  input: toolInput,
-                  phase: 'started',
-                  message: `Running ${toolName ?? 'tool'}...`,
+              // Primary: match by toolId
+              let target = toolId ? currentCoT.find(
+                (item): item is CoTToolItem =>
+                  item.type === 'tool' && item.toolId === toolId
+              ) : undefined;
+
+              // Fallback: last started tool with same name and no input
+              if (!target && toolName) {
+                for (let i = currentCoT.length - 1; i >= 0; i--) {
+                  const item = currentCoT[i];
+                  if (item.type === 'tool' && item.toolName === toolName && item.phase === 'started' && !item.input) {
+                    target = item as CoTToolItem;
+                    break;
+                  }
+                }
+              }
+
+              if (target) {
+                if (toolInput && !target.input) target.input = toolInput;
+                if (description && !target.description) target.description = description;
+              }
+
+              // Also update activeTools map
+              if (toolId) {
+                setActiveTools((prev) => {
+                  const existing = prev.get(toolId);
+                  if (!existing) return prev;
+                  const next = new Map(prev);
+                  next.set(toolId, {
+                    ...existing,
+                    ...(toolInput && !existing.input ? { input: toolInput } : {}),
+                    ...(description && !existing.description ? { description } : {}),
+                  });
+                  return next;
                 });
+              }
+
+              if (sessionConversationId === chatConversationIdRef.current) {
+                setStreamingCoT([...currentCoT]);
+              }
+            }
+
+            if (
+              toolId &&
+              (isToolStartPhase || isToolCompletePhase || isToolErrorPhase)
+            ) {
+              const toolInput = (event.data as any)?.input;
+              const description = (event.data as any)?.description;
+              const currentCoT = streamingCoTRef.current;
+
+              if (isToolStartPhase) {
+                completeLastTool(currentCoT); // Complete previous tool if any.
+
+                const existingCoTTool = currentCoT.find(
+                  (item): item is CoTToolItem =>
+                    item.type === 'tool' && item.toolId === toolId
+                );
+                if (existingCoTTool) {
+                  existingCoTTool.toolName = toolName ?? existingCoTTool.toolName;
+                  existingCoTTool.phase = 'started';
+                  existingCoTTool.startedAt = Date.now();
+                  if (toolInput && !existingCoTTool.input) {
+                    existingCoTTool.input = toolInput;
+                  }
+                  if (description && !existingCoTTool.description) {
+                    existingCoTTool.description = description;
+                  }
+                  existingCoTTool.message =
+                    message ??
+                    `Running ${toolName ?? existingCoTTool.toolName ?? 'tool'}...`;
+                } else {
+                  currentCoT.push({
+                    type: 'tool',
+                    toolId,
+                    toolName: toolName ?? 'Tool',
+                    input: toolInput,
+                    phase: 'started',
+                    message: `Running ${toolName ?? 'tool'}...`,
+                    description,
+                    startedAt: Date.now(),
+                  });
+                }
+
                 if (sessionConversationId === chatConversationIdRef.current) {
                   setStreamingCoT([...currentCoT]);
                 }
-              }
-              setActiveTools((prev) => {
-                const next = new Map(prev);
-                next.set(toolId, {
-                  toolId,
-                  toolName: toolName ?? 'Tool',
-                  phase: 'started',
-                  message: message ?? `Running ${toolName ?? 'tool'}`,
-                  input: toolInput,
-                  timestamp: Date.now(),
-                });
-                return next;
-              });
 
-              // Auto-timeout after 60s - mark as failed and schedule removal
-              setTimeout(() => {
-                setActiveTools((curr) => {
-                  const tool = curr.get(toolId);
-                  if (tool?.phase === 'started') {
-                    const next = new Map(curr);
-                    next.set(toolId, {
-                      ...tool,
-                      phase: 'failed',
-                      message: 'Timed out',
-                    });
-                    // Remove after 3 seconds
-                    setTimeout(() => {
-                      setActiveTools((c) => {
-                        const n = new Map(c);
-                        n.delete(toolId);
-                        return n;
-                      });
-                    }, 3000);
-                    return next;
-                  }
-                  return curr;
+                setActiveTools((prev) => {
+                  const next = new Map(prev);
+                  next.set(toolId, {
+                    toolId,
+                    toolName: toolName ?? 'Tool',
+                    phase: 'started',
+                    message: message ?? `Running ${toolName ?? 'tool'}`,
+                    input: toolInput,
+                    description,
+                    timestamp: Date.now(),
+                  });
+                  return next;
                 });
-              }, 60000);
+
+                // Auto-timeout after 60s - mark as failed and schedule removal.
+                setTimeout(() => {
+                  setActiveTools((curr) => {
+                    const tool = curr.get(toolId);
+                    if (tool?.phase === 'started') {
+                      const next = new Map(curr);
+                      next.set(toolId, {
+                        ...tool,
+                        phase: 'failed',
+                        message: 'Timed out',
+                      });
+                      // Remove after 3 seconds.
+                      setTimeout(() => {
+                        setActiveTools((c) => {
+                          const n = new Map(c);
+                          n.delete(toolId);
+                          return n;
+                        });
+                      }, 3000);
+                      return next;
+                    }
+                    return curr;
+                  });
+                }, 60000);
+              } else {
+                const resolvedPhase: 'completed' | 'failed' =
+                  isToolCompletePhase ? 'completed' : 'failed';
+                const defaultMessage =
+                  resolvedPhase === 'completed'
+                    ? `Completed ${toolName ?? 'tool'}`
+                    : `Failed ${toolName ?? 'tool'}`;
+
+                const existingCoTTool = currentCoT.find(
+                  (item): item is CoTToolItem =>
+                    item.type === 'tool' && item.toolId === toolId
+                );
+                if (existingCoTTool) {
+                  existingCoTTool.toolName = toolName ?? existingCoTTool.toolName;
+                  existingCoTTool.phase = resolvedPhase;
+                  existingCoTTool.completedAt = Date.now();
+                  if (toolInput && !existingCoTTool.input) {
+                    existingCoTTool.input = toolInput;
+                  }
+                  existingCoTTool.message = message ?? defaultMessage;
+                } else {
+                  currentCoT.push({
+                    type: 'tool',
+                    toolId,
+                    toolName: toolName ?? 'Tool',
+                    input: toolInput,
+                    phase: resolvedPhase,
+                    message: message ?? defaultMessage,
+                    completedAt: Date.now(),
+                  });
+                }
+                if (sessionConversationId === chatConversationIdRef.current) {
+                  setStreamingCoT([...currentCoT]);
+                }
+
+                setActiveTools((prev) => {
+                  const next = new Map(prev);
+                  const existing = next.get(toolId);
+                  const resolvedToolName =
+                    toolName ?? existing?.toolName ?? 'Tool';
+                  next.set(toolId, {
+                    toolId,
+                    toolName: resolvedToolName,
+                    phase: resolvedPhase,
+                    message:
+                      message ??
+                      (resolvedPhase === 'completed'
+                        ? `Completed ${resolvedToolName}`
+                        : `Failed ${resolvedToolName}`),
+                    input: toolInput ?? existing?.input,
+                    timestamp: Date.now(),
+                  });
+                  return next;
+                });
+
+                const removeDelayMs = resolvedPhase === 'completed' ? 1200 : 3000;
+                setTimeout(() => {
+                  setActiveTools((curr) => {
+                    if (!curr.has(toolId)) return curr;
+                    const next = new Map(curr);
+                    next.delete(toolId);
+                    return next;
+                  });
+                }, removeDelayMs);
+              }
             }
 
             // Always reflect plan/status updates in the live status line while streaming.
@@ -6407,6 +7607,9 @@ const Panel = () => {
           if (event.event === 'patch') {
             markThinkingComplete(sessionConversationId);
             sessionState.didReceivePatch = true;
+            if (startedWithPatchFeedbackTarget && patchFeedbackResponseHandled) {
+              return;
+            }
             const patch = event.data as Patch;
             const state = chatStateRef.current;
             if (!state) return;
@@ -6422,17 +7625,44 @@ const Panel = () => {
                 patch.kind === 'replaceSelection' ||
                 patch.kind === 'replaceRangeInFile'
               ) {
-                const idx = patchFeedbackTargetActive.messageIndex;
-                const storedTarget = conversation.messages[idx];
-                const targetReview = storedTarget?.patchReview;
+                const directIndex = patchFeedbackTargetActive.messageIndex;
+                const directTarget = conversation.messages[directIndex];
+                const directReview = directTarget?.patchReview;
+                let targetIndex = -1;
                 if (
-                  storedTarget &&
-                  targetReview &&
-                  targetReview.kind === expectedKind &&
-                  'text' in targetReview
+                  directTarget &&
+                  directReview &&
+                  directReview.kind === expectedKind &&
+                  'text' in directReview
                 ) {
+                  targetIndex = directIndex;
+                } else {
+                  for (
+                    let i = conversation.messages.length - 1;
+                    i >= 0;
+                    i -= 1
+                  ) {
+                    const review = conversation.messages[i]?.patchReview;
+                    if (!review || review.kind !== expectedKind) continue;
+                    if (!('text' in review)) continue;
+                    if (
+                      getPatchFeedbackAnchorKey(review) ===
+                      patchFeedbackTargetActive.anchorKey
+                    ) {
+                      targetIndex = i;
+                      break;
+                    }
+                  }
+                }
+
+                if (targetIndex >= 0) {
+                  const storedTarget = conversation.messages[targetIndex]!;
+                  const targetReview = storedTarget.patchReview as StoredPatchReview & {
+                    kind: 'replaceSelection' | 'replaceRangeInFile';
+                    text: string;
+                  };
                   const updatedStoredMessages = [...conversation.messages];
-                  updatedStoredMessages[idx] = {
+                  updatedStoredMessages[targetIndex] = {
                     ...storedTarget,
                     patchReview: {
                       ...(targetReview as any),
@@ -6477,48 +7707,54 @@ const Panel = () => {
                     selectionSnapshotsRef.current.delete(jobId);
                   }
 
+                  patchFeedbackResponseHandled = true;
                   patchFeedbackTargetActive = null;
                   return;
                 }
+
+                // Feedback response target missing; ignore to avoid creating a detached rewrite card.
+                patchFeedbackResponseHandled = true;
+                patchFeedbackTargetActive = null;
+                return;
               }
 
-              // Only apply feedback target once; fall through to the normal patch handling otherwise.
+              // Ignore non-rewrite feedback patch kinds.
+              patchFeedbackResponseHandled = true;
               patchFeedbackTargetActive = null;
+              return;
             }
 
             let storedPatchReviewMessage: StoredMessage | null = null;
             if (patch.kind === 'replaceSelection') {
               const snapshot = selectionSnapshotsRef.current.get(jobId) ?? null;
               selectionSnapshotsRef.current.delete(jobId);
-              if (snapshot) {
-                storedPatchReviewMessage = {
-                  role: 'system',
-                  content: '',
-                  patchReview: {
-                    kind: 'replaceSelection',
-                    selection: snapshot.selection,
-                    from: snapshot.from,
-                    to: snapshot.to,
-                    ...(typeof snapshot.lineFrom === 'number'
-                      ? { lineFrom: snapshot.lineFrom }
-                      : {}),
-                    ...(typeof snapshot.lineTo === 'number'
-                      ? { lineTo: snapshot.lineTo }
-                      : {}),
-                    text: patch.text,
-                    status: 'pending',
-                    ...(snapshot.fileName
-                      ? { fileName: snapshot.fileName }
-                      : {}),
-                  },
-                };
-              } else {
-                storedPatchReviewMessage = {
-                  role: 'system',
-                  content:
-                    'Rewrite selection proposal (missing selection snapshot; cannot apply automatically).',
-                };
+              // Guard: discard replaceSelection patches without a valid selection
+              // snapshot — they can't be applied and would produce ghost review cards.
+              if (!snapshot || !(snapshot.to > snapshot.from) || !snapshot.selection?.trim()) {
+                console.trace('[ageaf] discarding replaceSelection patch: no valid selection snapshot');
+                return;
               }
+              storedPatchReviewMessage = {
+                role: 'system',
+                content: '',
+                patchReview: {
+                  kind: 'replaceSelection',
+                  selection: snapshot.selection,
+                  from: snapshot.from,
+                  to: snapshot.to,
+                  ...(typeof snapshot.lineFrom === 'number'
+                    ? { lineFrom: snapshot.lineFrom }
+                    : {}),
+                  ...(typeof snapshot.lineTo === 'number'
+                    ? { lineTo: snapshot.lineTo }
+                    : {}),
+                  text: patch.text,
+                  status: 'pending',
+                  ...(snapshot.fileName
+                    ? { fileName: snapshot.fileName }
+                    : {}),
+                },
+              };
             } else if (patch.kind === 'replaceRangeInFile') {
               storedPatchReviewMessage = {
                 role: 'system',
@@ -6558,7 +7794,8 @@ const Panel = () => {
                 sessionState.isSending ||
                 sessionState.pendingDone != null;
               if (jobStillActive) {
-                sessionState.pendingPatchReviewMessages.push(
+                sessionState.pendingPatchReviewMessages = upsertPatchReviewMessage(
+                  sessionState.pendingPatchReviewMessages,
                   patchMessage
                 );
 
@@ -6569,10 +7806,10 @@ const Panel = () => {
                   : null;
                 const baseState = latestState ?? state;
                 const baseConversation = latestConversation ?? conversation;
-                const updatedStored = [
-                  ...baseConversation.messages,
-                  patchMessage,
-                ];
+                const updatedStored = upsertPatchReviewMessage(
+                  baseConversation.messages,
+                  patchMessage
+                );
                 chatStateRef.current = setConversationMessages(
                   baseState,
                   baseConversation.provider,
@@ -6583,10 +7820,9 @@ const Panel = () => {
 
                 // Render card immediately while streaming.
                 if (sessionConversationId === chatConversationIdRef.current) {
-                  setMessages((prev) => [
-                    ...prev,
-                    createMessage(patchMessage),
-                  ]);
+                  setMessages((prev) =>
+                    upsertPatchReviewMessage(prev, createMessage(patchMessage))
+                  );
                 }
 
                 // If done already arrived and tokens drained, finalize now.
@@ -6596,10 +7832,10 @@ const Panel = () => {
             }
 
             // Fallback: job already finished or non-chat action — append directly.
-            const updatedMessages = [
-              ...conversation.messages,
-              patchMessage,
-            ];
+            const updatedMessages = upsertPatchReviewMessage(
+              conversation.messages,
+              patchMessage
+            );
             chatStateRef.current = setConversationMessages(
               state,
               conversation.provider,
@@ -6872,6 +8108,512 @@ const Panel = () => {
     void sendMessage('Rewrite selection', [], [], [], 'rewrite');
   };
 
+  // ─── Check References ────────────────────────────────────────────────
+
+  type BibSelection =
+    | { kind: 'found'; entry: OverleafEntry }
+    | { kind: 'none' }
+    | { kind: 'ambiguous'; paths: string[] };
+
+  function selectBibEntry(
+    bibEntries: OverleafEntry[],
+    activeFile: string | null,
+    activeFileId: string | null
+  ): BibSelection {
+    if (activeFile && activeFile.toLowerCase().endsWith('.bib')) {
+      // Prefer stable id match when available (avoids basename ambiguity)
+      if (activeFileId) {
+        const idMatch = bibEntries.filter((e) => e.id === activeFileId);
+        if (idMatch.length === 1) return { kind: 'found', entry: idMatch[0] };
+      }
+
+      const activeNorm = activeFile.toLowerCase();
+      const matches = bibEntries.filter(
+        (e) => e.path.toLowerCase() === activeNorm
+          || e.name.toLowerCase() === activeNorm
+      );
+      if (matches.length === 1) return { kind: 'found', entry: matches[0] };
+      // When the user has an active .bib tab but basename matches multiple
+      // entries and we have no file id to disambiguate, return a synthetic
+      // entry WITHOUT id so the doc-download path is skipped and the bridge
+      // fallback reads from the actual active tab (correct file).
+      if (matches.length > 1) {
+        // Use activeFile (basename) as path so the bridge path-first attempt
+        // does not resolve to a specific duplicate's tree node.
+        return { kind: 'found', entry: { path: activeFile, name: activeFile, ext: '.bib', kind: 'bib' as const } };
+      }
+      const baseName = activeFile.includes('/') ? activeFile.split('/').filter(Boolean).pop()! : activeFile;
+      return { kind: 'found', entry: { path: activeFile, name: baseName, ext: '.bib', kind: 'bib' } };
+    }
+
+    if (bibEntries.length === 0) return { kind: 'none' };
+    if (bibEntries.length === 1) return { kind: 'found', entry: bibEntries[0] };
+    return { kind: 'ambiguous', paths: bibEntries.map((e) => e.path) };
+  }
+
+  const onCheckReferences = async () => {
+    const bridge = window.ageafBridge;
+    if (!bridge) return;
+
+    const conversationId = chatConversationIdRef.current;
+    if (!conversationId) return;
+
+    if (!editorEmpty) {
+      setMessages((prev) => [...prev, createMessage({
+        role: 'system',
+        content: 'Clear the message input before checking references.',
+      })]);
+      return;
+    }
+
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.isSending) {
+      setMessages((prev) => [...prev, createMessage({
+        role: 'system',
+        content: 'Please wait for the current response to finish.',
+      })]);
+      return;
+    }
+
+    // Step 1: Find .bib file using full DOM scan (tabs + file tree)
+    const allEntries = detectProjectFilesFromDom();
+    const bibEntries = allEntries.filter((e) => e.kind === 'bib');
+    let activeFile = getActiveFilename();
+    let activeFileId = getActiveFileId();
+
+    // If the active editor tab is not a .bib, check the file tree selection
+    if (!activeFile || !activeFile.toLowerCase().endsWith('.bib')) {
+      const treeBib = getTreeSelectedBibFile();
+      if (treeBib) {
+        activeFile = treeBib.name;
+        activeFileId = treeBib.id;
+      }
+    }
+
+    const selection = selectBibEntry(bibEntries, activeFile, activeFileId);
+
+    if (selection.kind === 'none') {
+      setMessages((prev) => [...prev, createMessage({
+        role: 'system',
+        content: 'No .bib file found. Open the file tree or a .bib tab, then try again.',
+      })]);
+      return;
+    }
+
+    if (selection.kind === 'ambiguous') {
+      setMessages((prev) => [...prev, createMessage({
+        role: 'system',
+        content: `Multiple .bib files found (${selection.paths.join(', ')}). Open the one you want to check, then click again.`,
+      })]);
+      return;
+    }
+
+    const bibEntry = selection.entry;
+
+    // Step 2: Fetch bib content
+    // Primary: doc-download API using docId (path-independent, no basename ambiguity)
+    const projectId = getOverleafProjectIdFromPathname(window.location.pathname);
+    let bibContent: string | null = null;
+
+    if (projectId && bibEntry.id) {
+      for (const prefix of ['/Project/', '/project/']) {
+        try {
+          const url = `${prefix}${encodeURIComponent(projectId)}/doc/${encodeURIComponent(bibEntry.id)}/download`;
+          const resp = await fetch(url, { credentials: 'include' });
+          if (resp.ok) { bibContent = await resp.text(); break; }
+        } catch { /* try next */ }
+      }
+    }
+
+    // Fallback: bridge tab-switching (try path first, then basename)
+    if (bibContent == null && bridge.requestFileContent) {
+      for (const ref of [bibEntry.path, bibEntry.name]) {
+        if (!ref) continue;
+        try {
+          const result = await bridge.requestFileContent(ref);
+          if (result?.ok && typeof result.content === 'string' && result.content.length > 0) {
+            bibContent = result.content;
+            break;
+          }
+        } catch { /* try next */ }
+      }
+    }
+
+    if (bibContent == null) {
+      setMessages((prev) => [...prev, createMessage({
+        role: 'system',
+        content: `Unable to read ${bibEntry.path}. Try opening the file in Overleaf first.`,
+      })]);
+      return;
+    }
+
+    // Step 3: Send as [Overleaf file:] block (enables AGEAF_FILE_UPDATE path)
+    // plus attachment chip for compact display in the chat transcript.
+    const lineCount = bibContent.split('\n').length;
+    const bibAttachment: FileAttachment = {
+      id: `ref-check-${Date.now()}`,
+      path: bibEntry.path,
+      name: bibEntry.name,
+      ext: '.bib',
+      sizeBytes: new Blob([bibContent]).size,
+      lineCount,
+      content: bibContent,
+    };
+
+    const fileBlock = `\n\n[Overleaf file: ${bibEntry.path}]\n\`\`\`bibtex\n${bibContent}\n\`\`\`\n`;
+
+    const message = `/citation-management Check all references in ${bibEntry.path} for accuracy. `
+      + 'Detect hallucinated or fabricated citations, verify bibliographic details '
+      + '(DOIs, titles, authors, years, venues), and identify any arXiv preprints '
+      + 'that have since been published. '
+      + 'For each incorrect or fabricated entry, DELETE it from the file and replace it with the verified version. '
+      + 'For preprint entries that have since been published, replace the preprint entry with the published version. '
+      + 'Do NOT keep both a preprint and a published version of the same work; keep only the published entry. '
+      + 'Output the complete updated file using AGEAF_FILE_UPDATE markers.'
+      + fileBlock;
+
+    // Show the exact prompt being sent (including /citation-management and file block)
+    // so users can verify invocation and payload content in the conversation panel.
+    void sendMessage(message, [], [bibAttachment], [], 'chat');
+  };
+
+  type NotationRootSelection =
+    | { kind: 'found'; entry: OverleafEntry }
+    | { kind: 'none' };
+
+  function selectNotationRootEntry(
+    entries: OverleafEntry[],
+    activeFile: string | null,
+    activeFileId: string | null
+  ): NotationRootSelection {
+    if (!activeFile || !activeFile.toLowerCase().endsWith('.tex')) {
+      return { kind: 'none' };
+    }
+
+    const normalizeExt = (ext: string) =>
+      ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
+    const texEntries = entries.filter((entry) => {
+      const ext = normalizeExt(entry.ext || getFileExtension(entry.path) || '');
+      return ext === '.tex';
+    });
+
+    if (activeFileId) {
+      const idMatch = texEntries.filter((entry) => entry.id === activeFileId);
+      if (idMatch.length === 1) return { kind: 'found', entry: idMatch[0] };
+    }
+
+    const activeNorm = activeFile.toLowerCase();
+    const matches = texEntries.filter(
+      (entry) =>
+        entry.path.toLowerCase() === activeNorm ||
+        entry.name.toLowerCase() === activeNorm
+    );
+    if (matches.length === 1) return { kind: 'found', entry: matches[0] };
+    if (matches.length > 1) {
+      // Ambiguous basename without an id match: keep basename so bridge fallback
+      // reads from the active tab instead of pinning a potentially wrong path.
+      return {
+        kind: 'found',
+        entry: { path: activeFile, name: activeFile, ext: '.tex', kind: 'tex' },
+      };
+    }
+
+    const baseName = activeFile.includes('/')
+      ? activeFile.split('/').filter(Boolean).pop()!
+      : activeFile;
+    return {
+      kind: 'found',
+      entry: {
+        path: activeFile,
+        name: baseName,
+        ext: getFileExtension(baseName) || '.tex',
+        kind: classifyOverleafFile(baseName),
+      },
+    };
+  }
+
+  const collectNotationAttachments = async (
+    bridge: NonNullable<typeof window.ageafBridge>
+  ) => {
+    const allEntries = detectProjectFilesFromDom().filter(
+      (entry) => entry.kind !== 'folder'
+    );
+    const projectId = getOverleafProjectIdFromPathname(window.location.pathname);
+    const projectFiles: ProjectFile[] = allEntries.map((entry) => ({
+      path: entry.path,
+      name: entry.name,
+    }));
+    const projectEntryByPath = new Map<string, OverleafEntry>();
+    const projectEntriesByBasename = new Map<string, OverleafEntry[]>();
+    for (const entry of allEntries) {
+      const key = entry.path.toLowerCase();
+      const prev = projectEntryByPath.get(key);
+      if (!prev || (!prev.id && !!entry.id)) {
+        projectEntryByPath.set(key, entry);
+      }
+      const basenameKey = entry.name.trim().toLowerCase();
+      if (!basenameKey) continue;
+      const list = projectEntriesByBasename.get(basenameKey) ?? [];
+      list.push(entry);
+      projectEntriesByBasename.set(basenameKey, list);
+    }
+
+    const normalizeExt = (ext: string) =>
+      ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
+    const basename = (filePath: string) => {
+      const parts = filePath.split('/').filter(Boolean);
+      return parts.length > 0 ? parts[parts.length - 1]! : filePath;
+    };
+    const resolveProjectEntryForInputPath = (inputPath: string) => {
+      const normalized = inputPath.trim().toLowerCase();
+      if (!normalized) return null;
+      const exact = projectEntryByPath.get(normalized);
+      if (exact) return exact;
+
+      const basenameKey = basename(inputPath).trim().toLowerCase();
+      if (!basenameKey) return null;
+      const basenameMatches = projectEntriesByBasename.get(basenameKey) ?? [];
+      if (basenameMatches.length === 1) return basenameMatches[0]!;
+      if (basenameMatches.length <= 1) return null;
+
+      const suffixMatches = basenameMatches.filter((entry) => {
+        const pathLower = entry.path.toLowerCase();
+        return (
+          normalized.endsWith(`/${pathLower}`) ||
+          normalized.endsWith(pathLower) ||
+          pathLower.endsWith(`/${basenameKey}`) ||
+          pathLower === basenameKey
+        );
+      });
+      if (suffixMatches.length === 1) return suffixMatches[0]!;
+
+      const withId = suffixMatches.filter((entry) => !!entry.id);
+      if (withId.length === 1) return withId[0]!;
+      return null;
+    };
+
+    type NotationEntryOrigin = 'dom' | 'latex-input';
+    const queue: OverleafEntry[] = [];
+    const queued = new Set<string>();
+    const processed = new Set<string>();
+    const origins = new Map<string, NotationEntryOrigin>();
+    const warnings: string[] = [];
+    const attachments: FileAttachment[] = [];
+    let totalBytes = 0;
+    let failedLatexInputReads = 0;
+
+    const enqueueEntry = (entry: OverleafEntry, origin: NotationEntryOrigin) => {
+      const normalizedPath = entry.path.trim();
+      if (!normalizedPath) return;
+      const normalizedExt = normalizeExt(
+        entry.ext || getFileExtension(normalizedPath) || '.tex'
+      );
+      if (!NOTATION_SCAN_EXTENSIONS.has(normalizedExt)) return;
+      const key = `${normalizedPath}:${normalizedExt}`.toLowerCase();
+      if (queued.has(key)) {
+        const existingOrigin = origins.get(key);
+        if (existingOrigin === 'latex-input' && origin === 'dom') {
+          origins.set(key, 'dom');
+        }
+        return;
+      }
+      queued.add(key);
+      origins.set(key, origin);
+      queue.push({
+        ...entry,
+        path: normalizedPath,
+        name: entry.name || basename(normalizedPath),
+        ext: normalizedExt,
+      });
+    };
+
+    const activeFile = getActiveFilename();
+    const activeFileId = getActiveFileId();
+    const rootSelection = selectNotationRootEntry(
+      allEntries,
+      activeFile,
+      activeFileId
+    );
+    if (rootSelection.kind === 'none') {
+      warnings.push(
+        'No active .tex file selected for notation pass. Select the target .tex file and retry.'
+      );
+      return { attachments, warnings };
+    }
+    enqueueEntry(rootSelection.entry, 'dom');
+
+    while (queue.length > 0) {
+      if (attachments.length >= MAX_NOTATION_SCAN_FILES) {
+        warnings.push(
+          `Reached file cap (${MAX_NOTATION_SCAN_FILES}); skipped remaining files.`
+        );
+        break;
+      }
+      const entry = queue.shift()!;
+      const normalizedExt = normalizeExt(entry.ext);
+      const key = `${entry.path}:${normalizedExt}`.toLowerCase();
+      if (processed.has(key)) continue;
+      processed.add(key);
+
+      let content: string | null = null;
+      if (projectId && entry.id) {
+        for (const prefix of ['/Project/', '/project/']) {
+          try {
+            const url = `${prefix}${encodeURIComponent(projectId)}/doc/${encodeURIComponent(entry.id)}/download`;
+            const response = await fetch(url, { credentials: 'include' });
+            if (response.ok) {
+              content = await response.text();
+              break;
+            }
+          } catch {
+            // fallback below
+          }
+        }
+      }
+
+      if (content == null && bridge.requestFileContent) {
+        for (const ref of [entry.path, entry.name]) {
+          if (!ref) continue;
+          try {
+            const result = await bridge.requestFileContent(ref);
+            if (result?.ok && typeof result.content === 'string') {
+              content = result.content;
+              break;
+            }
+          } catch {
+            // try next ref
+          }
+        }
+      }
+
+      if (content == null) {
+        if (origins.get(key) === 'dom') {
+          warnings.push(`Could not read ${entry.path}`);
+        } else {
+          failedLatexInputReads += 1;
+        }
+        continue;
+      }
+
+      const lineCount = content.split('\n').length;
+      const sizeBytes = new Blob([content]).size;
+      if (totalBytes + sizeBytes > MAX_NOTATION_SCAN_BYTES) {
+        warnings.push(
+          `Skipped ${entry.path} due to total scan cap (${Math.round(MAX_NOTATION_SCAN_BYTES / 1024)} KB).`
+        );
+        continue;
+      }
+
+      totalBytes += sizeBytes;
+      attachments.push({
+        id: `notation-${attachments.length + 1}-${Date.now()}`,
+        path: entry.path,
+        name: entry.name,
+        ext: normalizedExt,
+        sizeBytes,
+        lineCount,
+        content,
+      });
+
+      if (normalizedExt === '.tex') {
+        const inputPaths = collectLatexInputPaths(
+          content,
+          projectFiles,
+          entry.path,
+          { includeUnresolvedCandidates: true }
+        ).slice(0, MAX_INPUT_REFERENCES);
+        for (const inputPath of inputPaths) {
+          const normalizedInputPath = inputPath.trim();
+          if (!normalizedInputPath) continue;
+          const existingEntry = resolveProjectEntryForInputPath(
+            normalizedInputPath
+          );
+          if (existingEntry) {
+            enqueueEntry(existingEntry, 'latex-input');
+            continue;
+          }
+          const name = basename(normalizedInputPath);
+          enqueueEntry(
+            {
+              path: normalizedInputPath,
+              name,
+              ext: getFileExtension(name) || '.tex',
+              kind: classifyOverleafFile(name),
+            },
+            'latex-input'
+          );
+        }
+      }
+    }
+
+    if (failedLatexInputReads > 0) {
+      warnings.push(
+        `Could not read ${failedLatexInputReads} input-referenced file(s); open the Overleaf file tree and rerun to improve coverage.`
+      );
+    }
+
+    return { attachments, warnings };
+  };
+
+  const onNotationConsistencyPass = async () => {
+    const bridge = window.ageafBridge;
+    if (!bridge) return;
+
+    const conversationId = chatConversationIdRef.current;
+    if (!conversationId) return;
+
+    if (!editorEmpty) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Clear the message input before running notation pass.',
+        }),
+      ]);
+      return;
+    }
+
+    const sessionState = getSessionState(conversationId);
+    if (sessionState.isSending) {
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: 'Please wait for the current response to finish.',
+        }),
+      ]);
+      return;
+    }
+
+    const { attachments, warnings } = await collectNotationAttachments(bridge);
+    if (attachments.length === 0) {
+      const emptyMessage =
+        warnings[0] ??
+        'No readable project text files found for notation pass. Open the file tree and retry.';
+      setMessages((prev) => [
+        ...prev,
+        createMessage({
+          role: 'system',
+          content: emptyMessage,
+        }),
+      ]);
+      return;
+    }
+
+    const warningBlock =
+      warnings.length > 0
+        ? `\n\n[Notation scan warnings]\n- ${warnings.join('\n- ')}`
+        : '';
+
+    void sendMessage(
+      'Notation consistency pass' + warningBlock,
+      [],
+      attachments,
+      [],
+      'notation_draft_fixes'
+    );
+  };
+
   const onInputKeyDown = (event: KeyboardEvent) => {
     if (mentionOpen) {
       if (event.key === 'ArrowDown') {
@@ -7004,7 +8746,7 @@ const Panel = () => {
 
   const setPatchReviewStatus = (
     messageId: string,
-    status: 'pending' | 'accepted' | 'rejected'
+    status: PatchReviewStatus
   ) => {
     updatePatchReviewMessage(
       messageId,
@@ -7012,12 +8754,227 @@ const Panel = () => {
     );
   };
 
-  const onRejectPatchReviewMessage = (messageId: string) => {
-    if (bulkActionBusy) return;
-    setPatchReviewStatus(messageId, 'rejected');
+  const setPatchReviewTextAndStatus = (
+    messageId: string,
+    status: PatchReviewStatus,
+    nextText?: string
+  ) => {
+    updatePatchReviewMessage(messageId, (patchReview) => {
+      const updated: any = { ...patchReview, status };
+      if (typeof nextText === 'string' && 'text' in patchReview) {
+        updated.text = nextText;
+      }
+      return updated as StoredPatchReview;
+    });
+  };
+
+  const clearPatchErrorForMessage = (messageId: string) => {
     setPatchActionErrors((prev) => {
       const { [messageId]: _removed, ...rest } = prev;
       return rest;
+    });
+  };
+
+  const recordReviewAction = (entry: ReviewActionHistoryEntry) => {
+    reviewUndoStackRef.current.push({
+      ...entry,
+      editorHistoryMarker:
+        typeof entry.editorHistoryMarker === 'number'
+          ? entry.editorHistoryMarker
+          : window.ageafBridge?.getEditorHistoryMarker?.() ?? 0,
+    });
+    reviewRedoStackRef.current = [];
+  };
+
+  const applyReviewAcceptHistory = async (
+    entry: ReviewActionHistoryEntry,
+    patchReview: StoredPatchReview,
+    direction: 'undo' | 'redo'
+  ) => {
+    const appliedText =
+      typeof entry.appliedText === 'string'
+        ? entry.appliedText
+        : 'text' in patchReview
+          ? patchReview.text
+          : '';
+
+    if (patchReview.kind === 'replaceSelection') {
+      if (!window.ageafBridge?.applyReplaceRange) {
+        return { ok: false, error: 'Apply bridge unavailable' };
+      }
+      const result =
+        direction === 'undo'
+          ? await window.ageafBridge.applyReplaceRange({
+            from: patchReview.from,
+            to: patchReview.to,
+            expectedOldText: appliedText,
+            text: patchReview.selection,
+          })
+          : await window.ageafBridge.applyReplaceRange({
+            from: patchReview.from,
+            to: patchReview.to,
+            expectedOldText: patchReview.selection,
+            text: appliedText,
+          });
+      return {
+        ok: Boolean(result?.ok),
+        ...(result?.ok
+          ? {}
+          : {
+            error:
+              result?.error ??
+              `Unable to ${direction} accepted change`,
+          }),
+      };
+    }
+
+    if (patchReview.kind === 'replaceRangeInFile') {
+      if (!window.ageafBridge?.applyReplaceInFile) {
+        return { ok: false, error: 'Apply bridge unavailable' };
+      }
+      const result =
+        direction === 'undo'
+          ? await window.ageafBridge.applyReplaceInFile({
+            filePath: patchReview.filePath,
+            expectedOldText: appliedText,
+            text: patchReview.expectedOldText,
+            ...(typeof patchReview.from === 'number'
+              ? { from: patchReview.from }
+              : {}),
+            ...(typeof patchReview.to === 'number'
+              ? { to: patchReview.to }
+              : {}),
+          })
+          : await window.ageafBridge.applyReplaceInFile({
+            filePath: patchReview.filePath,
+            expectedOldText: patchReview.expectedOldText,
+            text: appliedText,
+            ...(typeof patchReview.from === 'number'
+              ? { from: patchReview.from }
+              : {}),
+            ...(typeof patchReview.to === 'number'
+              ? { to: patchReview.to }
+              : {}),
+          });
+      return {
+        ok: Boolean(result?.ok),
+        ...(result?.ok
+          ? {}
+          : {
+            error:
+              result?.error ??
+              `Unable to ${direction} accepted change`,
+          }),
+      };
+    }
+
+    if (patchReview.kind === 'insertAtCursor') {
+      if (direction === 'undo') {
+        if (!window.ageafBridge?.undoEditor) {
+          return { ok: false, error: 'Undo bridge unavailable' };
+        }
+        return await window.ageafBridge.undoEditor();
+      }
+      if (window.ageafBridge?.redoEditor) {
+        return await window.ageafBridge.redoEditor();
+      }
+      if (appliedText && window.ageafBridge?.insertAtCursor) {
+        window.ageafBridge.insertAtCursor(appliedText);
+        return { ok: true };
+      }
+      return { ok: false, error: 'Redo bridge unavailable' };
+    }
+
+    return { ok: false, error: 'Unsupported patch kind' };
+  };
+
+  const executeReviewUndo = async () => {
+    if (bulkActionBusy || patchActionBusyId) return false;
+    const entry = reviewUndoStackRef.current.pop();
+    if (!entry) return false;
+
+    const latest = messagesRef.current.find((message) => message.id === entry.messageId);
+    if (!latest?.patchReview) {
+      return false;
+    }
+
+    if (entry.action === 'accept') {
+      const result = await applyReviewAcceptHistory(
+        entry,
+        latest.patchReview,
+        'undo'
+      );
+      if (!result?.ok) {
+        reviewUndoStackRef.current.push(entry);
+        setPatchActionErrors((prev) => ({
+          ...prev,
+          [entry.messageId]: result?.error ?? 'Unable to undo accepted change',
+        }));
+        return false;
+      }
+    }
+
+    setPatchReviewTextAndStatus(
+      entry.messageId,
+      entry.prevStatus,
+      entry.appliedText
+    );
+    clearPatchErrorForMessage(entry.messageId);
+    reviewRedoStackRef.current.push(entry);
+    return true;
+  };
+
+  const executeReviewRedo = async () => {
+    if (bulkActionBusy || patchActionBusyId) return false;
+    const entry = reviewRedoStackRef.current.pop();
+    if (!entry) return false;
+
+    const latest = messagesRef.current.find((message) => message.id === entry.messageId);
+    if (!latest?.patchReview) {
+      return false;
+    }
+
+    if (entry.action === 'accept') {
+      const result = await applyReviewAcceptHistory(
+        entry,
+        latest.patchReview,
+        'redo'
+      );
+      if (!result?.ok) {
+        reviewRedoStackRef.current.push(entry);
+        setPatchActionErrors((prev) => ({
+          ...prev,
+          [entry.messageId]: result?.error ?? 'Unable to redo accepted change',
+        }));
+        return false;
+      }
+    }
+
+    setPatchReviewTextAndStatus(
+      entry.messageId,
+      entry.nextStatus,
+      entry.appliedText
+    );
+    clearPatchErrorForMessage(entry.messageId);
+    reviewUndoStackRef.current.push(entry);
+    return true;
+  };
+
+  const onRejectPatchReviewMessage = (messageId: string) => {
+    if (bulkActionBusy) return;
+    const latest = messagesRef.current.find((message) => message.id === messageId);
+    const patchReview = latest?.patchReview;
+    if (!patchReview) return;
+    const prevStatus = ((patchReview as any).status ?? 'pending') as PatchReviewStatus;
+    if (prevStatus !== 'pending') return;
+    setPatchReviewStatus(messageId, 'rejected');
+    clearPatchErrorForMessage(messageId);
+    recordReviewAction({
+      messageId,
+      action: 'reject',
+      prevStatus,
+      nextStatus: 'rejected',
+      patchKind: patchReview.kind,
     });
   };
 
@@ -7095,6 +9052,7 @@ const Panel = () => {
       messageId,
       messageIndex,
       kind: patchReview.kind,
+      anchorKey: getPatchFeedbackAnchorKey(patchReview),
     };
   };
 
@@ -7102,11 +9060,8 @@ const Panel = () => {
     messageId: string,
     patchReview: StoredPatchReview,
     overrideText?: string
-  ) => {
-    setPatchActionErrors((prev) => {
-      const { [messageId]: _removed, ...rest } = prev;
-      return rest;
-    });
+  ): Promise<boolean> => {
+    clearPatchErrorForMessage(messageId);
 
     try {
       if (patchReview.kind === 'replaceSelection') {
@@ -7115,7 +9070,7 @@ const Panel = () => {
             ...prev,
             [messageId]: 'Apply bridge unavailable',
           }));
-          return;
+          return false;
         }
         const nextText =
           typeof overrideText === 'string' ? overrideText : patchReview.text;
@@ -7130,10 +9085,10 @@ const Panel = () => {
             ...prev,
             [messageId]: result?.error ?? 'Selection changed',
           }));
-          return;
+          return false;
         }
-        setPatchReviewStatus(messageId, 'accepted');
-        return;
+        setPatchReviewTextAndStatus(messageId, 'accepted', nextText);
+        return true;
       }
 
       if (patchReview.kind === 'replaceRangeInFile') {
@@ -7142,7 +9097,7 @@ const Panel = () => {
             ...prev,
             [messageId]: 'Apply bridge unavailable',
           }));
-          return;
+          return false;
         }
         const nextText =
           typeof overrideText === 'string' ? overrideText : patchReview.text;
@@ -7160,29 +9115,31 @@ const Panel = () => {
             ...prev,
             [messageId]: result?.error ?? 'Unable to apply patch',
           }));
-          return;
+          return false;
         }
-        setPatchReviewStatus(messageId, 'accepted');
-        return;
+        setPatchReviewTextAndStatus(messageId, 'accepted', nextText);
+        return true;
       }
 
       if (patchReview.kind === 'insertAtCursor') {
-        if (!window.ageafBridge) return;
+        if (!window.ageafBridge) return false;
         const nextText =
           typeof overrideText === 'string' ? overrideText : patchReview.text;
         window.ageafBridge.insertAtCursor(nextText);
-        setPatchReviewStatus(messageId, 'accepted');
-        return;
+        setPatchReviewTextAndStatus(messageId, 'accepted', nextText);
+        return true;
       }
 
       setPatchActionErrors((prev) => ({
         ...prev,
         [messageId]: 'Unsupported patch kind',
       }));
+      return false;
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Failed to apply patch';
       setPatchActionErrors((prev) => ({ ...prev, [messageId]: message }));
+      return false;
     }
   };
 
@@ -7199,7 +9156,23 @@ const Panel = () => {
 
     setPatchActionBusyId(messageId);
     try {
-      await acceptSinglePatch(messageId, patchReview, overrideText);
+      const accepted = await acceptSinglePatch(messageId, patchReview, overrideText);
+      if (accepted) {
+        const appliedText =
+          typeof overrideText === 'string'
+            ? overrideText
+            : 'text' in patchReview
+              ? patchReview.text
+              : undefined;
+        recordReviewAction({
+          messageId,
+          action: 'accept',
+          prevStatus: status,
+          nextStatus: 'accepted',
+          patchKind: patchReview.kind,
+          ...(typeof appliedText === 'string' ? { appliedText } : {}),
+        });
+      }
     } finally {
       setPatchActionBusyId(null);
     }
@@ -7236,14 +9209,14 @@ const Panel = () => {
           const bPatch = b.patchReview;
           const aFrom =
             aPatch &&
-            (aPatch.kind === 'replaceSelection' ||
-              aPatch.kind === 'replaceRangeInFile')
+              (aPatch.kind === 'replaceSelection' ||
+                aPatch.kind === 'replaceRangeInFile')
               ? aPatch.from ?? 0
               : 0;
           const bFrom =
             bPatch &&
-            (bPatch.kind === 'replaceSelection' ||
-              bPatch.kind === 'replaceRangeInFile')
+              (bPatch.kind === 'replaceSelection' ||
+                bPatch.kind === 'replaceRangeInFile')
               ? bPatch.from ?? 0
               : 0;
           return bFrom - aFrom;
@@ -7254,9 +9227,21 @@ const Panel = () => {
           if (!latest?.patchReview) continue;
           const latestStatus = (latest.patchReview as any).status ?? 'pending';
           if (latestStatus !== 'pending') continue;
+          const appliedText =
+            'text' in latest.patchReview ? latest.patchReview.text : undefined;
 
           try {
-            await acceptSinglePatch(latest.id, latest.patchReview);
+            const accepted = await acceptSinglePatch(latest.id, latest.patchReview);
+            if (accepted) {
+              recordReviewAction({
+                messageId: latest.id,
+                action: 'accept',
+                prevStatus: latestStatus as PatchReviewStatus,
+                nextStatus: 'accepted',
+                patchKind: latest.patchReview.kind,
+                ...(typeof appliedText === 'string' ? { appliedText } : {}),
+              });
+            }
           } catch {
             // Continue processing remaining hunks.
           }
@@ -7270,6 +9255,20 @@ const Panel = () => {
 
   const onBulkRejectAll = () => {
     if (bulkActionBusy || patchActionBusyId) return;
+    const pendingEntries = messagesRef.current
+      .filter((message) => {
+        if (!message.patchReview) return false;
+        const status = (message.patchReview as any).status ?? 'pending';
+        return status === 'pending';
+      })
+      .map((message) => ({
+        messageId: message.id,
+        patchKind: message.patchReview!.kind,
+        prevStatus: ((message.patchReview as any).status ??
+          'pending') as PatchReviewStatus,
+      }));
+    if (pendingEntries.length === 0) return;
+
     setMessages((prev) =>
       prev.map((message) => {
         if (!message.patchReview) return message;
@@ -7285,6 +9284,15 @@ const Panel = () => {
       })
     );
     setPatchActionErrors({});
+    for (const entry of pendingEntries) {
+      recordReviewAction({
+        messageId: entry.messageId,
+        action: 'reject',
+        prevStatus: entry.prevStatus,
+        nextStatus: 'rejected',
+        patchKind: entry.patchKind,
+      });
+    }
   };
 
   const onAcceptFilePatches = async (fileKey: string) => {
@@ -7326,8 +9334,22 @@ const Panel = () => {
 
       for (const message of pendingMessages) {
         if (!message.patchReview) continue;
+        const appliedText =
+          'text' in message.patchReview ? message.patchReview.text : undefined;
+        const prevStatus = ((message.patchReview as any).status ??
+          'pending') as PatchReviewStatus;
         try {
-          await acceptSinglePatch(message.id, message.patchReview);
+          const accepted = await acceptSinglePatch(message.id, message.patchReview);
+          if (accepted) {
+            recordReviewAction({
+              messageId: message.id,
+              action: 'accept',
+              prevStatus,
+              nextStatus: 'accepted',
+              patchKind: message.patchReview.kind,
+              ...(typeof appliedText === 'string' ? { appliedText } : {}),
+            });
+          }
         } catch {
           // Continue processing remaining hunks in this file.
         }
@@ -7340,18 +9362,23 @@ const Panel = () => {
 
   const onRejectFilePatches = (fileKey: string) => {
     if (bulkActionBusy || patchActionBusyId) return;
-    const ids = new Set(
-      messagesRef.current
-        .filter((entry) => {
-          const patchReview = entry.patchReview;
-          return Boolean(
-            patchReview &&
-            patchReview.kind === 'replaceRangeInFile' &&
-            patchReview.filePath.toLowerCase() === fileKey
-          );
-        })
-        .map((entry) => entry.id)
-    );
+    const pendingEntries = messagesRef.current
+      .filter((entry) => {
+        const patchReview = entry.patchReview;
+        if (!patchReview || patchReview.kind !== 'replaceRangeInFile') {
+          return false;
+        }
+        if (patchReview.filePath.toLowerCase() !== fileKey) return false;
+        const status = (patchReview as any).status ?? 'pending';
+        return status === 'pending';
+      })
+      .map((entry) => ({
+        messageId: entry.id,
+        patchKind: entry.patchReview!.kind,
+        prevStatus: ((entry.patchReview as any).status ??
+          'pending') as PatchReviewStatus,
+      }));
+    const ids = new Set(pendingEntries.map((entry) => entry.messageId));
     if (ids.size === 0) return;
     setMessages((prev) =>
       prev.map((message) => {
@@ -7384,6 +9411,15 @@ const Panel = () => {
       }
       return next;
     });
+    for (const entry of pendingEntries) {
+      recordReviewAction({
+        messageId: entry.messageId,
+        action: 'reject',
+        prevStatus: entry.prevStatus,
+        nextStatus: 'rejected',
+        patchKind: entry.patchKind,
+      });
+    }
   };
 
   const onNavigateToFile = (filePath: string) => {
@@ -7396,9 +9432,13 @@ const Panel = () => {
   const onAcceptPatchReviewRef = useRef(onAcceptPatchReviewMessage);
   const onFeedbackPatchReviewRef = useRef(onFeedbackPatchReviewMessage);
   const onRejectPatchReviewRef = useRef(onRejectPatchReviewMessage);
+  const executeReviewUndoRef = useRef(executeReviewUndo);
+  const executeReviewRedoRef = useRef(executeReviewRedo);
   onAcceptPatchReviewRef.current = onAcceptPatchReviewMessage;
   onFeedbackPatchReviewRef.current = onFeedbackPatchReviewMessage;
   onRejectPatchReviewRef.current = onRejectPatchReviewMessage;
+  executeReviewUndoRef.current = executeReviewUndo;
+  executeReviewRedoRef.current = executeReviewRedo;
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -7431,6 +9471,76 @@ const Panel = () => {
         PANEL_OVERLAY_ACTION_EVENT,
         handler as EventListener
       );
+  }, []);
+
+  useEffect(() => {
+    const isEditorShortcutTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.closest('#ageaf-panel-root')) return false;
+      return Boolean(target.closest('.cm-editor, .cm-content'));
+    };
+
+    const isEditorFocused = () => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement)) return false;
+      if (active.closest('#ageaf-panel-root')) return false;
+      return Boolean(active.closest('.cm-editor, .cm-content'));
+    };
+
+    const isTypingTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      const tagName = target.tagName;
+      if (tagName === 'TEXTAREA') return true;
+      if (tagName !== 'INPUT') return false;
+      const input = target as HTMLInputElement;
+      const type = (input.type || 'text').toLowerCase();
+      return type !== 'button' && type !== 'checkbox' && type !== 'radio';
+    };
+
+    const onWindowKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.altKey) return;
+      const active = document.activeElement;
+      const editorContext = isEditorShortcutTarget(event.target) || isEditorFocused();
+      const isTypingContext = isTypingTarget(event.target) || isTypingTarget(active);
+      if (isTypingContext && !editorContext) return;
+
+      const key = event.key.toLowerCase();
+      const isUndo = key === 'z' && !event.shiftKey;
+      const isRedo = (key === 'z' && event.shiftKey) || key === 'y';
+      if (!isUndo && !isRedo) return;
+
+      const topReviewEntry = isUndo
+        ? reviewUndoStackRef.current[reviewUndoStackRef.current.length - 1]
+        : reviewRedoStackRef.current[reviewRedoStackRef.current.length - 1];
+      if (!topReviewEntry) return;
+
+      if (
+        editorContext &&
+        typeof topReviewEntry.editorHistoryMarker === 'number'
+      ) {
+        const currentEditorHistoryMarker =
+          window.ageafBridge?.getEditorHistoryMarker?.() ??
+          topReviewEntry.editorHistoryMarker;
+        if (
+          currentEditorHistoryMarker !== topReviewEntry.editorHistoryMarker
+        ) {
+          return;
+        }
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (isUndo) {
+        void executeReviewUndoRef.current();
+      } else {
+        void executeReviewRedoRef.current();
+      }
+    };
+
+    window.addEventListener('keydown', onWindowKeyDown, true);
+    return () => window.removeEventListener('keydown', onWindowKeyDown, true);
   }, []);
 
   const emitPendingOverlay = (force = false) => {
@@ -7665,38 +9775,20 @@ const Panel = () => {
 
   const onSaveSettings = async () => {
     if (!settings) return;
-
-    // Warn if user has API key in env vars
-    const hasClaudeKey = detectApiKeyInEnvVars(settings.claudeEnvVars);
-    const hasOpenaiKey = detectApiKeyInEnvVars(settings.openaiEnvVars);
-
-    if (hasClaudeKey || hasOpenaiKey) {
-      const confirmed = confirm(
-        '⚠️ Warning: You appear to have an API key in the environment ' +
-          'variables field. This will be saved to browser storage.\n\n' +
-          'For better security, use the "API Key" field instead, which ' +
-          'keeps keys in memory only.\n\n' +
-          'Continue saving?'
-      );
-
-      if (!confirmed) {
-        setSettingsMessage('Save canceled');
-        return;
-      }
-    }
-
     try {
       await chrome.storage.local.set({ [LOCAL_STORAGE_KEY_OPTIONS]: settings });
       invalidateOptionsCache();
-      // API keys entered in dedicated fields are NOT saved
-      const message =
-        claudeApiKey || openaiApiKey
-          ? 'Saved (API keys kept in memory only)'
-          : 'Saved';
-      setSettingsMessage(message);
+      setSettingsMessage('Saved');
       void refreshContextUsage({ force: true });
+
+      // Sync skillTrustMode to host (fire-and-forget, non-blocking)
+      if (settings.skillTrustMode) {
+        updatePiRuntimePreferences(settings, { skillTrustMode: settings.skillTrustMode }).then(
+          () => { lastSyncedTrustModeRef.current = settings.skillTrustMode ?? null; },
+          (err) => { console.warn('[Ageaf] Failed to sync skillTrustMode:', err); },
+        );
+      }
     } catch (error) {
-      // Extension context invalidated - show error message
       if (
         error instanceof Error &&
         error.message.includes('Extension context invalidated')
@@ -7737,11 +9829,11 @@ const Panel = () => {
     const circle = contextRingRef.current;
     if (!circle) return;
     const pct = Math.min(100, Math.max(0, usagePercent));
-    const progress = (RING_CIRCUMFERENCE * pct) / 100;
-    const offset = RING_CIRCUMFERENCE - progress;
-    circle.setAttribute('stroke-dasharray', String(RING_CIRCUMFERENCE));
+    const progress = (ringCircumference * pct) / 100;
+    const offset = ringCircumference - progress;
+    circle.setAttribute('stroke-dasharray', String(ringCircumference));
     circle.setAttribute('stroke-dashoffset', String(offset));
-  }, [usagePercent, RING_CIRCUMFERENCE]);
+  }, [usagePercent, ringCircumference]);
 
   const onTogglePanel = () => {
     setCollapsed((prev) => !prev);
@@ -7985,6 +10077,16 @@ const Panel = () => {
   };
 
   // Session switching is always allowed - no blocking during streaming
+  const dismissUpdateNotice = () => {
+    if (!updateNotice) return;
+    const sha = updateNotice.sha;
+    setUpdateNotice(null);
+    void writeLocalStorageString(
+      LOCAL_STORAGE_KEY_DISMISSED_UPDATE_COMMIT_SHA,
+      sha
+    );
+  };
+
   const activeToolRequest = toolRequests[0] ?? null;
   const activeToolQuestions: ToolInputQuestion[] =
     activeToolRequest?.kind === 'user_input' &&
@@ -8029,6 +10131,29 @@ const Panel = () => {
   const hasSessions = sessionIds.length > 0;
   const landingPage = (
     <div class="ageaf-landing">
+      {updateNotice ? (
+        <div class="ageaf-panel__update-banner" role="status" aria-live="polite">
+          <span class="ageaf-panel__update-text">
+            There is a new version. Please git pull and reload.
+          </span>
+          <a
+            class="ageaf-panel__update-link"
+            href={updateNotice.commitUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            View commit
+          </a>
+          <button
+            class="ageaf-panel__update-close"
+            type="button"
+            aria-label="Dismiss update notification"
+            onClick={dismissUpdateNotice}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <div class="ageaf-landing__content">
         <div class="ageaf-landing__header">
           <img
@@ -8058,9 +10183,27 @@ const Panel = () => {
             <div class="ageaf-landing__card-title">OpenAI</div>
             <div class="ageaf-landing__card-desc">Codex</div>
           </button>
+          <button
+            class="ageaf-landing__card"
+            type="button"
+            onClick={() => void onNewChat('pi')}
+            aria-label="Start a BYOK session"
+          >
+            <div class="ageaf-landing__card-title">BYOK</div>
+            <div class="ageaf-landing__card-desc">Pi</div>
+          </button>
         </div>
       </div>
       <div class="ageaf-landing__footer">
+        <button
+          class="ageaf-panel__theme-toggle"
+          type="button"
+          onClick={() => setIsLightMode(!isLightMode)}
+          aria-label={`Switch to ${isLightMode ? 'Dark' : 'Light'} Mode`}
+          title={`Switch to ${isLightMode ? 'Dark' : 'Light'} Mode`}
+        >
+          {isLightMode ? <SunIcon /> : <MoonIcon />}
+        </button>
         <a
           class="ageaf-landing__help"
           href={HOW_TO_GUIDES_URL}
@@ -8075,7 +10218,8 @@ const Panel = () => {
 
   return (
     <aside
-      class={`ageaf-panel ${collapsed ? 'ageaf-panel--collapsed' : ''}`}
+      class={`ageaf-panel ${collapsed ? 'ageaf-panel--collapsed' : ''} ${isLightMode ? 'light' : ''
+        }`}
       style={{ '--ageaf-panel-width': `${width}px` }}
     >
       <div
@@ -8136,6 +10280,15 @@ const Panel = () => {
                 <span class="ageaf-provider__dot" aria-hidden="true" />
                 <span class="ageaf-provider__label">{providerDisplay.label}</span>
               </div>
+              <button
+                class="ageaf-panel__theme-toggle"
+                type="button"
+                onClick={() => setIsLightMode(!isLightMode)}
+                aria-label={`Switch to ${isLightMode ? 'Dark' : 'Light'} Mode`}
+                title={`Switch to ${isLightMode ? 'Dark' : 'Light'} Mode`}
+              >
+                {isLightMode ? <SunIcon /> : <MoonIcon />}
+              </button>
               <a
                 class="ageaf-panel__help"
                 href={HOW_TO_GUIDES_URL}
@@ -8145,6 +10298,41 @@ const Panel = () => {
               >
                 ?
               </a>
+            </div>
+            {updateNotice ? (
+              <div
+                class="ageaf-panel__update-banner"
+                role="status"
+                aria-live="polite"
+              >
+                <span class="ageaf-panel__update-text">
+                  There is a new version. Please git pull and reload.
+                </span>
+                <a
+                  class="ageaf-panel__update-link"
+                  href={updateNotice.commitUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  View commit
+                </a>
+                <button
+                  class="ageaf-panel__update-close"
+                  type="button"
+                  aria-label="Dismiss update notification"
+                  onClick={dismissUpdateNotice}
+                >
+                  ×
+                </button>
+              </div>
+            ) : null}
+            <div
+              class={`ageaf-tips ageaf-tips--${tipDirection}`}
+              key={tipIndex}
+              aria-live="polite"
+              aria-label="Tip"
+            >
+              {TIPS[tipIndex]}
             </div>
           </header>
         ) : null}
@@ -8255,7 +10443,9 @@ const Panel = () => {
                               }}
                             >
                               {copiedItems[`${message.id}-response`] ? (
-                                <CheckIcon />
+                                <span class="ageaf-message__copy-check">
+                                  <CheckIcon />
+                                </span>
                               ) : (
                                 <CopyIcon />
                               )}
@@ -8333,7 +10523,10 @@ const Panel = () => {
                   );
                 })()}
                 {DEBUG_DIFF ? (
-                  <div class="ageaf-message ageaf-message--system">
+                  <div
+                    class="ageaf-message ageaf-message--system"
+                    aria-label="Review changes"
+                  >
                     <DiffReview
                       oldText={'\\section{Intro}\\nWe write the paper here.'}
                       newText={'\\section{Introduction}\\nWe write the paper here.'}
@@ -8506,6 +10699,15 @@ const Panel = () => {
                 />
               ) : null}
               <div class="ageaf-runtime">
+                <button
+                  class="ageaf-runtime__refresh"
+                  type="button"
+                  title="Refresh models"
+                  aria-label="Refresh models"
+                  onClick={onRefreshModels}
+                >
+                  &#x21bb;
+                </button>
                 <div class="ageaf-runtime__picker">
                   <button
                     class="ageaf-runtime__button"
@@ -8516,24 +10718,49 @@ const Panel = () => {
                       {getSelectedModelLabel()}
                     </span>
                   </button>
-                  <div class="ageaf-runtime__menu" role="listbox">
-                    {getOrderedRuntimeModels().map((model) => (
-                      <button
-                        class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''
-                          }`}
-                        type="button"
-                        onClick={() => onSelectModel(model.value)}
-                        key={model.value}
-                        aria-selected={isRuntimeModelSelected(model)}
-                      >
-                        <div class="ageaf-runtime__option-title">
-                          {getRuntimeModelLabel(model)}
+                  <div class={`ageaf-runtime__menu${chatProvider === 'pi' ? ' ageaf-runtime__menu--grouped' : ''}`} role="listbox">
+                    {chatProvider === 'pi' ? (
+                      getGroupedRuntimeModels().map((group) => (
+                        <div class="ageaf-runtime__group" key={group.provider}>
+                          <div class="ageaf-runtime__group-label">
+                            {formatProviderName(group.provider)}
+                            <span class="ageaf-runtime__group-arrow">&#x203a;</span>
+                          </div>
+                          <div class="ageaf-runtime__group-models">
+                            {group.models.map((model) => (
+                              <button
+                                class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''}`}
+                                type="button"
+                                onClick={() => onSelectPiModel(model)}
+                                key={model.value}
+                                aria-selected={isRuntimeModelSelected(model)}
+                              >
+                                <div class="ageaf-runtime__option-title">
+                                  {getRuntimeModelLabel(model)}
+                                </div>
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                        <div class="ageaf-runtime__option-description">
-                          {getRuntimeModelDescription(model)}
-                        </div>
-                      </button>
-                    ))}
+                      ))
+                    ) : (
+                      getOrderedRuntimeModels().map((model) => (
+                        <button
+                          class={`ageaf-runtime__option ${isRuntimeModelSelected(model) ? 'is-selected' : ''}`}
+                          type="button"
+                          onClick={() => onSelectModel(model.value)}
+                          key={model.value}
+                          aria-selected={isRuntimeModelSelected(model)}
+                        >
+                          <div class="ageaf-runtime__option-title">
+                            {getRuntimeModelLabel(model)}
+                          </div>
+                          <div class="ageaf-runtime__option-description">
+                            {getRuntimeModelDescription(model)}
+                          </div>
+                        </button>
+                      ))
+                    )}
                   </div>
                 </div>
                 <div class="ageaf-runtime__picker">
@@ -8593,17 +10820,20 @@ const Panel = () => {
                   class={`ageaf-runtime__yolo ${yoloMode ? 'is-on' : ''}`}
                   type="button"
                   role="switch"
-                  aria-checked={yoloMode}
+                  aria-checked={chatProvider === 'pi' ? true : yoloMode}
+                  disabled={chatProvider === 'pi'}
                   aria-label={
-                    chatProvider === 'codex'
-                      ? yoloMode
-                        ? 'Codex YOLO mode enabled'
-                        : 'Codex safe mode enabled'
-                      : yoloMode
-                        ? 'YOLO mode enabled'
-                        : 'Safe mode enabled'
+                    chatProvider === 'pi'
+                      ? 'BYOK always runs in YOLO mode'
+                      : chatProvider === 'codex'
+                        ? yoloMode
+                          ? 'Codex YOLO mode enabled'
+                          : 'Codex safe mode enabled'
+                        : yoloMode
+                          ? 'YOLO mode enabled'
+                          : 'Safe mode enabled'
                   }
-                  data-tooltip={yoloMode ? 'YOLO mode' : 'Safe mode'}
+                  data-tooltip={chatProvider === 'pi' ? 'Always YOLO' : yoloMode ? 'YOLO mode' : 'Safe mode'}
                   onClick={() => {
                     void onToggleYoloMode();
                   }}
@@ -8639,7 +10869,7 @@ const Panel = () => {
                   const state = chatStateRef.current;
                   const conversation = state ? findConversation(state, id) : null;
                   const providerLabel =
-                    conversation?.provider === 'codex' ? 'OpenAI' : 'Anthropic';
+                    conversation?.provider === 'codex' ? 'OpenAI' : conversation?.provider === 'pi' ? 'BYOK' : 'Anthropic';
 
                   // Get per-session activity status
                   const sessionState = sessionStates.current.get(id);
@@ -8685,6 +10915,24 @@ const Panel = () => {
                 <button
                   class="ageaf-toolbar-button"
                   type="button"
+                  onClick={() => void onCheckReferences()}
+                  aria-label="Check references"
+                  data-tooltip="Check references"
+                >
+                  <CheckReferencesIcon />
+                </button>
+                <button
+                  class="ageaf-toolbar-button"
+                  type="button"
+                  onClick={() => void onNotationConsistencyPass()}
+                  aria-label="Notation consistency pass"
+                  data-tooltip="Notation consistency pass"
+                >
+                  <NotationCheckIcon />
+                </button>
+                <button
+                  class="ageaf-toolbar-button"
+                  type="button"
                   onClick={() => void onOpenFilePicker()}
                   aria-label="Attach files"
                   data-tooltip="Attach files"
@@ -8721,6 +10969,14 @@ const Panel = () => {
                       role="menuitem"
                     >
                       OpenAI
+                    </button>
+                    <button
+                      class="ageaf-toolbar-menu__option"
+                      type="button"
+                      onClick={() => void onNewChat('pi')}
+                      role="menuitem"
+                    >
+                      BYOK
                     </button>
                   </div>
                 </div>
@@ -8996,12 +11252,6 @@ const Panel = () => {
                 </div>
               </div>
             ) : null}
-            {isSending || queueCount > 0 ? (
-              <div class="ageaf-panel__queue">
-                {isSending ? 'Sending…' : 'Queued'}
-                {queueCount > 0 ? ` (${queueCount})` : ''}
-              </div>
-            ) : null}
           </div>
         ) : null}
       </div>
@@ -9024,14 +11274,6 @@ const Panel = () => {
                 onClick={() => setSettingsTab('connection')}
               >
                 Connection
-              </button>
-              <button
-                class={`ageaf-settings__tab ${settingsTab === 'authentication' ? 'is-active' : ''
-                  }`}
-                type="button"
-                onClick={() => setSettingsTab('authentication')}
-              >
-                Authentication
               </button>
               <button
                 class={`ageaf-settings__tab ${settingsTab === 'customization' ? 'is-active' : ''
@@ -9133,270 +11375,6 @@ const Panel = () => {
                       )}
                     </div>
                   ) : null}
-                  {settingsTab === 'authentication' ? (
-                    <div class="ageaf-settings__section">
-                      <h3>Authentication</h3>
-                      <h4 class="ageaf-settings__subhead">Anthropic</h4>
-                      <div
-                        class="ageaf-settings__info-box"
-                        style="background: rgba(57, 185, 138, 0.08); border: 1px solid rgba(57, 185, 138, 0.25); border-left: 4px solid #39b98a; padding: 12px; margin-bottom: 16px; border-radius: 6px;"
-                      >
-                        <strong>🔐 Secure API Key Input</strong>
-                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                          Enter your API key here for use with Claude CLI. The
-                          key is kept in memory only and never saved to browser
-                          storage. You'll need to re-enter it after browser
-                          restart.
-                        </p>
-                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                          <strong>Alternatively:</strong> Set ANTHROPIC_API_KEY
-                          in your terminal environment and leave this field
-                          empty.
-                        </p>
-                      </div>
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-claude-api-key"
-                      >
-                        API Key (Session Only - Not Saved)
-                      </label>
-                      <div
-                        style="display: flex; gap: 8px; margin-bottom: 16px;"
-                      >
-                        <input
-                          id="ageaf-claude-api-key"
-                          class="ageaf-settings__input"
-                          type={showClaudeKey ? 'text' : 'password'}
-                          value={claudeApiKey}
-                          onInput={(event) =>
-                            setClaudeApiKey(
-                              (event.target as HTMLInputElement).value
-                            )
-                          }
-                          onPaste={(event) =>
-                            setClaudeApiKey(
-                              event.clipboardData?.getData('text') || ''
-                            )
-                          }
-                          placeholder="sk-ant-... (optional if set in terminal)"
-                          style="flex: 1;"
-                        />
-                        <button
-                          type="button"
-                          class="ageaf-settings__button"
-                          onClick={() => setShowClaudeKey(!showClaudeKey)}
-                          style="min-width: 80px;"
-                        >
-                          {showClaudeKey ? 'Hide' : 'Show'}
-                        </button>
-                        {claudeApiKey && (
-                          <button
-                            type="button"
-                            class="ageaf-settings__button"
-                            onClick={() => setClaudeApiKey('')}
-                            style="min-width: 80px;"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-claude-cli"
-                      >
-                        Claude CLI path (optional)
-                      </label>
-                      <input
-                        id="ageaf-claude-cli"
-                        class="ageaf-settings__input"
-                        type="text"
-                        value={settings.claudeCliPath ?? ''}
-                        onInput={(event) =>
-                          updateSettings({
-                            claudeCliPath: (event.target as HTMLInputElement)
-                              .value,
-                          })
-                        }
-                        placeholder="Leave empty to auto-detect"
-                      />
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-claude-env"
-                      >
-                        Environment variables (KEY=VALUE)
-                      </label>
-                      <p class="ageaf-settings__hint">
-                        <strong>Note:</strong> Use the API Key field above for
-                        sensitive keys. This field is for non-sensitive
-                        variables like ANTHROPIC_BASE_URL or ANTHROPIC_MODEL.
-                      </p>
-                      <textarea
-                        id="ageaf-claude-env"
-                        class="ageaf-settings__textarea"
-                        rows={6}
-                        value={settings.claudeEnvVars ?? ''}
-                        onInput={(event) =>
-                          updateSettings({
-                            claudeEnvVars: (event.target as HTMLTextAreaElement)
-                              .value,
-                          })
-                        }
-                        placeholder={
-                          'ANTHROPIC_BASE_URL=https://api.anthropic.com\nANTHROPIC_MODEL=claude-sonnet-4-5'
-                        }
-                      />
-                      {detectApiKeyInEnvVars(settings.claudeEnvVars) && (
-                        <div
-                          class="ageaf-settings__warning-box"
-                          style="background: rgba(255, 179, 87, 0.08); border: 1px solid rgba(255, 179, 87, 0.25); border-left: 4px solid #ffb357; padding: 12px; margin-top: 12px; margin-bottom: 12px; border-radius: 6px;"
-                        >
-                          <strong>⚠️ API Key Detected in Environment Variables</strong>
-                          <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                            You appear to have entered an API key in the
-                            environment variables field. For better security, use
-                            the "API Key" field above instead. Keys entered there
-                            are kept in memory only and never saved.
-                          </p>
-                        </div>
-                      )}
-                      <label class="ageaf-settings__checkbox">
-                        <input
-                          type="checkbox"
-                          checked={settings.claudeLoadUserSettings ?? false}
-                          onChange={(event) =>
-                            updateSettings({
-                              claudeLoadUserSettings:
-                                event.currentTarget.checked,
-                            })
-                          }
-                        />
-                        Load ~/.claude/settings.json (user permissions)
-                      </label>
-                      <h4 class="ageaf-settings__subhead">OpenAI</h4>
-                      <div
-                        class="ageaf-settings__info-box"
-                        style="background: rgba(57, 185, 138, 0.08); border: 1px solid rgba(57, 185, 138, 0.25); border-left: 4px solid #39b98a; padding: 12px; margin-bottom: 16px; border-radius: 6px;"
-                      >
-                        <strong>🔐 Secure API Key Input</strong>
-                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                          Enter your API key here for use with Codex CLI. The
-                          key is kept in memory only and never saved to browser
-                          storage. You'll need to re-enter it after browser
-                          restart.
-                        </p>
-                        <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                          <strong>Alternatively:</strong> Set OPENAI_API_KEY in
-                          your terminal environment and leave this field empty.
-                        </p>
-                      </div>
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-openai-api-key"
-                      >
-                        API Key (Session Only - Not Saved)
-                      </label>
-                      <div
-                        style="display: flex; gap: 8px; margin-bottom: 16px;"
-                      >
-                        <input
-                          id="ageaf-openai-api-key"
-                          class="ageaf-settings__input"
-                          type={showOpenaiKey ? 'text' : 'password'}
-                          value={openaiApiKey}
-                          onInput={(event) =>
-                            setOpenaiApiKey(
-                              (event.target as HTMLInputElement).value
-                            )
-                          }
-                          onPaste={(event) =>
-                            setOpenaiApiKey(
-                              event.clipboardData?.getData('text') || ''
-                            )
-                          }
-                          placeholder="sk-... (optional if set in terminal)"
-                          style="flex: 1;"
-                        />
-                        <button
-                          type="button"
-                          class="ageaf-settings__button"
-                          onClick={() => setShowOpenaiKey(!showOpenaiKey)}
-                          style="min-width: 80px;"
-                        >
-                          {showOpenaiKey ? 'Hide' : 'Show'}
-                        </button>
-                        {openaiApiKey && (
-                          <button
-                            type="button"
-                            class="ageaf-settings__button"
-                            onClick={() => setOpenaiApiKey('')}
-                            style="min-width: 80px;"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-codex-cli"
-                      >
-                        Codex CLI path (optional)
-                      </label>
-                      <input
-                        id="ageaf-codex-cli"
-                        class="ageaf-settings__input"
-                        type="text"
-                        value={settings.openaiCodexCliPath ?? ''}
-                        onInput={(event) =>
-                          updateSettings({
-                            openaiCodexCliPath: (
-                              event.target as HTMLInputElement
-                            ).value,
-                          })
-                        }
-                        placeholder="Leave empty to auto-detect"
-                      />
-                      <label
-                        class="ageaf-settings__label"
-                        for="ageaf-openai-env"
-                      >
-                        Environment variables (KEY=VALUE)
-                      </label>
-                      <p class="ageaf-settings__hint">
-                        <strong>Note:</strong> Use the API Key field above for
-                        sensitive keys. This field is for non-sensitive
-                        variables like OPENAI_BASE_URL.
-                      </p>
-                      <textarea
-                        id="ageaf-openai-env"
-                        class="ageaf-settings__textarea"
-                        rows={6}
-                        value={settings.openaiEnvVars ?? ''}
-                        onInput={(event) =>
-                          updateSettings({
-                            openaiEnvVars: (event.target as HTMLTextAreaElement)
-                              .value,
-                          })
-                        }
-                        placeholder={
-                          'OPENAI_BASE_URL=https://api.openai.com'
-                        }
-                      />
-                      {detectApiKeyInEnvVars(settings.openaiEnvVars) && (
-                        <div
-                          class="ageaf-settings__warning-box"
-                          style="background: rgba(255, 179, 87, 0.08); border: 1px solid rgba(255, 179, 87, 0.25); border-left: 4px solid #ffb357; padding: 12px; margin-top: 12px; margin-bottom: 12px; border-radius: 6px;"
-                        >
-                          <strong>⚠️ API Key Detected in Environment Variables</strong>
-                          <p style="margin: 8px 0 0 0; font-size: 13px; color: #dbe6e0;">
-                            You appear to have entered an API key in the
-                            environment variables field. For better security, use
-                            the "API Key" field above instead. Keys entered there
-                            are kept in memory only and never saved.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  ) : null}
                   {settingsTab === 'customization' ? (
                     <div class="ageaf-settings__section">
                       <h3>Customization</h3>
@@ -9492,7 +11470,7 @@ const Panel = () => {
                         type="number"
                         id="ageaf-surrounding-context-limit"
                         class="ageaf-settings__input"
-                        value={settings.surroundingContextLimit ?? 0}
+                        value={settings.surroundingContextLimit ?? 5000}
                         min="0"
                         step="100"
                         onChange={(event) =>
@@ -9506,8 +11484,8 @@ const Panel = () => {
                       />
                       <p class="ageaf-settings__hint">
                         Max characters of surrounding context (before/after
-                        selection) to send to agents. 0 disables it (recommended
-                        for CLI agents).
+                        selection) to send with chat messages. Set to 0 to
+                        disable (e.g. for CLI agents that read files directly).
                       </p>
 
                       <h4 class="ageaf-settings__subhead">Display</h4>
@@ -9590,6 +11568,32 @@ const Panel = () => {
                       <p class="ageaf-settings__hint">
                         Patterns to block on Unix, one per line. Supports regex.
                       </p>
+
+                      <label
+                        class="ageaf-settings__label"
+                        for="ageaf-skill-trust-mode"
+                        style={{ marginTop: '16px' }}
+                      >
+                        Skill Discovery Trust Mode
+                      </label>
+                      <select
+                        id="ageaf-skill-trust-mode"
+                        class="ageaf-settings__input"
+                        value={settings.skillTrustMode ?? 'verified'}
+                        onChange={(event) =>
+                          updateSettings({
+                            skillTrustMode: (event.target as HTMLSelectElement).value as 'verified' | 'open',
+                          })
+                        }
+                      >
+                        <option value="verified">Verified only (recommended)</option>
+                        <option value="open">Open ecosystem (any source)</option>
+                      </select>
+                      <p class="ageaf-settings__hint">
+                        Controls which skill sources are allowed when discovering
+                        new skills. Verified restricts to trusted publishers
+                        (Anthropic, Vercel).
+                      </p>
                     </div>
                   ) : null}
                 </>
@@ -9624,9 +11628,19 @@ const Panel = () => {
 
 // Export helper functions for use by citation indicator
 export { Panel };
-export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
-  const entries: OverleafEntry[] = [];
-  const seen = new Set<string>();
+export const detectProjectFilesFromDom = (): OverleafEntry[] => {
+  const byPathKind = new Map<string, OverleafEntry>();
+
+  const entryScore = (e: OverleafEntry) =>
+    (e.id ? 4 : 0) + (e.entityType ? 2 : 0) + (e.path.includes('/') ? 1 : 0);
+
+  const addEntry = (entry: OverleafEntry) => {
+    const key = `${entry.path}:${entry.kind}`.toLowerCase();
+    const prev = byPathKind.get(key);
+    if (!prev || entryScore(entry) > entryScore(prev)) {
+      byPathKind.set(key, prev ? { ...prev, ...entry } : entry);
+    }
+  };
 
   const extractFilenameFromLabel = (raw: string): string | null => {
     let value = raw.trim();
@@ -9640,7 +11654,22 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
       /[A-Za-z0-9_./-]+\.(?:tex|bib|sty|cls|md|json|ya?ml|csv|xml|png|jpe?g|gif|svg|pdf|toml|ini|log|txt)\b/gi
     );
     if (!matches || matches.length === 0) return null;
-    return matches[matches.length - 1] ?? null;
+    let candidate = matches[matches.length - 1] ?? null;
+    if (!candidate) return null;
+    if (candidate.toLowerCase().startsWith('description')) {
+      const stripped = candidate.slice('description'.length);
+      if (/^[A-Za-z0-9]/.test(stripped)) {
+        candidate = stripped;
+      }
+    }
+    const bookPrefix = candidate.match(/^book[_-]?\d+/i);
+    if (bookPrefix) {
+      const stripped = candidate.slice(bookPrefix[0].length);
+      if (/^[A-Za-z0-9]/.test(stripped)) {
+        candidate = stripped;
+      }
+    }
+    return candidate;
   };
 
   const normalizeLabel = (raw: string): string => {
@@ -9665,11 +11694,37 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
     return /\bfolder\b/i.test(cn);
   };
 
-  const addEntry = (entry: OverleafEntry) => {
-    const key = `${entry.path}:${entry.kind}`.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    entries.push(entry);
+  const isTabLike = (node: HTMLElement) =>
+    node.matches('[role="tab"], .cm-tab, .cm-tab-label');
+
+  const getLabelText = (node: HTMLElement) =>
+    normalizeLabel(
+      node.getAttribute('aria-label')?.trim() ||
+      node.getAttribute('title')?.trim() ||
+      node.textContent?.trim() ||
+      ''
+    );
+
+  const buildTreePath = (node: HTMLElement, name: string, kind: OverleafEntry['kind']) => {
+    const parts: string[] = [];
+    let current: HTMLElement | null = node;
+    while (current) {
+      if (current === node) {
+        current = current.parentElement;
+        continue;
+      }
+      if (
+        current.getAttribute?.('role') === 'treeitem' &&
+        isFolderLike(current)
+      ) {
+        const label = getLabelText(current);
+        if (label) parts.unshift(label);
+      }
+      current = current.parentElement;
+    }
+    if (kind !== 'folder') parts.push(name);
+    const path = parts.length > 0 ? parts.join('/') : name;
+    return path;
   };
 
   // Scan tabs + file tree nodes (same broad selectors as editorBridge.findClickableByName)
@@ -9721,6 +11776,12 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
             ? 'img'
             : 'other';
 
+    // For tab nodes, keep basename-only path (no folder context in DOM).
+    // For tree nodes, build folder-qualified path by walking parent treeitem folders.
+    // Use `base` (basename) not `extracted` (which may already contain slashes)
+    // to avoid doubled paths like `sections/sections/main.tex`.
+    const path = isTabLike(node) ? extracted : buildTreePath(node, base, kind);
+
     // Prefer extracting Overleaf entity id/type from the file tree markup
     // (file tree nodes contain a descendant with `data-file-id`).
     const idNode = node.matches?.('[data-file-id]')
@@ -9731,7 +11792,7 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
       idNode?.getAttribute?.('data-file-type')?.trim() || undefined;
 
     addEntry({
-      path: extracted,
+      path,
       name: base,
       ext,
       kind,
@@ -9740,5 +11801,5 @@ export const detectProjectFilesHeuristic = (): OverleafEntry[] => {
     });
   }
 
-  return entries;
+  return Array.from(byPathKind.values());
 };

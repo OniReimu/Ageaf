@@ -19,6 +19,64 @@
  */
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   LIGHT MODE OVERRIDES
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ageaf-panel.light .ageaf-bottom-controls {
+  background: var(--ageaf-charcoal);
+  border-top-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-control-bar {
+  border-bottom-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-selector {
+  background: var(--ageaf-surface);
+  border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-selector:hover {
+  background: var(--ageaf-slate);
+}
+
+.ageaf-panel.light .ageaf-context-ring__bg {
+  stroke: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-yolo-toggle__switch {
+  background: var(--ageaf-slate);
+  border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-yolo-toggle__switch::before {
+  background: var(--ageaf-text-secondary);
+}
+
+.ageaf-panel.light .ageaf-session-tab {
+  background: var(--ageaf-surface);
+  border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-session-tab.is-active {
+  color: var(--ageaf-text-primary);
+}
+
+.ageaf-panel.light .ageaf-toolbar-action {
+  background: var(--ageaf-surface);
+  border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-toolbar-action__tooltip {
+  background: var(--ageaf-slate);
+  color: var(--ageaf-text-primary);
+  border-color: var(--ageaf-border);
+}
+
+.ageaf-panel.light .ageaf-toolbar-action__tooltip::after {
+  border-top-color: var(--ageaf-slate);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    BOTTOM CONTROLS CONTAINER (Compact two-row layout)
    ═══════════════════════════════════════════════════════════════════════════ */
 

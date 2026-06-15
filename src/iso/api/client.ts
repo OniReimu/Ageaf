@@ -8,6 +8,8 @@ import {
   type CodexRuntimeMetadata,
   type HostHealthResponse,
   type JobPayload,
+  type PiContextUsageResponse,
+  type PiRuntimeMetadata,
   validateDocumentEntries,
 } from './httpClient';
 import { streamEvents, type JobEvent } from './sse';
@@ -22,6 +24,8 @@ export type {
   HostHealthResponse,
   JobEvent,
   JobPayload,
+  PiContextUsageResponse,
+  PiRuntimeMetadata,
 };
 
 export async function createJob(
@@ -71,9 +75,10 @@ export async function updateClaudeRuntimePreferences(
 }
 
 export async function fetchClaudeRuntimeContextUsage(
-  options: Options
+  options: Options,
+  conversationId?: string | null
 ): Promise<ClaudeContextUsageResponse> {
-  return createTransport(options).fetchClaudeRuntimeContextUsage();
+  return createTransport(options).fetchClaudeRuntimeContextUsage(conversationId);
 }
 
 export async function fetchCodexRuntimeContextUsage(
@@ -81,6 +86,30 @@ export async function fetchCodexRuntimeContextUsage(
   payload?: { threadId?: string }
 ): Promise<CodexContextUsageResponse> {
   return createTransport(options).fetchCodexRuntimeContextUsage(payload);
+}
+
+export async function fetchPiRuntimeMetadata(options: Options): Promise<PiRuntimeMetadata> {
+  return createTransport(options).fetchPiRuntimeMetadata();
+}
+
+export async function updatePiRuntimePreferences(
+  options: Options,
+  payload: { provider?: string | null; model?: string | null; thinkingLevel?: string | null; skillTrustMode?: string | null }
+): Promise<{
+  currentProvider: string | null;
+  currentModel: string | null;
+  currentThinkingLevel: string;
+  thinkingLevels?: Array<{ id: string; label: string }>;
+  skillTrustMode?: string;
+}> {
+  return createTransport(options).updatePiRuntimePreferences(payload);
+}
+
+export async function fetchPiRuntimeContextUsage(
+  options: Options,
+  conversationId?: string
+): Promise<PiContextUsageResponse> {
+  return createTransport(options).fetchPiRuntimeContextUsage(conversationId);
 }
 
 export async function fetchHostHealth(options: Options): Promise<HostHealthResponse> {
@@ -103,7 +132,7 @@ export async function validateAttachmentEntries(
 
 export async function deleteSession(
   options: Options,
-  provider: 'claude' | 'codex',
+  provider: 'claude' | 'codex' | 'pi',
   sessionId: string
 ): Promise<void> {
   return createTransport(options).deleteSession(provider, sessionId);

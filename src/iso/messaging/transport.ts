@@ -9,6 +9,8 @@ import type {
   CodexRuntimeMetadata,
   HostHealthResponse,
   JobPayload,
+  PiContextUsageResponse,
+  PiRuntimeMetadata,
 } from '../api/httpClient';
 import type { JobEvent } from '../api/sse';
 
@@ -38,8 +40,22 @@ export type Transport = {
     currentThinkingMode: string;
     maxThinkingTokens: number | null;
   }>;
-  fetchClaudeRuntimeContextUsage: () => Promise<ClaudeContextUsageResponse>;
+  fetchClaudeRuntimeContextUsage: (conversationId?: string | null) => Promise<ClaudeContextUsageResponse>;
   fetchCodexRuntimeContextUsage: (payload?: { threadId?: string }) => Promise<CodexContextUsageResponse>;
+  fetchPiRuntimeMetadata: () => Promise<PiRuntimeMetadata>;
+  updatePiRuntimePreferences: (payload: {
+    provider?: string | null;
+    model?: string | null;
+    thinkingLevel?: string | null;
+    skillTrustMode?: string | null;
+  }) => Promise<{
+    currentProvider: string | null;
+    currentModel: string | null;
+    currentThinkingLevel: string;
+    thinkingLevels?: Array<{ id: string; label: string }>;
+    skillTrustMode?: string;
+  }>;
+  fetchPiRuntimeContextUsage: (conversationId?: string) => Promise<PiContextUsageResponse>;
   fetchHostHealth: () => Promise<HostHealthResponse>;
 
   openAttachmentDialog: (payload: { multiple?: boolean; extensions?: string[] }) => Promise<{ paths: string[] }>;
@@ -60,7 +76,7 @@ export type Transport = {
     errors: Array<{ id?: string; path?: string; message: string }>;
   }>;
 
-  deleteSession: (provider: 'claude' | 'codex', sessionId: string) => Promise<void>;
+  deleteSession: (provider: 'claude' | 'codex' | 'pi', sessionId: string) => Promise<void>;
 };
 
 export function createTransport(options: Options): Transport {

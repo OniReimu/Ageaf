@@ -2,7 +2,7 @@ import { CitationAnalysisResult, CitationUsage, DuplicateTitleInfo } from './typ
 import { parseBibTeXFile } from './bibTeXParser';
 import { extractCitationsWithLocations } from './latexCitationExtractor';
 import { generateCacheKey } from './citationCache';
-import { detectProjectFilesHeuristic } from '../../iso/panel/Panel';
+import { detectProjectFilesFromDom } from '../../iso/panel/Panel';
 
 function extractFieldValue(entryBlock: string, fieldName: string): string | null {
   // Extremely small BibTeX field extractor good enough for title duplicates.
@@ -106,7 +106,7 @@ const TEX_USAGE_TTL_MS = 2 * 60 * 1000;
 
 async function buildTexUsageCache(): Promise<TexUsageCache> {
   const projectId = getProjectIdFromPathname(window.location.pathname);
-  const projectFiles = detectProjectFilesHeuristic();
+  const projectFiles = detectProjectFilesFromDom();
   const texDocs = projectFiles.filter((f: any) => f.ext === 'tex' && f.entityType === 'doc' && typeof f.id === 'string');
   const usageByKey = new Map<string, TexUsageAgg>();
 

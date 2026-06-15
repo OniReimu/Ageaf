@@ -30,14 +30,14 @@ test('Panel renders and persists patch review cards during active streaming', ()
   );
   const contents = fs.readFileSync(panelPath, 'utf8');
 
-  assert.match(contents, /pendingPatchReviewMessages\.push\(/);
+  assert.match(contents, /sessionState\.pendingPatchReviewMessages = upsertPatchReviewMessage\(/);
   assert.match(
     contents,
-    /setMessages\(\(prev\)\s*=>\s*\[\s*\.\.\.prev,\s*createMessage\(patchMessage\),\s*\]\)/s
+    /setMessages\(\(prev\)\s*=>\s*upsertPatchReviewMessage\(\s*prev,\s*createMessage\(patchMessage\)\s*\)\s*\)/s
   );
   assert.match(
     contents,
-    /setConversationMessages\(\s*baseState,\s*baseConversation\.provider,\s*sessionConversationId,\s*updatedStored\s*\)/s
+    /const updatedStored = upsertPatchReviewMessage\(\s*baseConversation\.messages,\s*patchMessage\s*\);[\s\S]*setConversationMessages\(\s*baseState,\s*baseConversation\.provider,\s*sessionConversationId,\s*updatedStored\s*\)/s
   );
 });
 
@@ -78,6 +78,57 @@ test('Panel finalization inserts assistant before trailing patches and deduplica
   );
   assert.match(contents, /existingPatchSet = new Set\(/);
   assert.match(contents, /pendingPatchReviewMessages\.filter\(/);
+});
+
+test('Panel keys replaceRangeInFile and replaceSelection patches by anchor, not replacement text', () => {
+  const panelPath = path.join(
+    __dirname,
+    '..',
+    'src',
+    'iso',
+    'panel',
+    'Panel.tsx'
+  );
+  const contents = fs.readFileSync(panelPath, 'utf8');
+
+  assert.match(
+    contents,
+    /if \(review\.kind === 'replaceRangeInFile'\) \{\s*return getPatchFeedbackAnchorKey\(review\);/s
+  );
+  assert.match(
+    contents,
+    /if \(review\.kind === 'replaceSelection'\) \{\s*return getPatchFeedbackAnchorKey\(review\);/s
+  );
+  assert.doesNotMatch(
+    contents,
+    /replaceRangeInFile:\$\{review\.filePath\}:\$\{review\.expectedOldText\}:\$\{review\.text\}/
+  );
+});
+
+test('Panel upserts duplicate patch review cards during streaming instead of appending', () => {
+  const panelPath = path.join(
+    __dirname,
+    '..',
+    'src',
+    'iso',
+    'panel',
+    'Panel.tsx'
+  );
+  const contents = fs.readFileSync(panelPath, 'utf8');
+
+  assert.match(contents, /function upsertPatchReviewMessage/);
+  assert.match(
+    contents,
+    /sessionState\.pendingPatchReviewMessages = upsertPatchReviewMessage\(\s*sessionState\.pendingPatchReviewMessages,\s*patchMessage\s*\);/
+  );
+  assert.match(
+    contents,
+    /const updatedStored = upsertPatchReviewMessage\(\s*baseConversation\.messages,\s*patchMessage\s*\);/
+  );
+  assert.match(
+    contents,
+    /setMessages\(\(prev\)\s*=>\s*upsertPatchReviewMessage\(\s*prev,\s*createMessage\(patchMessage\)\s*\)\s*\)/s
+  );
 });
 
 test('Panel assistant insertion scan is bounded to the current stream window', () => {

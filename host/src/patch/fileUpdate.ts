@@ -57,6 +57,25 @@ export function findOverleafFileContent(
   return null;
 }
 
+/**
+ * Normalize a file path for dedup comparison: trim, strip leading `./`,
+ * and collapse repeated slashes.
+ * When overleafFiles are provided, resolve to the canonical [Overleaf file:]
+ * path first (handles basename fallback like `findOverleafFileContent`).
+ */
+export function canonicalizePatchFilePath(
+  rawPath: string,
+  overleafFiles?: ExtractedOverleafFile[]
+): string {
+  const trimmed = rawPath.trim();
+  if (!trimmed) return '';
+  if (overleafFiles && overleafFiles.length > 0) {
+    const matched = findOverleafFileContent(trimmed, overleafFiles);
+    if (matched) return matched.filePath;
+  }
+  return trimmed.replace(/^\.\//, '').replace(/\/+/g, '/');
+}
+
 /** Returns true if the only difference between old and new is blank lines. */
 function isBlankLineOnlyChange(oldText: string, newText: string): boolean {
   const stripBlanks = (s: string) => s.split('\n').filter((line) => line.trim() !== '').join('\n');

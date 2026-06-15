@@ -1,5 +1,5 @@
 import { getCmView } from './helpers';
-import { detectProjectFilesHeuristic } from '../iso/panel/Panel';
+import { detectProjectFilesFromDom } from '../iso/panel/Panel';
 import { parseBibTeXFile } from './citations/bibTeXParser';
 import type { Cm6ExportsLite } from './citations/citationDecorations';
 
@@ -77,6 +77,7 @@ function ensureStyles() {
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
+    /* DEFAULT STATE: Dark Mode (Emerald Studio Theme) */
     .ageaf-cite-popup {
       position: fixed;
       z-index: 2147483647;
@@ -148,6 +149,34 @@ function ensureStyles() {
       padding: 6px 8px;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+    }
+
+    /* LIGHT MODE OVERRIDES: Applied when Ageaf panel is in light mode */
+    body[data-ageaf-theme="light"] .ageaf-cite-popup {
+      background: rgba(255, 255, 255, 0.96);
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.05);
+      color: rgba(15, 23, 42, 0.92);
+    }
+
+    body[data-ageaf-theme="light"] .ageaf-cite-popup::after {
+      background: rgba(255, 255, 255, 0.96);
+      border-left: 1px solid rgba(15, 23, 42, 0.12);
+      border-top: 1px solid rgba(15, 23, 42, 0.12);
+    }
+
+    body[data-ageaf-theme="light"] .ageaf-cite-popup .ageaf-cite-popup__meta {
+      color: rgba(71, 85, 105, 0.86);
+    }
+
+    body[data-ageaf-theme="light"] .ageaf-cite-popup .ageaf-cite-popup__badge {
+      color: #39b98a;
+    }
+
+    body[data-ageaf-theme="light"] .ageaf-cite-popup .ageaf-cite-popup__cite {
+      color: rgba(15, 23, 42, 0.86);
+      background: rgba(15, 23, 42, 0.04);
+      border: 1px solid rgba(15, 23, 42, 0.08);
     }
 
     @keyframes ageaf-popup-enter {
@@ -285,7 +314,7 @@ function normalizeAuthor(raw: string): string {
 
 async function buildBibIndex(): Promise<BibIndex> {
   const projectId = getProjectIdFromPathname(window.location.pathname);
-  const files = detectProjectFilesHeuristic();
+  const files = detectProjectFilesFromDom();
   const bibDocs = files.filter((f: any) => f.ext === 'bib' && f.entityType === 'doc' && typeof f.id === 'string');
   const byKey = new Map<string, BibEntryMeta[]>();
 

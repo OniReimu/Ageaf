@@ -14,11 +14,17 @@ const EDITOR_FILE_REQUEST_EVENT = 'ageaf:editor:file-content:request';
 const EDITOR_FILE_RESPONSE_EVENT = 'ageaf:editor:file-content:response';
 const EDITOR_FILE_NAVIGATE_REQUEST_EVENT = 'ageaf:editor:file-navigate:request';
 const EDITOR_FILE_NAVIGATE_RESPONSE_EVENT = 'ageaf:editor:file-navigate:response';
+const EDITOR_HISTORY_REQUEST_EVENT = 'ageaf:editor:history:request';
+const EDITOR_HISTORY_RESPONSE_EVENT = 'ageaf:editor:history:response';
+const EDITOR_HISTORY_STATE_EVENT = 'ageaf:editor:history:state';
 const PANEL_INSERT_SELECTION_EVENT = 'ageaf:panel:insert-selection';
+const APPLY_REQUEST_TIMEOUT_MS = 12000;
 const selectionRequests = new Map<string, (payload: any) => void>();
 const fileRequests = new Map<string, (payload: any) => void>();
 const applyRequests = new Map<string, (payload: { ok: boolean; error?: string }) => void>();
 const fileNavigateRequests = new Map<string, (payload: { ok: boolean }) => void>();
+const historyRequests = new Map<string, (payload: { ok: boolean; error?: string }) => void>();
+let currentEditorHistoryMarker = 0;
 
 type ApplyReplaceRangeArgs = {
   from: number;
@@ -41,6 +47,14 @@ type ApplyResponse = {
   error?: string;
 };
 
+type HistoryDirection = 'undo' | 'redo';
+
+type HistoryResponse = {
+  requestId: string;
+  ok: boolean;
+  error?: string;
+};
+
 declare global {
   interface Window {
     ageafBridge?: {
@@ -51,6 +65,9 @@ declare global {
       applyReplaceRange: (payload: ApplyReplaceRangeArgs) => Promise<{ ok: boolean; error?: string }>;
       applyReplaceInFile: (payload: ApplyReplaceInFileArgs) => Promise<{ ok: boolean; error?: string }>;
       navigateToFile: (name: string) => Promise<{ ok: boolean }>;
+      undoEditor: () => Promise<{ ok: boolean; error?: string }>;
+      redoEditor: () => Promise<{ ok: boolean; error?: string }>;
+      getEditorHistoryMarker: () => number;
     };
   }
 }
@@ -91,6 +108,23 @@ function onFileNavigateResponse(event: Event) {
   handler({ ok: detail.ok });
 }
 
+function onHistoryResponse(event: Event) {
+  const detail = (event as CustomEvent<HistoryResponse>).detail;
+  if (!detail?.requestId) return;
+  const handler = historyRequests.get(detail.requestId);
+  if (!handler) return;
+  historyRequests.delete(detail.requestId);
+  handler({ ok: detail.ok, error: detail.error });
+}
+
+function onHistoryStateUpdate(event: Event) {
+  const detail = (event as CustomEvent<{ marker?: unknown }>).detail;
+  if (typeof detail?.marker !== 'number' || !Number.isFinite(detail.marker)) {
+    return;
+  }
+  currentEditorHistoryMarker = detail.marker;
+}
+
 function requestSelection() {
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return new Promise((resolve) => {
@@ -129,43 +163,100 @@ function insertAtCursor(text: string) {
   window.dispatchEvent(new CustomEvent(EDITOR_INSERT_EVENT, { detail: { text } }));
 }
 
+function createApplyRequest(
+  requestId: string,
+  payload:
+    | {
+      requestId: string;
+      kind: 'replaceRange';
+      from: number;
+      to: number;
+      expectedOldText: string;
+      text: string;
+    }
+    | {
+      requestId: string;
+      kind: 'replaceInFile';
+      filePath: string;
+      expectedOldText: string;
+      text: string;
+      from?: number;
+      to?: number;
+    }
+) {
+  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    const timeoutId = window.setTimeout(() => {
+      const handler = applyRequests.get(requestId);
+      if (!handler) return;
+      applyRequests.delete(requestId);
+      handler({ ok: false, error: 'Timed out waiting for editor apply response' });
+    }, APPLY_REQUEST_TIMEOUT_MS);
+
+    applyRequests.set(requestId, (result) => {
+      clearTimeout(timeoutId);
+      resolve(result);
+    });
+
+    try {
+      window.dispatchEvent(
+        new CustomEvent(EDITOR_APPLY_REQUEST_EVENT, {
+          detail: payload,
+        })
+      );
+    } catch (error) {
+      clearTimeout(timeoutId);
+      applyRequests.delete(requestId);
+      resolve({
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed to dispatch apply request',
+      });
+    }
+  });
+}
+
 function applyReplaceRange({ from, to, expectedOldText, text }: ApplyReplaceRangeArgs) {
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return new Promise<{ ok: boolean; error?: string }>((resolve) => {
-    applyRequests.set(requestId, resolve);
-    window.dispatchEvent(
-      new CustomEvent(EDITOR_APPLY_REQUEST_EVENT, {
-        detail: {
-          requestId,
-          kind: 'replaceRange',
-          from,
-          to,
-          expectedOldText,
-          text,
-        },
-      })
-    );
+  return createApplyRequest(requestId, {
+    requestId,
+    kind: 'replaceRange',
+    from,
+    to,
+    expectedOldText,
+    text,
   });
 }
 
 function applyReplaceInFile({ filePath, expectedOldText, text, from, to }: ApplyReplaceInFileArgs) {
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return createApplyRequest(requestId, {
+    requestId,
+    kind: 'replaceInFile',
+    filePath,
+    expectedOldText,
+    text,
+    ...(typeof from === 'number' ? { from } : {}),
+    ...(typeof to === 'number' ? { to } : {}),
+  });
+}
+
+function requestEditorHistory(direction: HistoryDirection) {
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return new Promise<{ ok: boolean; error?: string }>((resolve) => {
-    applyRequests.set(requestId, resolve);
+    historyRequests.set(requestId, resolve);
     window.dispatchEvent(
-      new CustomEvent(EDITOR_APPLY_REQUEST_EVENT, {
-        detail: {
-          requestId,
-          kind: 'replaceInFile',
-          filePath,
-          expectedOldText,
-          text,
-          ...(typeof from === 'number' ? { from } : {}),
-          ...(typeof to === 'number' ? { to } : {}),
-        },
+      new CustomEvent(EDITOR_HISTORY_REQUEST_EVENT, {
+        detail: { requestId, direction },
       })
     );
   });
+}
+
+function undoEditor() {
+  return requestEditorHistory('undo');
+}
+
+function redoEditor() {
+  return requestEditorHistory('redo');
 }
 
 function ensureKatexFontFaces() {
@@ -292,6 +383,8 @@ window.addEventListener(EDITOR_RESPONSE_EVENT, onSelectionResponse as EventListe
 window.addEventListener(EDITOR_FILE_RESPONSE_EVENT, onFileContentResponse as EventListener);
 window.addEventListener(EDITOR_APPLY_RESPONSE_EVENT, onApplyResponse as EventListener);
 window.addEventListener(EDITOR_FILE_NAVIGATE_RESPONSE_EVENT, onFileNavigateResponse as EventListener);
+window.addEventListener(EDITOR_HISTORY_RESPONSE_EVENT, onHistoryResponse as EventListener);
+window.addEventListener(EDITOR_HISTORY_STATE_EVENT, onHistoryStateUpdate as EventListener);
 window.ageafBridge = {
   requestSelection,
   requestFileContent,
@@ -300,6 +393,9 @@ window.ageafBridge = {
   applyReplaceRange,
   applyReplaceInFile,
   navigateToFile,
+  undoEditor,
+  redoEditor,
+  getEditorHistoryMarker: () => currentEditorHistoryMarker,
 };
 
 function isPanelTarget(target: EventTarget | null) {

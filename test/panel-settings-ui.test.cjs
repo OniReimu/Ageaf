@@ -16,7 +16,7 @@ test('Panel includes settings button and tabs', () => {
 
   assert.match(contents, /ageaf-panel__settings/);
   assert.match(contents, /Connection/);
-  assert.match(contents, /Authentication/);
+  assert.doesNotMatch(contents, /Authentication/);
   assert.doesNotMatch(contents, /Advanced/);
 });
 

@@ -9,6 +9,8 @@ import type {
   HostHealthResponse,
   JobPayload,
   AttachmentMeta,
+  PiContextUsageResponse,
+  PiRuntimeMetadata,
 } from '../api/httpClient';
 import type { JobEvent } from '../api/sse';
 
@@ -173,10 +175,7 @@ export function nativeTransport(_options: Options): Transport {
         request: {
           method: 'POST',
           path: '/v1/runtime/codex/metadata',
-          body: {
-            cliPath: options.openaiCodexCliPath,
-            envVars: options.openaiEnvVars,
-          },
+          body: {},
         },
       });
       return unwrapNativeResponse(response) as CodexRuntimeMetadata;
@@ -199,11 +198,14 @@ export function nativeTransport(_options: Options): Transport {
       };
     },
 
-    async fetchClaudeRuntimeContextUsage() {
+    async fetchClaudeRuntimeContextUsage(conversationId?: string | null) {
       const response = await sendNativeRequest({
         id: crypto.randomUUID(),
         kind: 'request',
-        request: { method: 'GET', path: '/v1/runtime/claude/context?sessionScope=project' },
+        request: {
+          method: 'GET',
+          path: `/v1/runtime/claude/context?sessionScope=project${conversationId ? `&conversationId=${encodeURIComponent(conversationId)}` : ''}`,
+        },
       });
       return unwrapNativeResponse(response) as ClaudeContextUsageResponse;
     },
@@ -216,13 +218,50 @@ export function nativeTransport(_options: Options): Transport {
           method: 'POST',
           path: '/v1/runtime/codex/context',
           body: {
-            cliPath: options.openaiCodexCliPath,
-            envVars: options.openaiEnvVars,
             threadId: payload?.threadId,
           },
         },
       });
       return unwrapNativeResponse(response) as CodexContextUsageResponse;
+    },
+
+    async fetchPiRuntimeMetadata() {
+      const response = await sendNativeRequest({
+        id: crypto.randomUUID(),
+        kind: 'request',
+        request: { method: 'GET', path: '/v1/runtime/pi/metadata' },
+      });
+      return unwrapNativeResponse(response) as PiRuntimeMetadata;
+    },
+
+    async updatePiRuntimePreferences(payload: {
+      provider?: string | null;
+      model?: string | null;
+      thinkingLevel?: string | null;
+      skillTrustMode?: string | null;
+    }) {
+      const response = await sendNativeRequest({
+        id: crypto.randomUUID(),
+        kind: 'request',
+        request: { method: 'POST', path: '/v1/runtime/pi/preferences', body: payload },
+      });
+      return unwrapNativeResponse(response) as {
+        currentProvider: string | null;
+        currentModel: string | null;
+        currentThinkingLevel: string;
+        thinkingLevels?: Array<{ id: string; label: string }>;
+        skillTrustMode?: string;
+      };
+    },
+
+    async fetchPiRuntimeContextUsage(conversationId?: string) {
+      const qs = conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : '';
+      const response = await sendNativeRequest({
+        id: crypto.randomUUID(),
+        kind: 'request',
+        request: { method: 'GET', path: `/v1/runtime/pi/context${qs}` },
+      });
+      return unwrapNativeResponse(response) as PiContextUsageResponse;
     },
 
     async fetchHostHealth() {
@@ -267,7 +306,7 @@ export function nativeTransport(_options: Options): Transport {
       };
     },
 
-    async deleteSession(provider: 'claude' | 'codex', sessionId: string): Promise<void> {
+    async deleteSession(provider: 'claude' | 'codex' | 'pi', sessionId: string): Promise<void> {
       const response = await sendNativeRequest({
         id: crypto.randomUUID(),
         kind: 'request',

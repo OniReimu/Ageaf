@@ -5,7 +5,9 @@ version: 1.0.0
 author: Orchestra Research
 license: MIT
 tags: [Academic Writing, NeurIPS, ICML, ICLR, ACL, AAAI, COLM, LaTeX, Paper Writing, Citations, Research]
-dependencies: [semanticscholar, arxiv, habanero, requests]
+allowed-tools:
+  - web_search
+  - web_fetch
 ---
 
 # ML Paper Writing for Top AI Conferences
@@ -55,33 +57,18 @@ If you cannot programmatically verify a citation, you MUST:
 
 **Always tell the scientist**: "I've marked [X] citations as placeholders that need verification. I could not confirm these papers exist."
 
-### Recommended: Install Exa MCP for Paper Search
+### Paper Search: Use Built-in Web Search
 
-For the best paper search experience, install **Exa MCP** which provides real-time academic search:
+Use the **`web_search`** tool to find papers and citations. This is available as a built-in tool — no external setup required.
 
-**Claude Code:**
-```bash
-claude mcp add exa -- npx -y mcp-remote "https://mcp.exa.ai/mcp"
-```
+Example searches:
+- `web_search("RLHF language model alignment 2023 arxiv")`
+- `web_search("sparse autoencoders interpretability paper")`
+- `web_search("attention mechanism transformers Vaswani")`
 
-**Cursor / VS Code** (add to MCP settings):
-```json
-{
-  "mcpServers": {
-    "exa": {
-      "type": "http",
-      "url": "https://mcp.exa.ai/mcp"
-    }
-  }
-}
-```
+Use **`web_fetch`** to retrieve paper details, abstracts, or BibTeX from URLs found via search (e.g. Semantic Scholar, arXiv, CrossRef pages).
 
-Exa MCP enables searches like:
-- "Find papers on RLHF for language models published after 2023"
-- "Search for transformer architecture papers by Vaswani"
-- "Get recent work on sparse autoencoders for interpretability"
-
-Then verify results with Semantic Scholar API and fetch BibTeX via DOI.
+**Do NOT say you cannot search the web.** The `web_search` and `web_fetch` tools are always available.
 
 ---
 
@@ -720,54 +707,43 @@ IF you cannot programmatically fetch a citation:
 
 ```
 Citation Verification (MANDATORY for every citation):
-- [ ] Step 1: Search using Exa MCP or Semantic Scholar API
-- [ ] Step 2: Verify paper exists in 2+ sources (Semantic Scholar + arXiv/CrossRef)
+- [ ] Step 1: Search using `web_search` tool
+- [ ] Step 2: Verify paper exists by fetching its Semantic Scholar / arXiv page via `web_fetch`
 - [ ] Step 3: Retrieve BibTeX via DOI (programmatically, not from memory)
 - [ ] Step 4: Verify the claim you're citing actually appears in the paper
 - [ ] Step 5: Add verified BibTeX to bibliography
 - [ ] Step 6: If ANY step fails → mark as placeholder, inform scientist
 ```
 
-**Step 0: Use Exa MCP for Initial Search (Recommended)**
+**Step 1: Search for Papers**
 
-If Exa MCP is installed, use it to find relevant papers:
+Use the built-in `web_search` tool to find relevant papers:
 ```
-Search: "RLHF language model alignment 2023"
-Search: "sparse autoencoders interpretability"
-Search: "attention mechanism transformers Vaswani"
-```
-
-Then verify each result with Semantic Scholar and fetch BibTeX via DOI.
-
-**Step 1: Search Semantic Scholar**
-
-```python
-from semanticscholar import SemanticScholar
-
-sch = SemanticScholar()
-results = sch.search_paper("attention mechanism transformers", limit=5)
-for paper in results:
-    print(f"{paper.title} - {paper.paperId}")
-    print(f"  DOI: {paper.externalIds.get('DOI', 'N/A')}")
+web_search("RLHF language model alignment 2023 arxiv")
+web_search("sparse autoencoders interpretability paper")
+web_search("attention mechanism transformers Vaswani")
 ```
 
 **Step 2: Verify Existence**
+
+Use `web_fetch` to retrieve the paper's Semantic Scholar or arXiv page and confirm it exists:
+```
+web_fetch("https://api.semanticscholar.org/graph/v1/paper/search?query=attention+mechanism+transformers&limit=5")
+```
 
 Confirm paper appears in at least two sources (Semantic Scholar + CrossRef/arXiv).
 
 **Step 3: Retrieve BibTeX via DOI**
 
-```python
-import requests
+Use `web_fetch` to get BibTeX from a DOI:
+```
+web_fetch("https://doi.org/10.48550/arXiv.1706.03762")
+```
 
-def doi_to_bibtex(doi: str) -> str:
-    """Get verified BibTeX from DOI via CrossRef."""
-    response = requests.get(
-        f"https://doi.org/{doi}",
-        headers={"Accept": "application/x-bibtex"}
-    )
-    response.raise_for_status()
-    return response.text
+Or use the CrossRef API:
+```
+web_fetch("https://api.crossref.org/works/10.48550/arXiv.1706.03762/transform/application/x-bibtex")
+```
 
 # Example
 bibtex = doi_to_bibtex("10.48550/arXiv.1706.03762")

@@ -7,13 +7,19 @@ import type { FastifyInstance } from 'fastify';
 import { runClaudeJob } from '../runtimes/claude/run.js';
 import { getCodexAppServer } from '../runtimes/codex/appServer.js';
 import { runCodexJob, type CodexRuntimeConfig } from '../runtimes/codex/run.js';
+import { runPiJob, type PiJobPayload } from '../runtimes/pi/run.js';
+import type { PiRuntimeConfig } from '../runtimes/pi/agent.js';
 import { startEventStream } from '../sse.js';
 import type { JobEvent } from '../types.js';
 import { validatePatch } from '../validate.js';
 import { runRewriteSelection } from '../workflows/rewriteSelection.js';
 import { runFixCompileError } from '../workflows/fixCompileError.js';
+import {
+  runNotationDraftFixes,
+} from '../workflows/notationConsistency.js';
 import { setLastClaudeRuntimeConfig } from '../runtimes/claude/state.js';
 import type { ClaudeRuntimeConfig } from '../runtimes/claude/agent.js';
+import { runWithJobContext, registerJobEmitter, unregisterJobEmitter, resolveAskUserRequest, resolveCodexJobByPid, getActiveCodexJobId, executeAskUser, type AskUserQuestion } from '../interactive/askUserCore.js';
 
 type JobSubscriber = {
   send: (event: JobEvent) => void;
@@ -25,14 +31,14 @@ type JobRecord = {
   events: JobEvent[];
   subscribers: Set<JobSubscriber>;
   done: boolean;
-  provider: 'claude' | 'codex';
+  provider: 'claude' | 'codex' | 'pi';
   codex?: { cliPath?: string; envVars?: string; cwd: string };
 };
 
 const jobs = new Map<string, JobRecord>();
 
 type JobRequestPayload = {
-  provider?: 'claude' | 'codex';
+  provider?: 'claude' | 'codex' | 'pi';
   action?: string;
   context?: {
     selection?: string;
@@ -57,7 +63,7 @@ type JobRequestPayload = {
       content?: string;
     }>;
   };
-  runtime?: { claude?: ClaudeRuntimeConfig; codex?: CodexRuntimeConfig };
+  runtime?: { claude?: ClaudeRuntimeConfig; codex?: CodexRuntimeConfig; pi?: PiRuntimeConfig };
   userSettings?: {
     displayName?: string;
     customSystemPrompt?: string;
@@ -111,7 +117,7 @@ export function registerJobs(server: FastifyInstance) {
     };
 
     const payload = request.body as JobRequestPayload;
-    const provider = payload.provider === 'codex' ? 'codex' : 'claude';
+    const provider = payload.provider === 'codex' ? 'codex' : payload.provider === 'pi' ? 'pi' : 'claude';
     job.provider = provider;
     if (provider === 'claude' && payload.runtime?.claude) {
       setLastClaudeRuntimeConfig(payload.runtime.claude);
@@ -135,35 +141,58 @@ export function registerJobs(server: FastifyInstance) {
     reply.send({ jobId: id });
 
     void (async () => {
+      registerJobEmitter(id, emitEvent as (event: { event: string; data?: unknown }) => void);
       try {
-        emitEvent({ event: 'plan', data: { message: 'Job queued' } });
+        await runWithJobContext(id, async () => {
+          emitEvent({ event: 'plan', data: { message: 'Job queued' } });
 
-        if (provider === 'codex') {
-          const action = payload.action ?? 'chat';
-          if (action !== 'chat' && action !== 'rewrite' && action !== 'fix_error') {
-            emitEvent({
-              event: 'done',
-              data: {
-                status: 'error',
-                message: `Unsupported action for OpenAI provider: ${action}`,
-              },
-            });
+          const requestedAction = payload.action ?? 'chat';
+          const action =
+            requestedAction === 'notation_check'
+              ? 'notation_draft_fixes'
+              : requestedAction;
+
+          if (provider !== 'codex' && action === 'notation_draft_fixes') {
+            await runNotationDraftFixes(payload, emitEvent);
             return;
           }
-          await runCodexJob(payload, emitEvent, { jobId: id });
-          return;
-        }
 
-        if (payload.action === 'rewrite') {
-          await runRewriteSelection(payload, emitEvent);
-          return;
-        }
-        if (payload.action === 'fix_error') {
-          await runFixCompileError(payload, emitEvent);
-          return;
-        }
+          if (provider === 'pi') {
+            await runPiJob({ ...payload, action } as PiJobPayload, emitEvent);
+            return;
+          }
 
-        await runClaudeJob(payload, emitEvent);
+          if (provider === 'codex') {
+            if (
+              action !== 'chat' &&
+              action !== 'rewrite' &&
+              action !== 'fix_error' &&
+              action !== 'notation_draft_fixes'
+            ) {
+              emitEvent({
+                event: 'done',
+                data: {
+                  status: 'error',
+                  message: `Unsupported action for OpenAI provider: ${action}`,
+                },
+              });
+              return;
+            }
+            await runCodexJob({ ...payload, action }, emitEvent, { jobId: id });
+            return;
+          }
+
+          if (action === 'rewrite') {
+            await runRewriteSelection(payload, emitEvent);
+            return;
+          }
+          if (action === 'fix_error') {
+            await runFixCompileError(payload, emitEvent);
+            return;
+          }
+
+          await runClaudeJob(payload, emitEvent);
+        });
       } catch (error) {
         emitEvent({
           event: 'done',
@@ -172,6 +201,8 @@ export function registerJobs(server: FastifyInstance) {
             message: error instanceof Error ? error.message : 'Job failed',
           },
         });
+      } finally {
+        unregisterJobEmitter(id);
       }
     })();
   });
@@ -184,26 +215,80 @@ export function registerJobs(server: FastifyInstance) {
       return;
     }
 
+    const body = request.body as { requestId?: unknown; result?: unknown };
+    const reqId = body?.requestId;
+
+    // Try ask_user resolution first — works for all providers (Pi, Claude, Codex)
+    if (typeof reqId === 'string') {
+      const resolved = resolveAskUserRequest(id, reqId, body.result);
+      if (resolved) {
+        reply.send({ ok: true });
+        return;
+      }
+    }
+
+    // Pi/Claude: ask_user is the only interactive mechanism
+    if (job.provider === 'pi' || job.provider === 'claude') {
+      if (typeof reqId !== 'string') {
+        reply.status(400).send({ error: 'invalid_requestId' });
+      } else {
+        reply.status(404).send({ error: 'no_pending_request' });
+      }
+      return;
+    }
+
+    // Codex: fall through to native handler (approval, user input)
     if (job.provider !== 'codex' || !job.codex) {
       reply.status(400).send({ error: 'unsupported' });
       return;
     }
 
-    const body = request.body as { requestId?: unknown; result?: unknown };
-    const requestId = body?.requestId;
-    if (typeof requestId !== 'number' && typeof requestId !== 'string') {
+    if (typeof reqId !== 'number' && typeof reqId !== 'string') {
       reply.status(400).send({ error: 'invalid_requestId' });
       return;
     }
 
     try {
       const appServer = await getCodexAppServer(job.codex);
-      await appServer.respond(requestId, body.result);
+      await appServer.respond(reqId, body.result);
       reply.send({ ok: true });
     } catch (error) {
       reply.status(500).send({
         error: 'failed',
         message: error instanceof Error ? error.message : 'Failed to respond',
+      });
+    }
+  });
+
+  // Internal endpoint: called by the ask_user stdio MCP server (Codex runtime).
+  // The stdio server runs out-of-process and doesn't have ALS job context,
+  // so it discovers the active Codex job via getActiveCodexJobId().
+  server.post('/v1/internal/ask-user', async (request, reply) => {
+    const body = request.body as { questions?: unknown; ppid?: unknown };
+    if (!Array.isArray(body?.questions)) {
+      reply.status(400).send({ error: 'invalid_questions' });
+      return;
+    }
+
+    // Correlate by Codex CLI PID (exact match), fall back to last-active heuristic.
+    // The fallback is needed because the Codex CLI may spawn MCP servers through
+    // an intermediate process (shell, subprocess manager), making process.ppid
+    // differ from appServer.getPid().
+    const ppid = typeof body.ppid === 'number' ? body.ppid : null;
+    const jobId = (ppid ? resolveCodexJobByPid(ppid) : null) ?? getActiveCodexJobId();
+    if (!jobId) {
+      reply.status(503).send({ error: 'no_active_codex_job' });
+      return;
+    }
+
+    try {
+      const result = await runWithJobContext(jobId, () =>
+        executeAskUser(body.questions as AskUserQuestion[])
+      );
+      reply.send(result);
+    } catch (error) {
+      reply.status(500).send({
+        error: error instanceof Error ? error.message : 'ask_user failed',
       });
     }
   });
@@ -252,7 +337,7 @@ export function subscribeToJobEvents(jobId: string, subscriber: JobSubscriber) {
 }
 
 // Test-only helpers
-export function createJobForTest(provider: 'claude' | 'codex') {
+export function createJobForTest(provider: 'claude' | 'codex' | 'pi') {
   const id = crypto.randomUUID();
   jobs.set(id, {
     id,
@@ -264,7 +349,7 @@ export function createJobForTest(provider: 'claude' | 'codex') {
   return id;
 }
 
-export function createDoneJobForTest(provider: 'claude' | 'codex') {
+export function createDoneJobForTest(provider: 'claude' | 'codex' | 'pi') {
   const id = crypto.randomUUID();
   jobs.set(id, {
     id,

@@ -46,6 +46,7 @@ const EXT_LANGUAGE: Record<string, string> = {
   '.ini': 'ini',
   '.log': 'text',
   '.tex': 'tex',
+  '.bib': 'bibtex',
 };
 
 const EXT_MIME: Record<string, string> = {
@@ -60,6 +61,7 @@ const EXT_MIME: Record<string, string> = {
   '.ini': 'text/plain',
   '.log': 'text/plain',
   '.tex': 'text/plain',
+  '.bib': 'application/x-bibtex',
 };
 
 export const ALLOWED_TEXT_EXTENSIONS = Object.keys(EXT_LANGUAGE);
@@ -255,14 +257,20 @@ export async function validateAttachmentEntries(
           lineCount,
           mime: getMimeForExtension(ext),
         });
+        continue;
       } catch (error) {
-        errors.push({
-          id: entry.id,
-          path: entry.path,
-          message: error instanceof Error ? error.message : 'Failed to read file.',
-        });
+        // Path is not on the local filesystem -- fall through to inline
+        // content branch if available (e.g. Overleaf attachment with content
+        // fetched in the browser).
+        if (typeof entry.content !== 'string') {
+          errors.push({
+            id: entry.id,
+            path: entry.path,
+            message: error instanceof Error ? error.message : 'Failed to read file.',
+          });
+          continue;
+        }
       }
-      continue;
     }
 
     if (typeof entry.content === 'string') {

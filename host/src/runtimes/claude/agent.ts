@@ -1,10 +1,16 @@
-import { query, type OutputFormat, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query as sdkQuery, type OutputFormat, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { mermaidMcpServer } from '../../mcp/mermaidServer.js';
+import { askUserMcpServer } from '../../mcp/askUserServer.js';
 
 import type { JobEvent, Patch } from '../../types.js';
 import { getClaudeSessionCwd } from './cwd.js';
 import { getEnhancedPath, parseEnvironmentVariables, resolveClaudeCliPath } from './cli.js';
+import {
+  clearClaudeSessionResumeCacheForTests as clearClaudeSessionResumeCache,
+  getClaudeSdkSessionId,
+  setClaudeSdkSessionId,
+} from './state.js';
 import {
   CommandBlocklistConfig,
   compileBlockedCommandPatterns,
@@ -12,10 +18,14 @@ import {
   matchBlockedCommand,
   parseBlockedCommandPatterns,
 } from './safety.js';
-import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
-import { computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
+import { extractToolDisplayInfo } from '../../toolDisplayInfo.js';
+import { extractAllAgeafPatchFences } from '../../patch/ageafPatchFence.js';
+import { canonicalizePatchFilePath, computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
 
 type EmitEvent = (event: JobEvent) => void;
+type ClaudeQueryRunner = (input: Parameters<typeof sdkQuery>[0]) => ReturnType<typeof sdkQuery>;
+
+let claudeQueryRunner: ClaudeQueryRunner = sdkQuery as ClaudeQueryRunner;
 
 type StructuredPatchInput = {
   prompt: string;
@@ -44,6 +54,7 @@ export type ClaudeRuntimeConfig = {
   yoloMode?: boolean;
   sessionScope?: 'project' | 'home';
   conversationId?: string;
+  sdkSessionId?: string;
 };
 
 const PatchSchema = z.union([
@@ -145,6 +156,33 @@ function extractJsonObject(value: string): unknown {
 
 type RunQueryResult = { resultText: string | null; emittedPatchFiles: Set<string> };
 
+function normalizeSessionId(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function extractSessionIdFromMessage(message: unknown): string | null {
+  if (!message || typeof message !== 'object') return null;
+  const record = message as Record<string, unknown>;
+  return (
+    normalizeSessionId(record.session_id) ??
+    normalizeSessionId(record.sessionId) ??
+    normalizeSessionId((record.result as Record<string, unknown> | undefined)?.session_id) ??
+    normalizeSessionId((record.result as Record<string, unknown> | undefined)?.sessionId)
+  );
+}
+
+export function setClaudeQueryForTests(runner: ClaudeQueryRunner) {
+  claudeQueryRunner = runner;
+}
+
+export function resetClaudeQueryForTests() {
+  claudeQueryRunner = sdkQuery as ClaudeQueryRunner;
+}
+
+export function clearClaudeSessionResumeCacheForTests() {
+  clearClaudeSessionResumeCache();
+}
+
 async function runQuery(
   prompt: string | AsyncIterable<SDKUserMessage>,
   emitEvent: EmitEvent,
@@ -205,7 +243,14 @@ async function runQuery(
   const outputFormat = structuredOutput
     ? getStructuredOutputFormat(structuredOutput.name)
     : null;
-  const response = query({
+  const resumeSessionId =
+    (typeof runtime.sdkSessionId === 'string' && runtime.sdkSessionId.trim()
+      ? runtime.sdkSessionId.trim()
+      : null) ??
+    getClaudeSdkSessionId(runtime.conversationId) ??
+    undefined;
+
+  const response = claudeQueryRunner({
     prompt,
     options: {
       ...(configuredModel ? { model: configuredModel } : {}),
@@ -241,11 +286,14 @@ async function runQuery(
       env: combinedEnv,
       mcpServers: {
         'ageaf-mermaid': mermaidMcpServer,
+        'ageaf-interactive': askUserMcpServer,
       },
       allowedTools: [
         'mcp__ageaf-mermaid__render_mermaid',
         'mcp__ageaf-mermaid__list_mermaid_themes',
+        'mcp__ageaf-interactive__ask_user',
       ],
+      ...(resumeSessionId ? { resume: resumeSessionId } : {}),
       ...(outputFormat ? { outputFormat } : {}),
     },
   });
@@ -391,6 +439,7 @@ async function runQuery(
       // Use canonical path (from the [Overleaf file:] block) for both patches
       // and dedup, matching what buildReplaceRangePatchesFromFileUpdates uses.
       const canonicalPath = originalFile.filePath;
+      if (emittedPatchFiles.has(canonicalPath)) continue;
       const patches = computePerHunkReplacements(canonicalPath, originalFile.content, content);
       for (const patch of patches) {
         emitEvent({ event: 'patch', data: patch });
@@ -405,28 +454,56 @@ async function runQuery(
     }
   };
 
+  const readUsageNumber = (...values: unknown[]): number => {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+    }
+    return 0;
+  };
+
+  const readOptionalUsageNumber = (...values: unknown[]): number | null => {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+    }
+    return null;
+  };
+
   const emitUsage = (resultMessage: {
     modelUsage?: Record<string, unknown>;
+    usage?: Record<string, unknown>;
   }) => {
     const usageRecord = resultMessage.modelUsage as Record<string, any> | undefined;
-    if (!usageRecord || typeof usageRecord !== 'object') return;
+    let model: string | null = null;
+    let usage: Record<string, unknown> | null = null;
 
-    const entries = Object.entries(usageRecord);
-    if (entries.length === 0) return;
+    if (usageRecord && typeof usageRecord === 'object') {
+      const entries = Object.entries(usageRecord);
+      if (entries.length > 0) {
+        const picked =
+          (configuredModel && entries.find(([key]) => key === configuredModel)) ??
+          entries[0];
+        if (picked) {
+          model = String(picked[0]);
+          usage = (picked[1] as Record<string, unknown>) ?? null;
+        }
+      }
+    }
 
-    const picked =
-      (configuredModel && entries.find(([key]) => key === configuredModel)) ??
-      entries[0];
-    if (!picked) return;
+    if (!usage && resultMessage.usage && typeof resultMessage.usage === 'object') {
+      usage = resultMessage.usage;
+    }
 
-    const [model, usage] = picked as [string, any];
+    if (!usage) return;
+
     const usedTokens =
-      (typeof usage?.inputTokens === 'number' ? usage.inputTokens : 0) +
-      (typeof usage?.outputTokens === 'number' ? usage?.outputTokens : 0) +
-      (typeof usage?.cacheReadInputTokens === 'number' ? usage?.cacheReadInputTokens : 0) +
-      (typeof usage?.cacheCreationInputTokens === 'number' ? usage?.cacheCreationInputTokens : 0);
-    const contextWindow =
-      typeof usage?.contextWindow === 'number' ? usage?.contextWindow : null;
+      readUsageNumber(usage.inputTokens, usage.input_tokens) +
+      readUsageNumber(usage.outputTokens, usage.output_tokens) +
+      readUsageNumber(usage.cacheReadInputTokens, usage.cache_read_input_tokens) +
+      readUsageNumber(usage.cacheCreationInputTokens, usage.cache_creation_input_tokens);
+    const contextWindow = readOptionalUsageNumber(
+      usage.contextWindow,
+      usage.context_window
+    );
 
     emitEvent({
       event: 'usage',
@@ -438,7 +515,14 @@ async function runQuery(
     });
   };
 
+  // Accumulator for input_json_delta chunks keyed by content block index
+  const pendingToolInputs = new Map<number, { toolId: string; toolName: string; chunks: string[]; hadStartInput: boolean }>();
+
   for await (const message of response) {
+    const sessionId = extractSessionIdFromMessage(message);
+    if (sessionId) {
+      setClaudeSdkSessionId(runtime.conversationId, sessionId);
+    }
 
     switch (message.type) {
       case 'assistant': {
@@ -493,17 +577,10 @@ async function runQuery(
           };
           const message = toolMessages[toolName] ?? `Running ${toolName}`;
 
-          // Extract displayable input (file path, URL, command, etc.)
-          let inputDisplay: string | undefined;
-          if (typeof toolInput === 'object' && toolInput !== null) {
-            const input = toolInput as Record<string, unknown>;
-            inputDisplay =
-              (typeof input.file_path === 'string' ? input.file_path : undefined) ??
-              (typeof input.path === 'string' ? input.path : undefined) ??
-              (typeof input.url === 'string' ? input.url : undefined) ??
-              (typeof input.command === 'string' ? input.command : undefined) ??
-              (typeof input.query === 'string' ? input.query : undefined) ??
-              (typeof input.pattern === 'string' ? input.pattern : undefined);
+          // Try extracting input from content_block_start (may already be complete)
+          let startDisplay: { input?: string; description?: string } = {};
+          if (typeof toolInput === 'object' && toolInput !== null && Object.keys(toolInput).length > 0) {
+            startDisplay = extractToolDisplayInfo(toolName, toolInput as Record<string, unknown>);
           }
 
           emitEvent({
@@ -512,10 +589,50 @@ async function runQuery(
               message,
               toolId,
               toolName,
-              ...(inputDisplay ? { input: inputDisplay } : {}),
+              ...(startDisplay.input ? { input: startDisplay.input } : {}),
+              ...(startDisplay.description ? { description: startDisplay.description } : {}),
               phase: 'tool_start',
             },
           });
+
+          // Register for input_json_delta accumulation (may provide richer input later)
+          // Track whether start already had input so we can skip redundant tool_update
+          if (typeof event.index === 'number' && toolId) {
+            pendingToolInputs.set(event.index, {
+              toolId,
+              toolName,
+              chunks: [],
+              hadStartInput: !!(startDisplay.input || startDisplay.description),
+            });
+          }
+        }
+
+        // Accumulate input_json_delta chunks for tool input
+        if (event?.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
+          const entry = pendingToolInputs.get(event.index);
+          if (entry) entry.chunks.push(event.delta.partial_json ?? '');
+        }
+
+        // On content_block_stop, parse accumulated input and emit tool_update
+        if (event?.type === 'content_block_stop') {
+          const entry = pendingToolInputs.get(event.index);
+          if (entry) {
+            pendingToolInputs.delete(event.index);
+            // Only emit tool_update if we got delta chunks and start didn't already have input
+            if (entry.chunks.length > 0) {
+              try {
+                const parsed = JSON.parse(entry.chunks.join(''));
+                const display = extractToolDisplayInfo(entry.toolName, parsed);
+                // Skip if start already emitted the same info
+                if ((display.input || display.description) && !entry.hadStartInput) {
+                  emitEvent({
+                    event: 'plan',
+                    data: { phase: 'tool_update', toolId: entry.toolId, toolName: entry.toolName, ...display },
+                  });
+                }
+              } catch { /* malformed input — silently skip, tool_start already emitted */ }
+            }
+          }
         }
 
 
@@ -552,6 +669,7 @@ async function runQuery(
         break;
       }
       case 'result': {
+        pendingToolInputs.clear();
         const resultMessage = message as { subtype?: string; result?: string; structured_output?: unknown };
         resultText = resultMessage.result ?? '';
         flushVisible();
@@ -575,13 +693,7 @@ async function runQuery(
 
           if (parsedPatch?.success) {
             const pd = parsedPatch.data as Patch;
-            if (pd.kind === 'replaceRangeInFile') {
-              for (const hunk of computePerHunkReplacements(pd.filePath, pd.expectedOldText, pd.text)) {
-                emitEvent({ event: 'patch', data: hunk });
-              }
-            } else {
-              emitEvent({ event: 'patch', data: pd });
-            }
+            emitEvent({ event: 'patch', data: pd });
           } else {
             emitEvent({
               event: 'done',
@@ -591,19 +703,19 @@ async function runQuery(
             break;
           }
         } else {
-          const patchFence = extractAgeafPatchFence(resultText);
-          if (patchFence) {
+          // Process ageaf-patch fences with per-file dedup — skip replaceRangeInFile
+          // patches whose canonical filePath was already emitted via FILE_UPDATE streaming.
+          const patchFences = extractAllAgeafPatchFences(resultText);
+          for (const patchFence of patchFences) {
             const candidate = extractJsonObject(patchFence);
             const parsed = PatchSchema.safeParse(candidate);
             if (parsed.success) {
               const pd = parsed.data as Patch;
               if (pd.kind === 'replaceRangeInFile') {
-                for (const hunk of computePerHunkReplacements(pd.filePath, pd.expectedOldText, pd.text)) {
-                  emitEvent({ event: 'patch', data: hunk });
-                }
-              } else {
-                emitEvent({ event: 'patch', data: pd });
+                const canonical = canonicalizePatchFilePath((pd as any).filePath, overleafFiles);
+                if (emittedPatchFiles.has(canonical)) continue;
               }
+              emitEvent({ event: 'patch', data: pd });
             }
           }
         }

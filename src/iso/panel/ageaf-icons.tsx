@@ -65,6 +65,37 @@ export const AgeafLogo = ({ class: className, style }: IconProps) => (
 );
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   THEME ICONS (LIGHT / DARK TOGGLE)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+export const SunIcon = ({ class: className, style }: IconProps) => (
+  <svg
+    class={className}
+    style={style}
+    viewBox="0 0 20 20"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    stroke="currentColor"
+  >
+    <circle cx="10" cy="10" r="4.5" fill="currentColor" stroke="none" />
+    <path d="M10 1.5v2.5M10 16v2.5M1.5 10h2.5M16 10h2.5M4 4l1.5 1.5M14.5 14.5l1.5 1.5M4 16l1.5-1.5M14.5 5.5l1.5-1.5" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+  </svg>
+);
+
+export const MoonIcon = ({ class: className, style }: IconProps) => (
+  <svg
+    class={className}
+    style={style}
+    viewBox="0 0 20 20"
+    fill="currentColor"
+    xmlns="http://www.w3.org/2000/svg"
+    stroke="none"
+  >
+    <path d="M15.5 13.5A7.5 7.5 0 116.5 2.5a6.5 6.5 0 009 11z" />
+  </svg>
+);
+
+/* ═══════════════════════════════════════════════════════════════════════════
    TOOLBAR ICONS
    ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -339,7 +370,7 @@ export const ToolIcon = ({ class: className, style }: IconProps) => (
 export const SpinnerIcon = ({ class: className, style }: IconProps) => (
   <svg
     class={className}
-    style={{...style, animation: 'spin 1s linear infinite'}}
+    style={{ ...style, animation: 'spin 1s linear infinite' }}
     viewBox="0 0 20 20"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
@@ -501,6 +532,94 @@ export const ClearChatIcon = ({ class: className, style }: IconProps) => (
   </svg>
 );
 
+export const CheckReferencesIcon = ({ class: className, style }: IconProps) => (
+  <svg
+    class={className}
+    style={style}
+    viewBox="0 0 20 20"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    stroke="currentColor"
+  >
+    <path
+      d="M4 2.5h8a2 2 0 012 2v11a2 2 0 01-2 2H4a.5.5 0 01-.5-.5V3a.5.5 0 01.5-.5z"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M7 6h4M7 9h4"
+      stroke-width="1.5"
+      stroke-linecap="round"
+    />
+    <path
+      d="M12 12l2 2 4-4"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </svg>
+);
+
+export const NotationCheckIcon = ({ class: className, style }: IconProps) => (
+  <svg
+    class={className}
+    style={style}
+    viewBox="0 0 20 20"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    stroke="currentColor"
+  >
+    <path
+      d="M8.5 5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 0 0 0-7z"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M11.2 11.2L15.5 15.5"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M7.2 6.6h3.1L8.2 8.5l2.1 1.9H7.2"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </svg>
+);
+
+export const NotationDraftIcon = ({ class: className, style }: IconProps) => (
+  <svg
+    class={className}
+    style={style}
+    viewBox="0 0 20 20"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    stroke="currentColor"
+  >
+    <path
+      d="M4 3.5h7.5a2 2 0 012 2V14a2 2 0 01-2 2H4.5a.5.5 0 01-.5-.5V4a.5.5 0 01.5-.5z"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M6.5 7.5h4.5M6.5 10h3"
+      stroke-width="1.5"
+      stroke-linecap="round"
+    />
+    <path
+      d="M12.5 13.5l3-3 1.5 1.5-3 3H12.5v-1.5z"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+  </svg>
+);
+
 /* ═══════════════════════════════════════════════════════════════════════════
    EXPORT ALL
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -525,10 +644,15 @@ export const Icons = {
   CodexIcon,
   // Toolbar actions
   RewriteIcon,
+  CheckReferencesIcon,
+  NotationCheckIcon,
+  NotationDraftIcon,
   AttachFilesIcon,
   NewChatIconAlt,
   CloseSessionIcon,
   ClearChatIcon,
+  SunIcon,
+  MoonIcon,
 };
 
 export default Icons;

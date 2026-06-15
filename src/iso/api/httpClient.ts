@@ -3,13 +3,10 @@ import type { Options } from '../../types';
 import { streamEvents, JobEvent } from './sse';
 
 export type JobPayload = {
-  provider: 'claude' | 'codex';
+  provider: 'claude' | 'codex' | 'pi';
   action: string;
   runtime?: {
     claude?: {
-      cliPath?: string;
-      envVars?: string;
-      loadUserSettings?: boolean;
       model?: string;
       maxThinkingTokens?: number | null;
       sessionScope?: 'project' | 'home';
@@ -17,12 +14,16 @@ export type JobPayload = {
       conversationId?: string;
     };
     codex?: {
-      cliPath?: string;
-      envVars?: string;
       approvalPolicy?: 'untrusted' | 'on-request' | 'on-failure' | 'never';
       model?: string;
       reasoningEffort?: string;
       threadId?: string;
+    };
+    pi?: {
+      provider?: string;
+      model?: string;
+      thinkingLevel?: string;
+      conversationId?: string;
     };
   };
   overleaf?: {
@@ -186,10 +187,7 @@ export async function fetchCodexRuntimeMetadata(options: Options) {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        cliPath: options.openaiCodexCliPath,
-        envVars: options.openaiEnvVars,
-      }),
+      body: JSON.stringify({}),
     }
   );
 
@@ -348,13 +346,19 @@ export type ClaudeContextUsageResponse = {
   percentage: number | null;
 };
 
-export async function fetchClaudeRuntimeContextUsage(options: Options) {
+export async function fetchClaudeRuntimeContextUsage(
+  options: Options,
+  conversationId?: string | null
+) {
   if (!options.hostUrl) {
     throw new Error('Host URL not configured');
   }
 
   const url = new URL('/v1/runtime/claude/context', options.hostUrl);
   url.searchParams.set('sessionScope', 'project');
+  if (conversationId) {
+    url.searchParams.set('conversationId', conversationId);
+  }
   const response = await fetch(url.toString());
 
   if (!response.ok) {
@@ -388,8 +392,6 @@ export async function fetchCodexRuntimeContextUsage(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        cliPath: options.openaiCodexCliPath,
-        envVars: options.openaiEnvVars,
         threadId: payload?.threadId,
       }),
     }
@@ -415,15 +417,109 @@ export async function fetchHostHealth(options: Options) {
 
 export type HostHealthResponse = {
   status: string;
+  startedAt?: string;
   // Present on current host implementation; optional for forwards/backwards compatibility.
   claude?: {
     configured?: boolean;
   };
+  pi?: {
+    configured?: boolean;
+  };
 };
+
+export type PiRuntimeMetadata = {
+  models: Array<{
+    value: string;
+    displayName: string;
+    provider: string;
+    reasoning: boolean;
+    contextWindow: number;
+  }>;
+  currentModel: string | null;
+  currentProvider: string | null;
+  availableProviders: Array<{ provider: string; hasApiKey: boolean }>;
+  thinkingLevels: Array<{ id: string; label: string }>;
+  currentThinkingLevel: string;
+};
+
+export async function fetchPiRuntimeMetadata(options: Options) {
+  if (!options.hostUrl) {
+    throw new Error('Host URL not configured');
+  }
+
+  const response = await fetch(
+    new URL('/v1/runtime/pi/metadata', options.hostUrl).toString()
+  );
+
+  if (!response.ok) {
+    throw new Error(`Pi runtime metadata request failed (${response.status})`);
+  }
+
+  return response.json() as Promise<PiRuntimeMetadata>;
+}
+
+export async function updatePiRuntimePreferences(
+  options: Options,
+  payload: { provider?: string | null; model?: string | null; thinkingLevel?: string | null; skillTrustMode?: string | null }
+) {
+  if (!options.hostUrl) {
+    throw new Error('Host URL not configured');
+  }
+
+  const response = await fetch(
+    new URL('/v1/runtime/pi/preferences', options.hostUrl).toString(),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Pi runtime preferences request failed (${response.status})`);
+  }
+
+  return response.json() as Promise<{
+    currentProvider: string | null;
+    currentModel: string | null;
+    currentThinkingLevel: string;
+    thinkingLevels?: Array<{ id: string; label: string }>;
+    skillTrustMode?: string;
+  }>;
+}
+
+export type PiContextUsageResponse = {
+  configured: boolean;
+  model: string | null;
+  usedTokens: number;
+  contextWindow: number | null;
+  percentage: number | null;
+};
+
+export async function fetchPiRuntimeContextUsage(
+  options: Options,
+  conversationId?: string
+) {
+  if (!options.hostUrl) {
+    throw new Error('Host URL not configured');
+  }
+
+  const url = new URL('/v1/runtime/pi/context', options.hostUrl);
+  if (conversationId) {
+    url.searchParams.set('conversationId', conversationId);
+  }
+  const response = await fetch(url.toString());
+
+  if (!response.ok) {
+    throw new Error(`Pi runtime context request failed (${response.status})`);
+  }
+
+  return response.json() as Promise<PiContextUsageResponse>;
+}
 
 export async function deleteSession(
   options: Options,
-  provider: 'claude' | 'codex',
+  provider: 'claude' | 'codex' | 'pi',
   sessionId: string
 ): Promise<void> {
   if (!options.hostUrl) {

@@ -253,6 +253,16 @@ test('resolveLatexRef: returns null for missing file', () => {
   assert.equal(result, null);
 });
 
+test('resolveLatexRef: ignores description/book-prefixed noise when clean path exists', () => {
+  const files = [
+    { path: 'appendix_a.tex', name: 'appendix_a.tex' },
+    { path: 'descriptionappendix_a.tex', name: 'descriptionappendix_a.tex' },
+    { path: 'book_5appendix_a.tex', name: 'book_5appendix_a.tex' },
+  ];
+  const result = resolveLatexRef('appendix_a', 'input', '', files);
+  assert.equal(result, 'appendix_a.tex');
+});
+
 // ---------------------------------------------------------------------------
 // Tests: expandLatexIncludes
 // ---------------------------------------------------------------------------

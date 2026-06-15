@@ -34,7 +34,7 @@ test('Inline diff overlay action buttons are ordered accept, reject, feedback', 
     "actions.className = 'ageaf-inline-diff-addition__actions';"
   );
   assert.ok(additionStart >= 0, 'expected addition overlay actions');
-  const additionEnd = contents.indexOf('const text = document.createElement', additionStart);
+  const additionEnd = contents.indexOf('added.appendChild(actions);', additionStart);
   assert.ok(additionEnd >= 0, 'expected addition overlay actions end');
   const addition = contents.slice(additionStart, additionEnd);
 
@@ -64,4 +64,27 @@ test('Inline diff review bar labels are file-scoped', () => {
   assert.match(contents, /acceptAll\.textContent = 'Accept File';/);
   assert.doesNotMatch(contents, /undoAll\.textContent = 'Undo All';/);
   assert.doesNotMatch(contents, /acceptAll\.textContent = 'Accept All';/);
+});
+
+test('Inline diff file-level accept applies hunks from bottom to top', () => {
+  const overlayPath = path.join(
+    __dirname,
+    '..',
+    'src',
+    'main',
+    'inlineDiffOverlay.ts'
+  );
+  const contents = fs.readFileSync(overlayPath, 'utf8');
+
+  const runBulkStart = contents.indexOf("const runBulk = async (action: 'accept' | 'reject') => {");
+  assert.ok(runBulkStart >= 0, 'expected runBulk definition');
+  const runBulkEnd = contents.indexOf('};', runBulkStart);
+  assert.ok(runBulkEnd >= 0, 'expected runBulk end');
+  const runBulk = contents.slice(runBulkStart, runBulkEnd);
+
+  assert.match(
+    runBulk,
+    /action === 'accept' \? b\.from - a\.from : a\.from - b\.from/,
+    'expected accept to sort descending by from to avoid offset shift'
+  );
 });

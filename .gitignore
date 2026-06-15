@@ -62,7 +62,16 @@ STATE_SUMMARY.md
 MAINTAINER.md
 README-DISTRIBUTION.md
 docs/*
+!docs/manus/
+!docs/manus/**
+!docs/native-messaging.md
 
 *.rb
 
 dist-native/
+.codex/
+.agents/
+
+# Agent Configuration
+CLAUDE.md
+!/CLAUDE.md

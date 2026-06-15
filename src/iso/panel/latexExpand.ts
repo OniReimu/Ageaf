@@ -22,6 +22,10 @@ export interface ProjectFile {
 /** Callback that returns file content by project path, or null on failure. */
 export type FileFetcher = (path: string) => Promise<string | null>;
 
+export interface CollectLatexInputPathsOptions {
+  includeUnresolvedCandidates?: boolean;
+}
+
 // ---- Configuration ---------------------------------------------------------
 
 export const LATEX_EXPAND_MAX_DEPTH = 8;
@@ -91,6 +95,30 @@ export const resolveLatexRef = (
   return null;
 };
 
+const buildLatexRefCandidates = (
+  inputRef: string,
+  directive: DirectiveKind,
+  contextDir: string
+): string[] => {
+  const ref = inputRef.replace(/^\.\//, '');
+  const hasExt = /\.(tex|bib|sty|cls|bst|bbl|dtx|ins|tikz)$/i.test(ref);
+  const isBib = directive === 'bibliography' || directive === 'addbibresource';
+  const extSuffix = isBib ? '.bib' : '.tex';
+  const candidates = hasExt ? [ref] : [ref, `${ref}${extSuffix}`];
+  const relCandidates = contextDir
+    ? candidates.map((candidate) => `${contextDir}/${candidate}`)
+    : [];
+  const all = [...relCandidates, ...candidates];
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of all) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    deduped.push(candidate);
+  }
+  return deduped;
+};
+
 /**
  * Recursively expand LaTeX include directives in `texContent`, replacing
  * each directive with the actual file content.
@@ -113,8 +141,11 @@ export const resolveLatexRef = (
 export const collectLatexInputPaths = (
   texContent: string,
   projectFiles: ProjectFile[],
-  currentFilePath: string
+  currentFilePath: string,
+  options: CollectLatexInputPathsOptions = {}
 ): string[] => {
+  const includeUnresolvedCandidates =
+    options.includeUnresolvedCandidates === true;
   const contextDir = currentFilePath.includes('/')
     ? currentFilePath.slice(0, currentFilePath.lastIndexOf('/'))
     : '';
@@ -141,9 +172,23 @@ export const collectLatexInputPaths = (
 
       for (const inputRef of refList) {
         const resolved = resolveLatexRef(inputRef, directive, contextDir, projectFiles);
-        if (resolved && !seen.has(resolved)) {
-          seen.add(resolved);
-          paths.push(resolved);
+        if (resolved) {
+          if (!seen.has(resolved)) {
+            seen.add(resolved);
+            paths.push(resolved);
+          }
+          continue;
+        }
+        if (includeUnresolvedCandidates) {
+          for (const candidate of buildLatexRefCandidates(
+            inputRef,
+            directive,
+            contextDir
+          )) {
+            if (seen.has(candidate)) continue;
+            seen.add(candidate);
+            paths.push(candidate);
+          }
         }
       }
     }

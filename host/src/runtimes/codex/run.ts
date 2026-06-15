@@ -5,14 +5,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { normalizeToolInput, extractToolDisplayInfo, MAX_TOOL_DISPLAY_LEN } from '../../toolDisplayInfo.js';
 import type { JobEvent } from '../../types.js';
 import { buildAttachmentBlock, getAttachmentLimits } from '../../attachments/textAttachments.js';
 import {
   buildDocumentAttachmentBlock,
   type DocumentAttachmentEntry,
 } from '../../attachments/documentAttachments.js';
-import { extractAgeafPatchFence } from '../../patch/ageafPatchFence.js';
-import { buildReplaceRangePatchesFromFileUpdates, computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
+import { extractAllAgeafPatchFences } from '../../patch/ageafPatchFence.js';
+import { buildReplaceRangePatchesFromFileUpdates, canonicalizePatchFilePath, computePerHunkReplacements, extractOverleafFilesFromMessage, findOverleafFileContent } from '../../patch/fileUpdate.js';
 import { validatePatch } from '../../validate.js';
 import { getCodexAppServer } from './appServer.js';
 import { parseCodexTokenUsage } from './tokenUsage.js';
@@ -23,11 +24,36 @@ import {
   parseBlockedCommandPatterns,
   type CompiledBlockedCommandPattern,
 } from '../claude/safety.js';
+import { registerActiveCodexJob, unregisterActiveCodexJob } from '../../interactive/askUserCore.js';
+
+// ─── Per-PID turn lock ───
+// The ask_user stdio MCP server identifies its parent job via process.ppid only.
+// If two concurrent turns share the same Codex CLI PID (app-server reuse), the
+// host can't distinguish which turn triggered the callback. This lock serializes
+// turns per PID so at most one job is registered (and actively turning) per PID.
+const pidTurnLocks = new Map<number, Promise<void>>();
+
+function acquirePidTurnLock(pid: number): { acquired: Promise<void>; release: () => void } {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const prev = pidTurnLocks.get(pid) ?? Promise.resolve();
+  const tail = prev.then(() => gate);
+  pidTurnLocks.set(pid, tail);
+  return {
+    acquired: prev,
+    release: () => {
+      release();
+      // Clean up if no subsequent acquirer has chained onto this PID
+      if (pidTurnLocks.get(pid) === tail) pidTurnLocks.delete(pid);
+    },
+  };
+}
 
 // Debug logging to console (enabled via AGEAF_DEBUG_CLI=true)
 const debugToConsole = process.env.AGEAF_DEBUG_CLI === 'true';
 const traceAllCodexEvents = process.env.AGEAF_CODEX_TRACE_ALL_EVENTS === 'true';
-const DEFAULT_CODEX_TURN_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_CODEX_TURN_TIMEOUT_MS = 0;
+const DEFAULT_CODEX_COMPLETION_GRACE_MS = 60 * 60 * 1000;
 function debugLog(message: string, data?: Record<string, unknown>) {
   if (!debugToConsole) return;
   console.log(`[CODEX DEBUG] ${message}`, data ?? '');
@@ -54,6 +80,8 @@ type CodexImageAttachment = {
   size: number;
 };
 
+type ProjectFile = { path: string; content: string };
+
 type CodexJobPayload = {
   action?: string;
   context?: unknown;
@@ -66,6 +94,7 @@ type CodexJobPayload = {
     enableCommandBlocklist?: boolean;
     blockedCommandsUnix?: string;
   };
+  projectFiles?: unknown;
 };
 
 function getUserMessage(context: unknown): string | undefined {
@@ -178,6 +207,44 @@ function getContextForPrompt(
   return Object.keys(base).length > 0 ? base : null;
 }
 
+function getProjectFiles(payload: CodexJobPayload): ProjectFile[] {
+  const raw = payload.projectFiles;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (entry: unknown): entry is ProjectFile =>
+      !!entry &&
+      typeof entry === 'object' &&
+      typeof (entry as any).path === 'string' &&
+      typeof (entry as any).content === 'string'
+  );
+}
+
+function writeProjectFilesToDisk(
+  projectFiles: ProjectFile[],
+  cwd: string
+): string | null {
+  if (projectFiles.length === 0) return null;
+  const projectDir = path.join(cwd, 'overleaf-project');
+  try {
+    // Clean stale files from previous turns before writing fresh snapshot
+    if (fs.existsSync(projectDir)) {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+    for (const file of projectFiles) {
+      // Sanitize path: resolve and ensure it stays within projectDir
+      const filePath = path.resolve(projectDir, file.path);
+      if (!filePath.startsWith(projectDir + path.sep) && filePath !== projectDir) {
+        continue; // skip paths that escape the sandbox
+      }
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, file.content, 'utf-8');
+    }
+    return projectDir;
+  } catch {
+    return null;
+  }
+}
+
 function ensureAgeafWorkspaceCwd(): string {
   const workspace = path.join(os.homedir(), '.ageaf');
   try {
@@ -228,6 +295,33 @@ function extractEventThreadId(params: any): string | null {
     params?.conversation?.threadId ??
     params?.conversation?.thread_id ??
     params?.conversation?.thread?.id;
+  return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
+}
+
+function extractLifecycleToolId(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const nestedItem =
+    record.item && typeof record.item === 'object'
+      ? (record.item as Record<string, unknown>)
+      : null;
+  const nestedData =
+    record.data && typeof record.data === 'object'
+      ? (record.data as Record<string, unknown>)
+      : null;
+  const candidate =
+    record.toolId ??
+    record.tool_id ??
+    record.itemId ??
+    record.item_id ??
+    record.id ??
+    record.compactionId ??
+    record.compaction_id ??
+    nestedItem?.id ??
+    nestedItem?.itemId ??
+    nestedData?.toolId ??
+    nestedData?.itemId ??
+    nestedData?.id;
   return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
 }
 
@@ -515,6 +609,56 @@ function normalizeApprovalPolicy(value: unknown): CodexApprovalPolicy {
   return 'on-request';
 }
 
+function normalizeErrorMessage(value: unknown) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) return value.message;
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (typeof record.message === 'string') return record.message;
+    if (record.error) return normalizeErrorMessage(record.error);
+  }
+  return String(value);
+}
+
+function isContextOverflowMessage(message: string) {
+  const normalized = message.toLowerCase();
+  if (!normalized) return false;
+  return (
+    (normalized.includes('context window') && normalized.includes('ran out of room')) ||
+    (normalized.includes('context window') && normalized.includes('clear earlier history')) ||
+    normalized.includes('context length') ||
+    normalized.includes('context limit')
+  );
+}
+
+function hasRetryFlag(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.willRetry === true ||
+    record.will_retry === true ||
+    record.retry === true ||
+    record.retryable === true ||
+    record.shouldRetry === true
+  );
+}
+
+function shouldAwaitRetryableError(params: unknown, message: string) {
+  // Newer Codex CLI builds can emit context-overflow turn errors without an
+  // explicit retry flag, then immediately compact and continue the same turn.
+  // Treat this message shape as retry-awaitable to avoid premature termination.
+  if (isContextOverflowMessage(message)) return true;
+  if (hasRetryFlag(params)) return true;
+  if (params && typeof params === 'object') {
+    const record = params as Record<string, unknown>;
+    if (hasRetryFlag(record.error) || hasRetryFlag(record.data) || hasRetryFlag(record.errorData)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function getCodexTurnTimeoutMs() {
   const raw = process.env.AGEAF_CODEX_TURN_TIMEOUT_MS;
   if (raw === undefined) return DEFAULT_CODEX_TURN_TIMEOUT_MS;
@@ -523,9 +667,18 @@ function getCodexTurnTimeoutMs() {
   return parsed;
 }
 
+function getCodexCompletionGraceMs() {
+  const raw = process.env.AGEAF_CODEX_COMPLETION_GRACE_MS;
+  if (raw === undefined) return DEFAULT_CODEX_COMPLETION_GRACE_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_CODEX_COMPLETION_GRACE_MS;
+  return parsed;
+}
+
 function buildPrompt(
   payload: CodexJobPayload,
-  contextForPrompt: Record<string, unknown> | null
+  contextForPrompt: Record<string, unknown> | null,
+  projectDir?: string | null
 ) {
   const action = payload.action ?? 'chat';
   const contextMessage =
@@ -561,6 +714,25 @@ function buildPrompt(
     '<<<AGEAF_REWRITE_END>>>',
     '- The markers MUST be the last thing you output (no text after).',
     '- Do NOT wrap the markers in Markdown code fences.',
+  ].join('\n');
+
+  const notationCheckInstructions = [
+    'You are running a notation and terminology consistency pass across attached Overleaf files.',
+    'Detect only high-confidence issues:',
+    '- symbol reuse conflicts (same symbol used for different definitions),',
+    '- term drift (canonical term formatting or spelling drifts),',
+    '- inconsistent acronym expansion (same acronym expanded differently).',
+    '- abbreviation order/usage issues (first introduce "full term (ABBR)", then prefer ABBR in later mentions).',
+    'Return concise findings with file and line references.',
+    'Do not emit patches in this mode unless explicitly requested.',
+  ].join('\n');
+
+  const notationDraftInstructions = [
+    'You are generating conservative draft fixes for notation consistency findings.',
+    'Emit ONLY reviewable patches for high-confidence mechanical replacements.',
+    'Prefer `replaceRangeInFile` with exact `expectedOldText`, `from`, and `to` offsets when possible.',
+    'Do NOT auto-apply; all edits must remain review cards.',
+    'Skip ambiguous edits and explain skipped items briefly.',
   ].join('\n');
 
   const patchGuidanceNoFiles = [
@@ -638,22 +810,99 @@ function buildPrompt(
     '  • /ml-paper-writing - Write publication-ready ML/AI papers for NeurIPS, ICML, ICLR, ACL, AAAI, COLM',
     '  • /doc-coauthoring - Structured workflow for co-authoring documentation and technical specs',
     '  • /mermaid - Render Mermaid diagrams (flowcharts, sequence, state, class, ER) via built-in MCP tool',
+    '  • /venue-compliance - Check LaTeX manuscript compliance with venue submission requirements (uses mcp__ageaf-interactive__ask_user for interactive Q&A)',
     '- If the user includes a /skillName directive, you MUST follow that skill for this request.',
     '- Skill text (instructions) may be injected under "Additional instructions" for the request; do NOT try to locate skills on disk.',
     '- These skills are part of the Ageaf system and do NOT require external installation.',
     '- Do not announce skill-loading or mention internal skill frameworks; just apply the skill.',
   ].join('\n');
 
+  const contextSection = (() => {
+    if (!contextForPrompt) return '';
+    if (action !== 'rewrite') {
+      return `Context:\n${JSON.stringify(contextForPrompt, null, 2)}`;
+    }
+
+    const sections: string[] = ['Context:'];
+    const messageText =
+      typeof contextForPrompt.message === 'string'
+        ? contextForPrompt.message.trim()
+        : '';
+    if (messageText) {
+      sections.push('User request:');
+      sections.push(messageText);
+    }
+
+    const selectionText =
+      typeof contextForPrompt.selection === 'string'
+        ? contextForPrompt.selection
+        : '';
+    if (selectionText.trim()) {
+      sections.push('Selection:');
+      sections.push('```latex');
+      sections.push(selectionText);
+      sections.push('```');
+    }
+
+    const beforeText =
+      typeof contextForPrompt.surroundingBefore === 'string'
+        ? contextForPrompt.surroundingBefore
+        : '';
+    if (beforeText.trim()) {
+      sections.push('Context before:');
+      sections.push('```latex');
+      sections.push(beforeText);
+      sections.push('```');
+    }
+
+    const afterText =
+      typeof contextForPrompt.surroundingAfter === 'string'
+        ? contextForPrompt.surroundingAfter
+        : '';
+    if (afterText.trim()) {
+      sections.push('Context after:');
+      sections.push('```latex');
+      sections.push(afterText);
+      sections.push('```');
+    }
+
+    if (
+      Array.isArray(contextForPrompt.images) &&
+      contextForPrompt.images.length > 0
+    ) {
+      sections.push(`Image attachments: ${contextForPrompt.images.length}`);
+    }
+
+    return sections.join('\n');
+  })();
+
+  const projectContextGuidance = projectDir
+    ? [
+        'Project search (IMPORTANT):',
+        `- The Overleaf project files are available on disk at: ${projectDir}`,
+        '- When the user asks about a formula, symbol, notation, or concept and you don\'t have enough context:',
+        '  1. Search for the symbol/term across project files.',
+        '  2. Read the relevant section once located.',
+        '- Search for \\newcommand, \\def, or notation tables to find macro/symbol definitions.',
+        '- DO NOT say "I don\'t have enough context" — search the project files to find it.',
+      ].join('\n')
+    : '';
+
   const baseParts = [
     'You are Ageaf, a concise Overleaf assistant.',
     'Respond in Markdown, keep it concise.',
-    action === 'chat' ? patchGuidance : '',
+    action === 'chat' || action === 'notation_draft_fixes'
+      ? patchGuidance
+      : '',
     action === 'chat' ? selectionPatchGuidance : '',
     `Action: ${action}`,
-    contextForPrompt ? `Context:\n${JSON.stringify(contextForPrompt, null, 2)}` : '',
+    contextSection,
     action === 'rewrite' ? rewriteInstructions : '',
+    action === 'notation_check' ? notationCheckInstructions : '',
+    action === 'notation_draft_fixes' ? notationDraftInstructions : '',
     hasOverleafFileBlocks ? fileUpdateInstructions : '',
     skillsGuidance,
+    projectContextGuidance,
   ].filter(Boolean);
 
   if (custom) {
@@ -663,27 +912,28 @@ function buildPrompt(
   return baseParts.join('\n\n');
 }
 
-// Path to the standalone MCP stdio server for Mermaid rendering.
+// Paths to standalone MCP stdio servers.
 // In production (compiled JS): import.meta.url is in dist/src/runtimes/codex/run.js
 // In dev mode (tsx):           import.meta.url is in src/runtimes/codex/run.ts
-// We always need the compiled file at dist/src/mcp/mermaidStdioServer.js.
-function resolveMermaidStdioServerPath(): string {
+// We always need the compiled files at dist/src/mcp/*.js.
+function resolveStdioServerPath(filename: string): string {
   const thisFile = fileURLToPath(import.meta.url);
   const thisDir = path.dirname(thisFile);
   // Walk up to find the host/ root (contains package.json)
   let dir = thisDir;
   for (let i = 0; i < 10; i++) {
     if (fs.existsSync(path.join(dir, 'package.json'))) {
-      return path.join(dir, 'dist', 'src', 'mcp', 'mermaidStdioServer.js');
+      return path.join(dir, 'dist', 'src', 'mcp', filename);
     }
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
   // Fallback: relative path from this file (works in production)
-  return path.resolve(thisDir, '../../mcp/mermaidStdioServer.js');
+  return path.resolve(thisDir, `../../mcp/${filename}`);
 }
-const mermaidStdioServerPath = resolveMermaidStdioServerPath();
+const mermaidStdioServerPath = resolveStdioServerPath('mermaidStdioServer.js');
+const askUserStdioServerPath = resolveStdioServerPath('askUserStdioServer.js');
 
 // One-time MCP registration via `codex mcp add` (idempotent).
 // The `config` field in thread/start does NOT register MCP servers,
@@ -691,7 +941,7 @@ const mermaidStdioServerPath = resolveMermaidStdioServerPath();
 const execFileAsync = promisify(execFile);
 const mcpRegisteredForCli = new Set<string>();
 
-async function ensureMermaidMcpRegistered(
+async function ensureMcpServersRegistered(
   cliPath?: string,
   envVars?: string
 ): Promise<void> {
@@ -705,7 +955,6 @@ async function ensureMermaidMcpRegistered(
   const command =
     resolvedCliPath && resolvedCliPath.length > 0 ? resolvedCliPath : 'codex';
   if (mcpRegisteredForCli.has(command)) return;
-  mcpRegisteredForCli.add(command);
 
   const customEnv = parseEnvironmentVariables(envVars ?? '');
   const env = {
@@ -714,24 +963,35 @@ async function ensureMermaidMcpRegistered(
     PATH: getEnhancedPath(customEnv.PATH, resolvedCliPath),
   };
 
-  try {
-    await execFileAsync(
-      command,
-      ['mcp', 'add', 'ageaf-mermaid', '--', 'node', mermaidStdioServerPath],
-      { timeout: 15000, env }
-    );
-    if (debugToConsole) {
-      console.log('[CODEX DEBUG] registered ageaf-mermaid MCP server via codex mcp add');
-    }
-  } catch (err) {
-    // Silently ignore — old CLI versions may not support `mcp add`.
-    // The model will fall back to outputting raw mermaid code.
-    if (debugToConsole) {
-      console.log('[CODEX DEBUG] codex mcp add failed (non-fatal)', {
-        error: err instanceof Error ? err.message : String(err),
-      });
+  const servers = [
+    { name: 'ageaf-mermaid', path: mermaidStdioServerPath },
+    { name: 'ageaf-interactive', path: askUserStdioServerPath },
+  ];
+
+  let allSucceeded = true;
+  for (const srv of servers) {
+    try {
+      await execFileAsync(
+        command,
+        ['mcp', 'add', srv.name, '--', 'node', srv.path],
+        { timeout: 15000, env }
+      );
+      if (debugToConsole) {
+        console.log(`[CODEX DEBUG] registered ${srv.name} MCP server via codex mcp add`);
+      }
+    } catch (err) {
+      allSucceeded = false;
+      // Silently ignore — old CLI versions may not support `mcp add`.
+      if (debugToConsole) {
+        console.log(`[CODEX DEBUG] codex mcp add ${srv.name} failed (non-fatal)`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
+
+  // Only mark as registered if all servers succeeded — allows retry on transient failure
+  if (allSucceeded) mcpRegisteredForCli.add(command);
 }
 
 export async function runCodexJob(
@@ -770,7 +1030,7 @@ export async function runCodexJob(
     payload.context && typeof payload.context === 'object'
       ? { ...(payload.context as Record<string, unknown>), message: messageWithAttachments }
       : { message: messageWithAttachments };
-  const surroundingContextLimit = payload.userSettings?.surroundingContextLimit ?? 0;
+  const surroundingContextLimit = payload.userSettings?.surroundingContextLimit ?? 5000;
   const contextForPrompt = getContextForPrompt(contextWithAttachments, images, surroundingContextLimit);
 
   // Debug: Log what we're sending to Codex (console only).
@@ -819,9 +1079,9 @@ export async function runCodexJob(
     typeof runtime.reasoningEffort === 'string' && runtime.reasoningEffort.trim()
       ? runtime.reasoningEffort.trim()
       : null;
-  // Pre-register Mermaid MCP server before starting app-server.
+  // Pre-register MCP servers before starting app-server.
   // This is idempotent and runs `codex mcp add` once per CLI path.
-  await ensureMermaidMcpRegistered(runtime.cliPath, runtime.envVars);
+  await ensureMcpServersRegistered(runtime.cliPath, runtime.envVars);
 
   const appServer = await getCodexAppServer({
     cliPath: runtime.cliPath,
@@ -887,7 +1147,12 @@ export async function runCodexJob(
     emitTrace('Codex thread resumed', { threadId });
   }
 
-  const prompt = buildPrompt(payload, contextForPrompt);
+  // Write project files to disk for CLI tool access
+  const pf = getProjectFiles(payload);
+  const sessionCwd = getCodexSessionCwd(threadId);
+  const projectDir = writeProjectFilesToDisk(pf, sessionCwd);
+
+  const prompt = buildPrompt(payload, contextForPrompt, projectDir);
   const turnTimeoutMs = getCodexTurnTimeoutMs();
   emitTrace('Codex: prepared prompt', {
     action: payload.action ?? 'chat',
@@ -975,6 +1240,7 @@ export async function runCodexJob(
       // Use canonical path (from the [Overleaf file:] block) for both patches
       // and dedup, matching what buildReplaceRangePatchesFromFileUpdates uses.
       const canonicalPath = originalFile.filePath;
+      if (emittedPatchFiles.has(canonicalPath)) continue;
       const patches = computePerHunkReplacements(canonicalPath, originalFile.content, content);
       for (const patch of patches) {
         emitEvent({ event: 'patch', data: patch });
@@ -1082,6 +1348,7 @@ export async function runCodexJob(
   const turnStartTime = Date.now();
   let lastMessageTime = Date.now();
   const TURN_TIMEOUT_MS = getCodexTurnTimeoutMs();
+  const COMPLETION_GRACE_MS = getCodexCompletionGraceMs();
   const HEARTBEAT_MS = 10000;
   let lastHeartbeatAt = 0;
   let lastTraceDiagnosticsAt = 0;
@@ -1111,9 +1378,212 @@ export async function runCodexJob(
   const ITEM_SHAPE_LIMIT = 8;
   let stderrEmitted = 0;
   const STDERR_TRACE_LIMIT = 20;
+  let compactionNoticeEmitted = false;
+  let compactionLifecycleSeen = false;
+  let activeCompactionToolId: string | null = null;
+
+  // ─── Pending tool tracking for tool_complete lifecycle ───
+  // Maps toolId → toolName so we can emit tool_complete when item/completed arrives.
+  const pendingTools = new Map<string, string>();
+
+  const emitToolComplete = (toolId: string, toolName?: string) => {
+    const resolvedName = toolName ?? pendingTools.get(toolId) ?? 'Tool';
+    pendingTools.delete(toolId);
+    emitEvent({
+      event: 'plan',
+      data: {
+        phase: 'tool_complete',
+        toolId,
+        toolName: resolvedName,
+        message: `Completed ${resolvedName}`,
+      },
+    });
+  };
+
+  const completeAllPendingTools = () => {
+    for (const [toolId, toolName] of pendingTools) {
+      emitEvent({
+        event: 'plan',
+        data: {
+          phase: 'tool_complete',
+          toolId,
+          toolName,
+          message: `Completed ${toolName}`,
+        },
+      });
+    }
+    pendingTools.clear();
+  };
+
+  const emitCompactionLifecycle = (
+    phase: 'tool_start' | 'compaction_complete' | 'tool_error',
+    source?: unknown
+  ) => {
+    compactionLifecycleSeen = true;
+    const sourceToolId = extractLifecycleToolId(source);
+    const fallbackToolId =
+      activeCompactionToolId ??
+      `compaction-${Date.now()}`;
+    const toolId =
+      phase === 'tool_start'
+        ? sourceToolId ?? fallbackToolId
+        : sourceToolId ?? activeCompactionToolId ?? fallbackToolId;
+    const message =
+      phase === 'compaction_complete'
+        ? 'Context compaction complete'
+        : phase === 'tool_error'
+          ? 'Context compaction failed'
+          : 'Compacting context... (reducing context window usage)';
+    emitEvent({
+      event: 'plan',
+      data: {
+        phase,
+        toolId,
+        toolName: 'Compacting',
+        message,
+      },
+    });
+    if (phase === 'tool_start') {
+      activeCompactionToolId = toolId;
+      return;
+    }
+    if (!sourceToolId || sourceToolId === activeCompactionToolId) {
+      activeCompactionToolId = null;
+    }
+  };
+
+  const completionHasOutput = () => patchEmitted || fullText.trim().length > 0;
+  const sawCompaction = () => compactionNoticeEmitted || compactionLifecycleSeen;
+  let completionGraceTimer: NodeJS.Timeout | null = null;
+  let awaitingLateCompletionOutput = false;
+
+  const clearCompletionGraceTimer = () => {
+    if (!completionGraceTimer) return;
+    clearTimeout(completionGraceTimer);
+    completionGraceTimer = null;
+  };
+
+  const emitPatchesFromCompletedText = () => {
+    // Process ageaf-patch fences with per-file dedup — skip any replaceRangeInFile
+    // whose canonical filePath was already emitted via FILE_UPDATE streaming.
+    // No blanket patchEmitted gate: fences for other files must still be processed.
+    {
+      const fences = extractAllAgeafPatchFences(fullText);
+      for (const fence of fences) {
+        try {
+          const patch = validatePatch(JSON.parse(fence));
+          if (patch.kind === 'replaceRangeInFile' && patch.filePath) {
+            const canonical = canonicalizePatchFilePath(patch.filePath, overleafFiles);
+            if (emittedPatchFiles.has(canonical)) continue;
+            emittedPatchFiles.add(canonical);
+          }
+          emitEvent({ event: 'patch', data: patch });
+          patchEmitted = true;
+        } catch {
+          // Ignore patch parse failures; user can still read the raw response.
+        }
+      }
+    }
+
+    if (!patchEmitted && action === 'rewrite') {
+      const startMatch = rewriteStartRe.exec(fullText);
+      if (startMatch) {
+        const endMatch = rewriteEndRe.exec(
+          fullText.slice(startMatch.index + startMatch[0].length)
+        );
+        if (endMatch) {
+          const startIndex = startMatch.index + startMatch[0].length;
+          const endIndex = startIndex + endMatch.index;
+          const rewritten = fullText.slice(startIndex, endIndex).trim();
+          if (rewritten) {
+            emitEvent({ event: 'patch', data: { kind: 'replaceSelection', text: rewritten } });
+            patchEmitted = true;
+          }
+        }
+      }
+    }
+
+    if (hasOverleafFileBlocks) {
+      const patches = buildReplaceRangePatchesFromFileUpdates({
+        output: fullText,
+        message: messageWithAttachments,
+      });
+      for (const patch of patches) {
+        if (patch.kind === 'replaceRangeInFile' && emittedPatchFiles.has(patch.filePath)) continue;
+        emitEvent({ event: 'patch', data: patch });
+        patchEmitted = true;
+      }
+    }
+  };
+
+  const finalizeCompletion = () => {
+    if (done) return;
+    clearCompletionGraceTimer();
+    awaitingLateCompletionOutput = false;
+
+    if (activeCompactionToolId) {
+      emitCompactionLifecycle('compaction_complete', {
+        toolId: activeCompactionToolId,
+      });
+    }
+    if (shouldHidePatchPayload && !patchPayloadStarted) {
+      flushVisibleBuffer();
+    }
+    emitPatchesFromCompletedText();
+
+    done = true;
+    if (sawCompaction() && !completionHasOutput()) {
+      emitTrace('Codex: completed after compaction but returned no output');
+      emitEvent({
+        event: 'done',
+        data: {
+          status: 'error',
+          message: 'Codex completed after context compaction but returned no output. Please retry.',
+          threadId,
+        },
+      });
+    } else {
+      emitEvent({ event: 'done', data: { status: 'ok', threadId } });
+    }
+    unsubscribe();
+    resolveDone();
+  };
+
+  const queueLateCompletionOutputWindow = (method: string) => {
+    if (done) return;
+    if (!sawCompaction() || completionHasOutput()) {
+      finalizeCompletion();
+      return;
+    }
+    if (awaitingLateCompletionOutput) return;
+
+    awaitingLateCompletionOutput = true;
+    emitTrace('Codex: completion arrived before post-compaction output; waiting', {
+      method,
+      graceMs: COMPLETION_GRACE_MS,
+    });
+    completionGraceTimer = setTimeout(() => {
+      if (done) return;
+      emitTrace('Codex: post-compaction late-output wait elapsed', {
+        graceMs: COMPLETION_GRACE_MS,
+      });
+      finalizeCompletion();
+    }, COMPLETION_GRACE_MS);
+  };
+
+  const maybeFinalizeAfterLateOutput = () => {
+    if (!awaitingLateCompletionOutput || done) return;
+    if (!completionHasOutput()) return;
+
+    emitTrace('Codex: received late output after completion');
+    finalizeCompletion();
+  };
 
   const donePromise = new Promise<void>((resolve) => {
-    resolveDone = () => resolve();
+    resolveDone = () => {
+      clearCompletionGraceTimer();
+      resolve();
+    };
 
     const unsubscribeStderr =
       debugCliEvents || debugToConsole
@@ -1316,22 +1786,19 @@ export async function runCodexJob(
         emitEvent({ event: 'trace', data: { message: `[Codex Event] ${method}`, ...eventSummary } });
       }
 
-      // Handle thread/compacted events - ALWAYS show (critical operation)
-      if (method === 'thread/compacted' || method === 'compaction/started' || method === 'compaction/completed') {
-        const phase = method.includes('completed') ? 'compaction_complete' : 'tool_start';
-        const message = method.includes('completed')
-          ? 'Context compaction complete'
-          : 'Compacting context... (reducing context window usage)';
-
-        emitEvent({
-          event: 'plan',
-          data: {
-            phase,
-            toolId: 'compaction-' + Date.now(),
-            toolName: 'Compacting',
-            message,
-          },
-        });
+      // Handle compaction lifecycle signals (including legacy thread/compacted).
+      if (method === 'compaction/started') {
+        emitCompactionLifecycle('tool_start', params);
+        return;
+      }
+      if (method === 'compaction/completed') {
+        emitCompactionLifecycle('compaction_complete', params);
+        return;
+      }
+      if (method === 'thread/compacted') {
+        // Legacy one-shot signal may arrive without a matching start.
+        if (!activeCompactionToolId) emitCompactionLifecycle('tool_start', params);
+        emitCompactionLifecycle('compaction_complete', params);
         return;
       }
 
@@ -1375,16 +1842,19 @@ export async function runCodexJob(
 
           if (!shouldHidePatchPayload) {
             emitEvent({ event: 'delta', data: { text: delta } });
+            maybeFinalizeAfterLateOutput();
             return;
           }
 
           if (patchPayloadStarted) {
             payloadBuffer += delta;
             extractAndEmitCompletedBlocks();
+            maybeFinalizeAfterLateOutput();
             return;
           }
 
           emitVisibleDelta(delta);
+          maybeFinalizeAfterLateOutput();
         }
         return;
       }
@@ -1412,124 +1882,271 @@ export async function runCodexJob(
 
         if (!shouldHidePatchPayload) {
           emitEvent({ event: 'delta', data: { text: delta } });
+          maybeFinalizeAfterLateOutput();
           return;
         }
 
         if (patchPayloadStarted) {
           payloadBuffer += delta;
           extractAndEmitCompletedBlocks();
+          maybeFinalizeAfterLateOutput();
           return;
         }
 
         emitVisibleDelta(delta);
+        maybeFinalizeAfterLateOutput();
         return;
       }
 
-      // Helper function to process Codex items and emit plan events
+      // ─── Helper: emit a tool_start plan event and register in pendingTools ───
+      const emitToolStart = (
+        toolId: string,
+        toolName: string,
+        opts?: { input?: string; description?: string; message?: string },
+      ) => {
+        pendingTools.set(toolId, toolName);
+        emitEvent({
+          event: 'plan',
+          data: {
+            phase: 'tool_start',
+            toolId,
+            toolName,
+            ...(opts?.input ? { input: opts.input } : {}),
+            ...(opts?.description ? { description: opts.description } : {}),
+            message: opts?.message ?? `Running ${toolName}...`,
+          },
+        });
+      };
+
+      // ─── Process Codex items and emit plan events ───
+      // Covers all OpenAI Responses API item types + legacy Codex CLI variants.
       const processCodexItem = (item: any, itemType: string, itemId: string) => {
-        // Web search
-        if (itemType === 'web_search' || itemType === 'webSearch' || itemType === 'web.run') {
-          const query = item?.query ?? item?.input?.query ?? item?.arguments?.query ?? '';
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName: 'WebSearch',
-              ...(query ? { input: String(query) } : {}),
-              message: 'Searching the web...',
-            },
-          });
-          emitTrace('Codex: web search', { query });
-          return true;
-        }
+        switch (itemType) {
+          // ── Web search (Responses API: web_search_call) ──
+          case 'web_search_call':
+          case 'web_search':
+          case 'webSearch':
+          case 'web.run':
+          case 'web_search_result': {
+            // Action sub-types: search (query), open_page (url), find_in_page (query)
+            const actionType = String(item?.action?.type ?? '');
+            const query = String(
+              item?.query ??
+              item?.action?.query ??
+              item?.search_query ??
+              item?.input?.query ??
+              item?.arguments?.query ??
+              ''
+            );
+            const url = String(item?.action?.url ?? '');
+            let input = query;
+            let message = 'Searching the web...';
+            if (actionType === 'open_page' && url) {
+              input = url;
+              message = 'Opening page...';
+            } else if (actionType === 'find_in_page' && query) {
+              message = `Finding in page: ${query.slice(0, 60)}`;
+            } else if (query) {
+              message = `Searching: ${query.slice(0, 80)}`;
+            }
+            emitToolStart(itemId, 'WebSearch', { input: input || undefined, message });
+            emitTrace('Codex: web search', { query, actionType });
+            return true;
+          }
 
-        // MCP tool calls
-        if (itemType === 'mcp_tool_call' || itemType === 'mcpToolCall' || itemType === 'mcp_call' || itemType.startsWith('mcp')) {
-          const toolName = String(item?.name ?? item?.toolName ?? item?.tool ?? 'MCP Tool');
-          const toolInput = item?.input ?? item?.arguments;
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName,
-              ...(toolInput ? { input: typeof toolInput === 'string' ? toolInput : JSON.stringify(toolInput) } : {}),
-              message: `Running ${toolName}...`,
-            },
-          });
-          emitTrace('Codex: MCP tool call', { toolName });
-          return true;
-        }
+          // ── File search (Responses API: file_search_call) ──
+          case 'file_search_call':
+          case 'file_search': {
+            const query = String(
+              item?.query ??
+              item?.input?.query ??
+              item?.arguments?.query ??
+              ''
+            );
+            emitToolStart(itemId, 'FileSearch', {
+              input: query || undefined,
+              message: query ? `Searching files: ${query.slice(0, 60)}` : 'Searching files...',
+            });
+            emitTrace('Codex: file search', { query });
+            return true;
+          }
 
-        // Function calls / tool calls
-        if (itemType === 'function_call' || itemType === 'functionCall' || itemType === 'tool_call' || itemType === 'toolCall') {
-          const toolName = String(item?.name ?? item?.function?.name ?? item?.toolName ?? 'Tool');
-          const toolInput = item?.arguments ?? item?.input ?? item?.function?.arguments;
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName,
-              ...(toolInput ? { input: typeof toolInput === 'string' ? toolInput : JSON.stringify(toolInput) } : {}),
-              message: `Running ${toolName}...`,
-            },
-          });
-          emitTrace('Codex: function call', { toolName });
-          return true;
-        }
+          // ── Code interpreter (Responses API: code_interpreter_call) ──
+          case 'code_interpreter_call':
+          case 'code_interpreter': {
+            const code = String(item?.code ?? item?.input ?? '');
+            emitToolStart(itemId, 'CodeInterpreter', {
+              input: code ? code.slice(0, MAX_TOOL_DISPLAY_LEN) : undefined,
+              message: 'Running code...',
+            });
+            emitTrace('Codex: code interpreter');
+            return true;
+          }
 
-        // Command execution / shell
-        if (itemType === 'command_execution' || itemType === 'commandExecution' || itemType === 'shell' || itemType === 'CommandExecution') {
-          const command = String(item?.command ?? item?.input ?? '');
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName: 'Bash',
-              ...(command ? { input: command.slice(0, 100) } : {}),
+          // ── Computer use (Responses API: computer_call) ──
+          case 'computer_call':
+          case 'computer': {
+            const actionType = String(item?.action?.type ?? item?.action ?? '');
+            emitToolStart(itemId, 'Computer', {
+              input: actionType || undefined,
+              message: actionType ? `Computer: ${actionType}` : 'Using computer...',
+            });
+            emitTrace('Codex: computer use', { action: actionType });
+            return true;
+          }
+
+          // ── Shell / command execution ──
+          // Responses API: shell_call, local_shell_call
+          // Legacy: command_execution, commandExecution, CommandExecution, shell
+          case 'shell_call':
+          case 'local_shell_call':
+          case 'command_execution':
+          case 'commandExecution':
+          case 'CommandExecution':
+          case 'shell': {
+            const command = String(
+              item?.command ?? item?.input?.command ?? item?.input ?? ''
+            );
+            const normalized = normalizeToolInput({ command });
+            const display = normalized ? extractToolDisplayInfo('Bash', normalized) : {};
+            emitToolStart(itemId, 'Bash', {
+              input: display.input,
+              description: display.description,
               message: 'Running command...',
-            },
-          });
-          emitTrace('Codex: command execution', { command: command.slice(0, 100) });
-          return true;
-        }
+            });
+            emitTrace('Codex: shell', { command: command.slice(0, MAX_TOOL_DISPLAY_LEN) });
+            return true;
+          }
 
-        // File changes
-        if (itemType === 'file_change' || itemType === 'fileChange' || itemType === 'FileChange' || itemType === 'apply_patch') {
-          const filePath = String(item?.path ?? item?.filePath ?? item?.file ?? '');
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName: 'Edit',
-              ...(filePath ? { input: filePath } : {}),
+          // ── Apply patch / file changes ──
+          // Responses API: apply_patch_call
+          // Legacy: file_change, fileChange, FileChange, apply_patch
+          case 'apply_patch_call':
+          case 'apply_patch':
+          case 'file_change':
+          case 'fileChange':
+          case 'FileChange': {
+            const filePath = String(item?.path ?? item?.filePath ?? item?.file ?? '');
+            // apply_patch_call has operations[] with create_file/update_file/delete_file
+            const ops = item?.operations ?? item?.patch?.operations;
+            let desc: string | undefined;
+            if (Array.isArray(ops) && ops.length > 0) {
+              const paths = ops
+                .map((op: any) => String(op?.path ?? op?.file ?? ''))
+                .filter(Boolean)
+                .slice(0, 3);
+              if (paths.length > 0) desc = paths.join(', ');
+            }
+            emitToolStart(itemId, 'Edit', {
+              input: filePath || desc || undefined,
               message: 'Editing file...',
-            },
-          });
-          return true;
-        }
+            });
+            return true;
+          }
 
-        // Context compaction (ALWAYS show - critical operation)
-        if (itemType === 'contextCompaction' || itemType === 'context_compaction' || itemType === 'compaction') {
-          emitEvent({
-            event: 'plan',
-            data: {
-              phase: 'tool_start',
-              toolId: itemId,
-              toolName: 'Compacting',
-              message: 'Compacting context... (reducing context window usage)',
-            },
-          });
-          // Also emit as trace for visibility
-          emitEvent({ event: 'trace', data: { message: 'Context compaction in progress' } });
-          return true;
-        }
+          // ── Image generation (Responses API: image_generation_call) ──
+          case 'image_generation_call':
+          case 'image_generation': {
+            const prompt = String(item?.prompt ?? item?.input?.prompt ?? '');
+            emitToolStart(itemId, 'ImageGeneration', {
+              input: prompt ? prompt.slice(0, MAX_TOOL_DISPLAY_LEN) : undefined,
+              message: 'Generating image...',
+            });
+            emitTrace('Codex: image generation');
+            return true;
+          }
 
-        return false;
+          // ── Tool search (Responses API: tool_search_call) ──
+          case 'tool_search_call':
+          case 'tool_search': {
+            const query = String(item?.query ?? item?.input?.query ?? '');
+            emitToolStart(itemId, 'ToolSearch', {
+              input: query || undefined,
+              message: query ? `Searching tools: ${query.slice(0, 60)}` : 'Searching tools...',
+            });
+            emitTrace('Codex: tool search', { query });
+            return true;
+          }
+
+          // ── MCP tool calls (Responses API: mcp_call, mcp_list_tools) ──
+          case 'mcp_call':
+          case 'mcp_tool_call':
+          case 'mcpToolCall':
+          case 'mcp_list_tools': {
+            const toolName = String(item?.name ?? item?.toolName ?? item?.tool ?? 'MCP Tool');
+            const rawInput = item?.input ?? item?.arguments;
+            const normalized = normalizeToolInput(rawInput);
+            const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+            emitToolStart(itemId, toolName, {
+              input: display.input,
+              description: display.description,
+            });
+            emitTrace('Codex: MCP tool call', { toolName });
+            return true;
+          }
+
+          // ── Custom tool call (Responses API: custom_tool_call) ──
+          case 'custom_tool_call': {
+            const toolName = String(item?.name ?? item?.toolName ?? 'Custom Tool');
+            const rawInput = item?.input ?? item?.arguments;
+            const normalized = normalizeToolInput(rawInput);
+            const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+            emitToolStart(itemId, toolName, {
+              input: display.input,
+              description: display.description,
+            });
+            emitTrace('Codex: custom tool', { toolName });
+            return true;
+          }
+
+          // ── Function calls / tool calls (legacy) ──
+          case 'function_call':
+          case 'functionCall':
+          case 'tool_call':
+          case 'toolCall': {
+            const toolName = String(item?.name ?? item?.function?.name ?? item?.toolName ?? 'Tool');
+            const rawInput = item?.arguments ?? item?.input ?? item?.function?.arguments;
+            const normalized = normalizeToolInput(rawInput);
+            const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+            emitToolStart(itemId, toolName, {
+              input: display.input,
+              description: display.description,
+            });
+            emitTrace('Codex: function call', { toolName });
+            return true;
+          }
+
+          // ── Context compaction (ALWAYS show - critical operation) ──
+          case 'contextCompaction':
+          case 'context_compaction':
+          case 'compaction': {
+            emitCompactionLifecycle('tool_start', { itemId });
+            emitEvent({ event: 'trace', data: { message: 'Context compaction in progress' } });
+            return true;
+          }
+
+          // ── Non-tool items we explicitly skip (no tool card) ──
+          case 'reasoning':
+          case 'message':
+          case 'mcp_approval_request':
+            return false;
+
+          default:
+            // Check mcp prefix (some MCP types we haven't listed)
+            if (itemType.startsWith('mcp')) {
+              const toolName = String(item?.name ?? item?.toolName ?? item?.tool ?? 'MCP Tool');
+              const rawInput = item?.input ?? item?.arguments;
+              const normalized = normalizeToolInput(rawInput);
+              const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
+              emitToolStart(itemId, toolName, {
+                input: display.input,
+                description: display.description,
+              });
+              emitTrace('Codex: MCP tool (prefix match)', { toolName, itemType });
+              return true;
+            }
+            return false;
+        }
       };
 
       // Handle reasoning summary deltas (streamed thinking)
@@ -1626,21 +2243,37 @@ export async function runCodexJob(
       ) {
         const toolId = String(params?.itemId ?? params?.id ?? params?.toolCallId ?? '');
         const toolName = String(params?.name ?? params?.toolName ?? params?.command ?? 'Tool');
-        const toolInput = params?.input
-          ? (typeof params.input === 'string' ? params.input : JSON.stringify(params.input))
-          : (typeof params?.command === 'string' ? params.command : undefined);
+        const rawInput = params?.input ?? (typeof params?.command === 'string' ? { command: params.command } : undefined);
+        const normalized = normalizeToolInput(rawInput);
+        const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
 
+        pendingTools.set(toolId, toolName);
         emitEvent({
           event: 'plan',
           data: {
             phase: 'tool_start',
             toolId,
             toolName,
-            ...(toolInput ? { input: toolInput } : {}),
+            ...(display.input ? { input: display.input } : {}),
+            ...(display.description ? { description: display.description } : {}),
             message: `Running ${toolName}...`,
           },
         });
         emitTrace(`Codex: tool started - ${toolName}`);
+        return;
+      }
+
+      // Handle explicit tool completion events
+      if (
+        method === 'item/toolCall/completed' ||
+        method === 'item/commandExecution/completed' ||
+        method === 'item/tool/completed'
+      ) {
+        const toolId = String(params?.itemId ?? params?.id ?? params?.toolCallId ?? '');
+        if (toolId && pendingTools.has(toolId)) {
+          emitToolComplete(toolId);
+          emitTrace(`Codex: tool completed - ${method}`);
+        }
         return;
       }
 
@@ -1687,21 +2320,40 @@ export async function runCodexJob(
             method.split('/').pop() ??
             'Tool'
           );
-          const toolInput = params?.input
-            ? (typeof params.input === 'string' ? params.input : JSON.stringify(params.input))
-            : (params?.query ? String(params.query) : undefined);
+          const rawInput = params?.input ?? (params?.query ? { query: params.query } : undefined);
+          const normalized = normalizeToolInput(rawInput);
+          const display = normalized ? extractToolDisplayInfo(toolName, normalized) : {};
 
+          pendingTools.set(toolId, toolName);
           emitEvent({
             event: 'plan',
             data: {
               phase: 'tool_start',
               toolId,
               toolName,
-              ...(toolInput ? { input: toolInput } : {}),
+              ...(display.input ? { input: display.input } : {}),
+              ...(display.description ? { description: display.description } : {}),
               message: `Running ${toolName}...`,
             },
           });
           emitTrace(`Codex: item event captured as tool - ${method}`, { toolName });
+        }
+        return;
+      }
+
+      // Catch-all for item/* completion events not already handled above.
+      // Exclude 'item/completed' itself — it has a dedicated handler below.
+      if (
+        method !== 'item/completed' &&
+        method.startsWith('item/') &&
+        (method.includes('/completed') || method.includes('/finished'))
+      ) {
+        const completedId = String(
+          params?.itemId ?? params?.id ?? params?.toolCallId ?? ''
+        );
+        if (completedId && pendingTools.has(completedId)) {
+          emitToolComplete(completedId);
+          emitTrace(`Codex: item completed (catch-all) - ${method}`);
         }
         return;
       }
@@ -1724,78 +2376,19 @@ export async function runCodexJob(
       }
 
       if (method === 'turn/completed') {
+        completeAllPendingTools();
         if (!done) {
-          done = true;
-          if (shouldHidePatchPayload && !patchPayloadStarted) {
-            flushVisibleBuffer();
-          }
-
-          if (!patchEmitted) {
-            const fence = extractAgeafPatchFence(fullText);
-            if (fence) {
-              try {
-                const patch = validatePatch(JSON.parse(fence));
-                if (patch.kind === 'replaceRangeInFile') {
-                  for (const hunk of computePerHunkReplacements(patch.filePath, patch.expectedOldText, patch.text)) {
-                    emitEvent({ event: 'patch', data: hunk });
-                  }
-                } else {
-                  emitEvent({ event: 'patch', data: patch });
-                }
-                patchEmitted = true;
-              } catch {
-                // Ignore patch parse failures; user can still read the raw response.
-              }
-            }
-          }
-
-          if (!patchEmitted && action === 'rewrite') {
-            const startMatch = rewriteStartRe.exec(fullText);
-            if (startMatch) {
-              const endMatch = rewriteEndRe.exec(
-                fullText.slice(startMatch.index + startMatch[0].length)
-              );
-              if (endMatch) {
-                const startIndex = startMatch.index + startMatch[0].length;
-                const endIndex = startIndex + endMatch.index;
-                const rewritten = fullText.slice(startIndex, endIndex).trim();
-                if (rewritten) {
-                  emitEvent({ event: 'patch', data: { kind: 'replaceSelection', text: rewritten } });
-                  patchEmitted = true;
-                }
-              }
-            }
-          }
-
-          if (hasOverleafFileBlocks) {
-            const patches = buildReplaceRangePatchesFromFileUpdates({
-              output: fullText,
-              message: messageWithAttachments,
-            });
-            for (const patch of patches) {
-              if (patch.kind === 'replaceRangeInFile' && emittedPatchFiles.has(patch.filePath)) continue;
-              emitEvent({ event: 'patch', data: patch });
-              patchEmitted = true;
-            }
-          }
-          emitEvent({ event: 'done', data: { status: 'ok', threadId } });
+          queueLateCompletionOutputWindow(method);
         }
-        unsubscribe();
-        resolve();
         return;
       }
 
       // Codex CLI variants may signal completion via codex/event/task_completed.
       if (method === 'codex/event/task_completed') {
+        completeAllPendingTools();
         if (!done) {
-          done = true;
-          if (shouldHidePatchPayload && !patchPayloadStarted) {
-            flushVisibleBuffer();
-          }
-          emitEvent({ event: 'done', data: { status: 'ok', threadId } });
+          queueLateCompletionOutputWindow(method);
         }
-        unsubscribe();
-        resolve();
         return;
       }
 
@@ -1806,6 +2399,47 @@ export async function runCodexJob(
           params?.data?.item ??
           params?.result?.item ??
           (params?.output ? { role: 'assistant', output: params.output } : null);
+        const itemType = String(item?.type ?? '').trim();
+        if (
+          itemType === 'contextCompaction' ||
+          itemType === 'context_compaction' ||
+          itemType === 'compaction'
+        ) {
+          emitCompactionLifecycle('compaction_complete', item ?? params);
+        }
+
+        // Emit tool_update with enriched data if available, then tool_complete.
+        const completedItemId = String(
+          item?.id ?? item?.itemId ?? params?.itemId ?? params?.id ?? ''
+        );
+        if (completedItemId && pendingTools.has(completedItemId)) {
+          // For web search completions, try to extract query/results that weren't available at start.
+          const completedType = String(item?.type ?? '').trim();
+          if (
+            completedType === 'web_search_call' ||
+            completedType === 'web_search' ||
+            completedType === 'web_search_result'
+          ) {
+            const lateQuery = String(
+              item?.query ??
+              item?.action?.query ??
+              item?.search_query ??
+              ''
+            );
+            if (lateQuery) {
+              emitEvent({
+                event: 'plan',
+                data: {
+                  phase: 'tool_update',
+                  toolId: completedItemId,
+                  toolName: 'WebSearch',
+                  input: lateQuery,
+                },
+              });
+            }
+          }
+          emitToolComplete(completedItemId);
+        }
         const extractedText = extractAssistantTextFromItem(item);
         if ((!extractedText || !extractedText.trim()) && debugToConsole && itemShapeEmitted < ITEM_SHAPE_LIMIT) {
           itemShapeEmitted += 1;
@@ -1835,21 +2469,50 @@ export async function runCodexJob(
           } else if (deltaToEmit) {
             emitVisibleDelta(deltaToEmit);
           }
+          maybeFinalizeAfterLateOutput();
         }
         // Don't return: item/completed can occur alongside turn/completed.
       }
 
       if (method === 'error' || method === 'turn/error') {
+        const errorMessage = normalizeErrorMessage(params?.error ?? params ?? 'Turn failed');
+        if (shouldAwaitRetryableError(params, errorMessage)) {
+          if (isContextOverflowMessage(errorMessage) && !compactionNoticeEmitted) {
+            compactionNoticeEmitted = true;
+            emitCompactionLifecycle('tool_start', params);
+          }
+          emitTrace('Codex: retryable error, awaiting retry', { message: errorMessage });
+          return;
+        }
         if (!done) {
+          clearCompletionGraceTimer();
+          awaitingLateCompletionOutput = false;
+          // Mark all pending tools as failed on error
+          for (const [toolId, toolName] of pendingTools) {
+            emitEvent({
+              event: 'plan',
+              data: {
+                phase: 'tool_error',
+                toolId,
+                toolName,
+                message: `Failed ${toolName}`,
+              },
+            });
+          }
+          pendingTools.clear();
+          if (activeCompactionToolId) {
+            emitCompactionLifecycle('tool_error', {
+              toolId: activeCompactionToolId,
+            });
+          }
           done = true;
-          const errorMessage = String(params?.error?.message ?? params?.error ?? 'Turn failed');
           emitEvent({
             event: 'done',
             data: { status: 'error', message: errorMessage, threadId },
           });
         }
         unsubscribe();
-        resolve();
+        resolveDone();
         return;
       }
     });
@@ -1886,174 +2549,243 @@ export async function runCodexJob(
     });
   }
 
-  emitTrace('Codex: sending turn/start request');
-  if (debugToConsole) {
-    debugLog('sending turn/start', {
-      ...(options?.jobId ? { jobId: options.jobId } : {}),
-      threadId,
-      approvalPolicy: effectiveApprovalPolicy,
-      blocklistEnabled: compiledBlockedPatterns.length > 0,
-      model: model ?? undefined,
-      effort: effort ?? undefined,
-    });
-  }
-  const turnResponse = await appServer.request(
-    'turn/start',
-    {
-      threadId,
-      input,
-      cwd,
-      approvalPolicy: effectiveApprovalPolicy,
-      sandboxPolicy: { type: 'readOnly' },
-      model,
-      effort,
-      summary: null,
-      outputSchema: null,
-      collaborationMode: null,
-    },
-    { timeoutMs: 30000 }
-  );
-  lastMessageTime = Date.now();
-  emitTrace('Codex: turn/start acknowledged', {
-    hasResult: Boolean((turnResponse as any)?.result),
-    hasError: Boolean((turnResponse as any)?.error),
-  });
-  if (debugToConsole) {
-    debugLog('turn/start acknowledged', {
-      ...(options?.jobId ? { jobId: options.jobId } : {}),
-      hasResult: Boolean((turnResponse as any)?.result),
-      hasError: Boolean((turnResponse as any)?.error),
-    });
-  }
+  const turnStartParams = {
+    threadId,
+    input,
+    cwd,
+    approvalPolicy: effectiveApprovalPolicy,
+    sandboxPolicy: { type: 'readOnly' as const },
+    model,
+    effort,
+    summary: null,
+    outputSchema: null,
+    collaborationMode: null,
+  };
 
-  if (!done && turnResponse && Object.prototype.hasOwnProperty.call(turnResponse, 'error')) {
-    done = true;
-    const errorMessage = String((turnResponse as any).error?.message ?? (turnResponse as any).error ?? 'Turn failed');
-    emitEvent({
-      event: 'done',
-      data: { status: 'error', message: errorMessage, threadId },
-    });
-    unsubscribe();
-    resolveDone();
-  }
-
-  // Ensure the job never hangs forever if the Codex CLI stalls (common near 100% context).
-  let heartbeatId: NodeJS.Timeout | null = null;
-  let timeoutId: NodeJS.Timeout | null = null;
-  const timeoutPromise = new Promise<void>((resolve) => {
-    if (!Number.isFinite(TURN_TIMEOUT_MS) || TURN_TIMEOUT_MS <= 0) return;
-    timeoutId = setTimeout(() => resolve(), TURN_TIMEOUT_MS);
-  });
-
-  heartbeatId = setInterval(() => {
+  const requestTurnStart = async () => {
     if (done) return;
-    const now = Date.now();
-    if (now - lastHeartbeatAt < HEARTBEAT_MS) return;
-    lastHeartbeatAt = now;
-    const totalSec = Math.round((now - turnStartTime) / 1000);
-    const idleSec = Math.round((now - lastMessageTime) / 1000);
-    emitEvent({
-      event: 'plan',
-      data: { message: `Waiting for Codex… (${totalSec}s, last event ${idleSec}s ago)` },
-    });
 
-    // Emit richer diagnostics to trace (debug-only) every ~30s.
-    if (debugCliEvents && now - lastTraceDiagnosticsAt >= 30000) {
-      lastTraceDiagnosticsAt = now;
-      emitTrace('Codex: waiting diagnostics', {
-        threadId,
-        totalSec,
-        idleSec,
-        anyIdleSec: Math.round((now - diagnostics.lastAnyMessageTime) / 1000),
-        turnTimeoutSec: Number.isFinite(TURN_TIMEOUT_MS) ? Math.round(TURN_TIMEOUT_MS / 1000) : 0,
-        seenTurnStarted: diagnostics.seenTurnStarted,
-        seenAnyDelta: diagnostics.seenAnyDelta,
-        seenTurnCompleted: diagnostics.seenTurnCompleted,
-        totalEvents: diagnostics.totalEvents,
-        matchedEvents: diagnostics.matchedEvents,
-        filteredEvents: diagnostics.filteredEvents,
-        missingThreadIdEvents: diagnostics.missingThreadIdEvents,
-        lastAnyMethod: diagnostics.lastAnyMethod || undefined,
-        lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
-        ...(diagnostics.lastRateLimitSummary
-          ? {
-            lastRateLimit: diagnostics.lastRateLimitSummary,
-            rateLimitIdleSec: Math.round((now - diagnostics.lastRateLimitAt) / 1000),
-          }
-          : {}),
-        ...(diagnostics.lastStderrLine
-          ? {
-            lastStderr: redactTraceLine(diagnostics.lastStderrLine),
-            stderrIdleSec: Math.round((now - diagnostics.lastStderrAt) / 1000),
-          }
-          : {}),
-      });
-    }
-
-    if (debugToConsole && now - lastConsoleDiagnosticsAt >= 30000) {
-      lastConsoleDiagnosticsAt = now;
-      debugLog('waiting diagnostics', {
-        ...(options?.jobId ? { jobId: options.jobId } : {}),
-        threadId,
-        totalSec,
-        idleSec,
-        anyIdleSec: Math.round((now - diagnostics.lastAnyMessageTime) / 1000),
-        seenTurnStarted: diagnostics.seenTurnStarted,
-        seenAnyDelta: diagnostics.seenAnyDelta,
-        seenTurnCompleted: diagnostics.seenTurnCompleted,
-        totalEvents: diagnostics.totalEvents,
-        matchedEvents: diagnostics.matchedEvents,
-        filteredEvents: diagnostics.filteredEvents,
-        missingThreadIdEvents: diagnostics.missingThreadIdEvents,
-        lastAnyMethod: diagnostics.lastAnyMethod || undefined,
-        lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
-        ...(diagnostics.lastRateLimitSummary
-          ? {
-            lastRateLimit: diagnostics.lastRateLimitSummary,
-            rateLimitIdleSec: Math.round((now - diagnostics.lastRateLimitAt) / 1000),
-          }
-          : {}),
-        ...(diagnostics.lastStderrLine
-          ? {
-            lastStderr: redactTraceLine(diagnostics.lastStderrLine),
-            stderrIdleSec: Math.round((now - diagnostics.lastStderrAt) / 1000),
-          }
-          : {}),
-      });
-    }
-  }, HEARTBEAT_MS);
-
-  await Promise.race([donePromise, timeoutPromise]);
-  if (!done) {
-    done = true;
-    const seconds = Math.round(TURN_TIMEOUT_MS / 1000);
-    const last = diagnostics.lastMatchedMethod || diagnostics.lastAnyMethod || 'unknown';
-    emitEvent({
-      event: 'done',
-      data: {
-        status: 'error',
-        message: `Codex timed out after ${seconds}s (last event: ${last}). Try starting a new chat.`,
-        threadId,
-      },
-    });
-    emitTrace('Codex: timed out', {
-      threadId,
-      seconds,
-      lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
-      lastAnyMethod: diagnostics.lastAnyMethod || undefined,
-      ...(diagnostics.lastRateLimitSummary ? { lastRateLimit: diagnostics.lastRateLimitSummary } : {}),
-    });
+    emitTrace('Codex: sending turn/start request');
     if (debugToConsole) {
-      debugLog('timed out', {
+      debugLog('sending turn/start', {
         ...(options?.jobId ? { jobId: options.jobId } : {}),
+        threadId,
+        approvalPolicy: effectiveApprovalPolicy,
+        blocklistEnabled: compiledBlockedPatterns.length > 0,
+        model: model ?? undefined,
+        effort: effort ?? undefined,
+      });
+    }
+
+    try {
+      const turnResponse = await appServer.request(
+        'turn/start',
+        turnStartParams,
+        { timeoutMs: 30000 }
+      );
+      lastMessageTime = Date.now();
+      emitTrace('Codex: turn/start acknowledged', {
+        hasResult: Boolean((turnResponse as any)?.result),
+        hasError: Boolean((turnResponse as any)?.error),
+      });
+      if (debugToConsole) {
+        debugLog('turn/start acknowledged', {
+          ...(options?.jobId ? { jobId: options.jobId } : {}),
+          hasResult: Boolean((turnResponse as any)?.result),
+          hasError: Boolean((turnResponse as any)?.error),
+        });
+      }
+
+      if (!done && turnResponse && Object.prototype.hasOwnProperty.call(turnResponse, 'error')) {
+        const errorMessage = normalizeErrorMessage((turnResponse as any).error ?? 'Turn failed');
+        const retryable =
+          shouldAwaitRetryableError((turnResponse as any).error, errorMessage) ||
+          shouldAwaitRetryableError(turnResponse, errorMessage);
+
+        if (retryable) {
+          if (isContextOverflowMessage(errorMessage) && !compactionNoticeEmitted) {
+            compactionNoticeEmitted = true;
+            emitCompactionLifecycle('tool_start', (turnResponse as any).error ?? turnResponse);
+          }
+          emitTrace('Codex: turn/start returned retryable error, waiting', {
+            message: errorMessage,
+          });
+          return;
+        }
+
+        if (activeCompactionToolId) {
+          emitCompactionLifecycle('tool_error', {
+            toolId: activeCompactionToolId,
+          });
+        }
+        done = true;
+        emitEvent({
+          event: 'done',
+          data: { status: 'error', message: errorMessage, threadId },
+        });
+        unsubscribe();
+        resolveDone();
+      }
+    } catch (error) {
+      if (done) return;
+      const message = normalizeErrorMessage(error ?? 'Turn failed');
+      if (activeCompactionToolId) {
+        emitCompactionLifecycle('tool_error', {
+          toolId: activeCompactionToolId,
+        });
+      }
+      done = true;
+      emitEvent({
+        event: 'done',
+        data: { status: 'error', message, threadId },
+      });
+      unsubscribe();
+      resolveDone();
+    }
+  };
+
+  // Track active Codex job for ask_user HTTP callback correlation.
+  // Keyed by the Codex CLI PID so the stdio server can identify the job via process.ppid.
+  // A per-PID turn lock serializes concurrent turns that share the same app-server,
+  // ensuring at most one registered job per PID during active turns.
+  const codexJobId = options?.jobId;
+  const codexCliPid = appServer.getPid();
+
+  let releasePidLock: (() => void) | null = null;
+  if (codexCliPid && codexJobId) {
+    const lock = acquirePidTurnLock(codexCliPid);
+    await lock.acquired;
+    releasePidLock = lock.release;
+    registerActiveCodexJob(codexCliPid, codexJobId);
+  }
+
+  try {
+    await requestTurnStart();
+
+    // Ensure the job never hangs forever if the Codex CLI stalls (common near 100% context).
+    let heartbeatId: NodeJS.Timeout | null = null;
+    let timeoutId: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<void>((resolve) => {
+      if (!Number.isFinite(TURN_TIMEOUT_MS) || TURN_TIMEOUT_MS <= 0) return;
+      timeoutId = setTimeout(() => resolve(), TURN_TIMEOUT_MS);
+    });
+
+    heartbeatId = setInterval(() => {
+      if (done) return;
+      const now = Date.now();
+      if (now - lastHeartbeatAt < HEARTBEAT_MS) return;
+      lastHeartbeatAt = now;
+      const totalSec = Math.round((now - turnStartTime) / 1000);
+      const idleSec = Math.round((now - lastMessageTime) / 1000);
+      emitEvent({
+        event: 'plan',
+        data: { message: `Waiting for Codex… (${totalSec}s, last event ${idleSec}s ago)` },
+      });
+
+      // Emit richer diagnostics to trace (debug-only) every ~30s.
+      if (debugCliEvents && now - lastTraceDiagnosticsAt >= 30000) {
+        lastTraceDiagnosticsAt = now;
+        emitTrace('Codex: waiting diagnostics', {
+          threadId,
+          totalSec,
+          idleSec,
+          anyIdleSec: Math.round((now - diagnostics.lastAnyMessageTime) / 1000),
+          turnTimeoutSec: Number.isFinite(TURN_TIMEOUT_MS) ? Math.round(TURN_TIMEOUT_MS / 1000) : 0,
+          seenTurnStarted: diagnostics.seenTurnStarted,
+          seenAnyDelta: diagnostics.seenAnyDelta,
+          seenTurnCompleted: diagnostics.seenTurnCompleted,
+          totalEvents: diagnostics.totalEvents,
+          matchedEvents: diagnostics.matchedEvents,
+          filteredEvents: diagnostics.filteredEvents,
+          missingThreadIdEvents: diagnostics.missingThreadIdEvents,
+          lastAnyMethod: diagnostics.lastAnyMethod || undefined,
+          lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
+          ...(diagnostics.lastRateLimitSummary
+            ? {
+              lastRateLimit: diagnostics.lastRateLimitSummary,
+              rateLimitIdleSec: Math.round((now - diagnostics.lastRateLimitAt) / 1000),
+            }
+            : {}),
+          ...(diagnostics.lastStderrLine
+            ? {
+              lastStderr: redactTraceLine(diagnostics.lastStderrLine),
+              stderrIdleSec: Math.round((now - diagnostics.lastStderrAt) / 1000),
+            }
+            : {}),
+        });
+      }
+
+      if (debugToConsole && now - lastConsoleDiagnosticsAt >= 30000) {
+        lastConsoleDiagnosticsAt = now;
+        debugLog('waiting diagnostics', {
+          ...(options?.jobId ? { jobId: options.jobId } : {}),
+          threadId,
+          totalSec,
+          idleSec,
+          anyIdleSec: Math.round((now - diagnostics.lastAnyMessageTime) / 1000),
+          seenTurnStarted: diagnostics.seenTurnStarted,
+          seenAnyDelta: diagnostics.seenAnyDelta,
+          seenTurnCompleted: diagnostics.seenTurnCompleted,
+          totalEvents: diagnostics.totalEvents,
+          matchedEvents: diagnostics.matchedEvents,
+          filteredEvents: diagnostics.filteredEvents,
+          missingThreadIdEvents: diagnostics.missingThreadIdEvents,
+          lastAnyMethod: diagnostics.lastAnyMethod || undefined,
+          lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
+          ...(diagnostics.lastRateLimitSummary
+            ? {
+              lastRateLimit: diagnostics.lastRateLimitSummary,
+              rateLimitIdleSec: Math.round((now - diagnostics.lastRateLimitAt) / 1000),
+            }
+            : {}),
+          ...(diagnostics.lastStderrLine
+            ? {
+              lastStderr: redactTraceLine(diagnostics.lastStderrLine),
+              stderrIdleSec: Math.round((now - diagnostics.lastStderrAt) / 1000),
+            }
+            : {}),
+        });
+      }
+    }, HEARTBEAT_MS);
+
+    await Promise.race([donePromise, timeoutPromise]);
+    if (!done) {
+      clearCompletionGraceTimer();
+      awaitingLateCompletionOutput = false;
+      done = true;
+      const seconds = Math.round(TURN_TIMEOUT_MS / 1000);
+      const last = diagnostics.lastMatchedMethod || diagnostics.lastAnyMethod || 'unknown';
+      emitEvent({
+        event: 'done',
+        data: {
+          status: 'error',
+          message: `Codex timed out after ${seconds}s (last event: ${last}). Try starting a new chat.`,
+          threadId,
+        },
+      });
+      emitTrace('Codex: timed out', {
         threadId,
         seconds,
-        last,
+        lastMatchedMethod: diagnostics.lastMatchedMethod || undefined,
+        lastAnyMethod: diagnostics.lastAnyMethod || undefined,
         ...(diagnostics.lastRateLimitSummary ? { lastRateLimit: diagnostics.lastRateLimitSummary } : {}),
       });
+      if (debugToConsole) {
+        debugLog('timed out', {
+          ...(options?.jobId ? { jobId: options.jobId } : {}),
+          threadId,
+          seconds,
+          last,
+          ...(diagnostics.lastRateLimitSummary ? { lastRateLimit: diagnostics.lastRateLimitSummary } : {}),
+        });
+      }
     }
+    unsubscribe();
+    clearCompletionGraceTimer();
+    if (timeoutId) clearTimeout(timeoutId);
+    if (heartbeatId) clearInterval(heartbeatId);
+  } finally {
+    if (codexCliPid && codexJobId) unregisterActiveCodexJob(codexCliPid, codexJobId);
+    if (releasePidLock) releasePidLock();
   }
-  unsubscribe();
-  if (timeoutId) clearTimeout(timeoutId);
-  if (heartbeatId) clearInterval(heartbeatId);
 }

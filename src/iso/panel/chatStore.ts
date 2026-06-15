@@ -1,4 +1,4 @@
-export type ProviderId = 'claude' | 'codex';
+export type ProviderId = 'claude' | 'codex' | 'pi';
 
 export type CoTThinkingItem = {
   type: 'thinking';
@@ -17,6 +17,9 @@ export type CoTToolItem = {
   input?: string;
   phase: 'started' | 'completed' | 'failed';
   message?: string;
+  description?: string;
+  startedAt?: number;
+  completedAt?: number;
 };
 
 export type CoTItem = CoTThinkingItem | CoTToolItem | CoTTextItem;
@@ -82,6 +85,7 @@ export type StoredPatchReview =
 export type StoredMessage = {
   role: 'system' | 'assistant' | 'user';
   content: string;
+  displayContent?: string;
   statusLine?: string;
   cot?: CoTItem[];
   thinking?: string[];
@@ -110,6 +114,9 @@ export type StoredConversation = {
       lastUsage?: StoredContextUsage;
     };
     claude?: {
+      lastUsage?: StoredContextUsage;
+    };
+    pi?: {
       lastUsage?: StoredContextUsage;
     };
   };
@@ -149,6 +156,7 @@ export function createEmptyProjectChat(): StoredProjectChat {
     providers: {
       claude: { activeConversationId: null, conversations: [] },
       codex: { activeConversationId: null, conversations: [] },
+      pi: { activeConversationId: null, conversations: [] },
     },
   };
 }
@@ -167,12 +175,14 @@ export function createConversation(provider: ProviderId): StoredConversation {
     messages: [],
     ...(provider === 'codex'
       ? { providerState: { codex: {} } }
-      : { providerState: { claude: {} } }),
+      : provider === 'pi'
+        ? { providerState: { pi: {} } }
+        : { providerState: { claude: {} } }),
   };
 }
 
 function coerceProvider(value: any): ProviderId | null {
-  if (value === 'claude' || value === 'codex') return value;
+  if (value === 'claude' || value === 'codex' || value === 'pi') return value;
   return null;
 }
 
@@ -249,6 +259,9 @@ function normalizeCoTItem(raw: any): CoTItem | null {
       input: typeof raw.input === 'string' ? raw.input : undefined,
       phase,
       message: typeof raw.message === 'string' ? raw.message : undefined,
+      description: typeof raw.description === 'string' ? raw.description.slice(0, 120) : undefined,
+      startedAt: typeof raw.startedAt === 'number' ? raw.startedAt : undefined,
+      completedAt: typeof raw.completedAt === 'number' ? raw.completedAt : undefined,
     };
   }
   return null;
@@ -260,6 +273,7 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
   if (role !== 'system' && role !== 'assistant' && role !== 'user') return null;
   const content = typeof raw.content === 'string' ? raw.content : null;
   if (content == null) return null;
+  const displayContent = typeof raw.displayContent === 'string' ? raw.displayContent : undefined;
   const statusLine = typeof raw.statusLine === 'string' ? raw.statusLine : undefined;
 
   const cotRaw = Array.isArray(raw.cot) ? raw.cot : [];
@@ -293,6 +307,7 @@ function normalizeStoredMessage(raw: any): StoredMessage | null {
   return {
     role,
     content,
+    ...(displayContent ? { displayContent } : {}),
     ...(statusLine ? { statusLine } : {}),
     ...(cot.length > 0 ? { cot } : {}),
     ...(images.length > 0 ? { images } : {}),
@@ -449,6 +464,12 @@ function normalizeConversation(raw: any, provider: ProviderId): StoredConversati
         providerStateRaw?.claude?.lastUsage ?? providerStateRaw?.claude?.last_usage
       )
       : null;
+  const piUsage =
+    provider === 'pi'
+      ? normalizeStoredContextUsage(
+        providerStateRaw?.pi?.lastUsage ?? providerStateRaw?.pi?.last_usage
+      )
+      : null;
   const threadId =
     provider === 'codex'
       ? typeof providerStateRaw?.codex?.threadId === 'string'
@@ -469,6 +490,9 @@ function normalizeConversation(raw: any, provider: ProviderId): StoredConversati
   }
   if (provider === 'claude' && claudeUsage) {
     providerState.claude = { lastUsage: claudeUsage };
+  }
+  if (provider === 'pi' && piUsage) {
+    providerState.pi = { lastUsage: piUsage };
   }
   return {
     id,
@@ -499,11 +523,12 @@ export function normalizeProjectChat(raw: any): StoredProjectChat | null {
 
   const claude = normalizeProviderState(providersRaw.claude, 'claude');
   const codex = normalizeProviderState(providersRaw.codex, 'codex');
+  const pi = normalizeProviderState(providersRaw.pi, 'pi');
 
   return {
     version: 1,
     activeProvider,
-    providers: { claude, codex },
+    providers: { claude, codex, pi },
   };
 }
 
