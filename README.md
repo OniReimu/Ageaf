@@ -101,16 +101,14 @@ BYOK supports **1,000+ models** across 20+ providers. Here is a highlight of sup
 ### Local Development (Strongly recommended)
 0. Under the project directory.
 
-1. Install dependencies and build and load the extension:
+1. Install dependencies for both the extension and host:
    ```bash
    npm install
-   npm run watch
    ```
 
-2. (A separate terminal) Install dependencies for the host and start the host:
+2. Start both the extension watch and host dev server (one terminal):
    ```bash
-   cd host && npm install
-   npm run dev
+   npm run dev:all
    ```
    
    Then load the unpacked extension:
@@ -123,23 +121,15 @@ BYOK supports **1,000+ models** across 20+ providers. Here is a highlight of sup
 ## How to Update Ageaf
 
 ### If you run Ageaf from source (this repo)
-Use **two terminals** for updates:
+Use **one terminal** for updates:
 
-**Terminal 1 (extension):**
 ```bash
 git pull
 npm install
-npm run watch
+npm run dev:all
 ```
 
-**Terminal 2 (host, separate terminal):**
-```bash
-cd host
-npm install
-npm run dev
-```
-
-Keep both terminals running during the update so extension rebuilds and host runtime stay in sync.
+Keep this terminal running during the update so extension rebuilds and host runtime stay in sync.
 
 Then in Chrome:
 - Open `chrome://extensions`

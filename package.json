@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "description": "Ageaf for Overleaf",
   "private": true,
+  "workspaces": [
+    "host"
+  ],
   "scripts": {
+    "dev:all": "./scripts/dev.sh",
     "prebuild": "node scripts/generate-skills-manifest.cjs",
     "prewatch": "node scripts/generate-skills-manifest.cjs",
     "watch": "webpack --mode=development --watch --config config/webpack.config.js",
@@ -26,7 +30,7 @@
     "mini-css-extract-plugin": "^2.7.6",
     "prettier": "^2.8.8",
     "ts-loader": "^9.2.8",
-    "typescript": "^4.6.3",
+    "typescript": "^5.3.3",
     "webpack": "^5.88.2",
     "webpack-cli": "^4.10.0",
     "webpack-merge": "^5.9.0"
@@ -36,12 +40,12 @@
     "@codemirror/view": "^6.38.6",
     "@pierre/diffs": "^1.0.9",
     "@types/crypto-js": "^4.1.2",
-    "@types/diff": "^5.2.3",
+    "@types/diff": "^7.0.2",
     "@types/markdown-it": "^14.1.2",
-    "@types/node": "^20.6.2",
+    "@types/node": "^20.11.30",
     "buffer": "^6.0.3",
     "crypto-js": "^4.1.1",
-    "diff": "^7.0.0",
+    "diff": "^8.0.3",
     "katex": "^0.16.28",
     "markdown-it": "^14.1.0",
     "morphdom": "^2.7.8",
